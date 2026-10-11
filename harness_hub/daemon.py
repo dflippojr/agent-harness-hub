@@ -46,9 +46,11 @@ APPS_ROUTES = {
     "retention": ("PUT", "/apps/{app_id}/retention"),
 }
 
-# App pairing requests (#519): owner decisions only. The App-side `claim` and `token` routes are never called for them.
+# App pairing requests (#519): owner decisions only, plus arming a pre-approved slot for a Hub entry (no secret exists
+# until the App claims it). The App-side `claim` and `token` routes are never called for them.
 PAIRING_ROUTES = {
     "list": ("GET", "/pairing-requests"),
+    "arm": ("POST", "/pairing-requests"),
     "approve": ("POST", "/pairing-requests/{rid}/approve"),
     "confirm": ("POST", "/pairing-requests/{rid}/confirm"),
     "deny": ("POST", "/pairing-requests/{rid}/deny"),

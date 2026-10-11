@@ -535,3 +535,99 @@ def pairing_view(body: Any, secrets: tuple[str, ...] = ()) -> dict:
     rows = [row for row in rows if row["id"]]
     rows.sort(key=lambda row: row["created_at"] or 0, reverse=True)
     return {"requests": rows, "now": time.time()}
+
+
+# Marketplace (agent-harness #520): the daemon's validated local entries. Listing grants nothing. Only display fields
+# are copied; the manifest's URLs, e-mail addresses and digests never reach the browser, and nothing from an entry is
+# ever fetched. Until a slot is armed the owner reads each scope's disclosure from this copy of the daemon's own copy
+# (agent-harness harness/pairing_requests.py DISCLOSURES, docs/marketplace-design.md section 5.2); once armed, the
+# daemon's `disclosures` on the request are shown instead. tests/e2e compares the two.
+SCOPE_DISCLOSURES = {
+    "sessions": "This app can start agent tasks on your harness and read the tasks it created. It cannot see other "
+                "apps' or your Control Center sessions.",
+    "sessions:all": "This app can **read every session on this harness**, including work you started yourself and "
+                    "work other apps started. It cannot create sessions unless it also has `sessions`.",
+    "approvals": "This app can **approve or deny tool calls** in its own tasks, including shell and file changes the "
+                 "agent requests. That is a substitute for you tapping Approve.",
+    "images": "This app can generate images on your harness. Image jobs pause language-model work for a few minutes.",
+    "inference": "This app can call your local model as a raw completion API, outside an agent session. That still "
+                 "uses the same GPU.",
+    "remote_control": "This app can **start Claude Remote Control** in a project folder. Those sessions run as native "
+                      "Claude Code on your machine: no harness queue, sandbox, or harness approvals.",
+    "models:warm": "This app can **load your local model** when you start chatting in it. Loading takes RAM and the "
+                   "GPU for about a minute.",
+    "memory_library": "This app's tasks can **read your memory library** and propose changes to it. You still approve "
+                      "every change.",
+    "homelab": "This app's tasks can **read your homelab services' logs, config and metrics** and ask to restart or "
+               "rebuild them.",
+}
+CATALOG_APP_ID = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,118}[a-z0-9])?")
+SCOPE_NAME = re.compile(r"[a-z][a-z0-9_:]{0,63}")
+# Only an inline raster image can be an icon: never a URL, never SVG (which can carry script and external references).
+INLINE_ICON = re.compile(r"data:image/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]{4,65536}={0,2}")
+ENTRY_STATES = ("paired", "not_paired")
+SLOT_STATES = ("armed", "claimed", "approved")
+
+
+def _key_ids(value: Any) -> list[str]:
+    return [_app_id(v) for v in value[:64] if _app_id(v)] if isinstance(value, list) else []
+
+
+def entry_view(row: Any, secrets: tuple[str, ...] = ()) -> dict | None:
+    """One entry as the daemon validated it, or None when it does not match the entries contract."""
+    if not isinstance(row, dict) or row.get("verified") is not False or row.get("state") not in ENTRY_STATES:
+        return None
+    manifest = row.get("manifest") if isinstance(row.get("manifest"), dict) else {}
+    app = manifest.get("app") if isinstance(manifest.get("app"), dict) else {}
+    catalog_app_id = row.get("catalog_app_id")
+    if not isinstance(catalog_app_id, str) or not CATALOG_APP_ID.fullmatch(catalog_app_id) or (
+            app.get("app_id") != catalog_app_id) or not isinstance(app.get("display_name"), str):
+        return None
+    publisher = app.get("publisher") if isinstance(app.get("publisher"), dict) else {}
+    scopes = []
+    for item in app.get("scopes", [])[:16] if isinstance(app.get("scopes"), list) else []:
+        scope = item.get("scope") if isinstance(item, dict) else None
+        if not isinstance(scope, str) or not SCOPE_NAME.fullmatch(scope) or scope == "admin":
+            return None
+        tier = "elevated" if scope in ELEVATED_SCOPES or item.get("risk_tier") == "elevated" else "standard"
+        scopes.append({"scope": scope, "tier": tier, "text": SCOPE_DISCLOSURES.get(scope, ""),
+                       "justification": _app_text(item.get("justification"), 1000, secrets)})
+    if not scopes:
+        return None
+    origins = app.get("browser_origins") if isinstance(app.get("browser_origins"), list) else []
+    if any(not isinstance(origin, str) or not origin.startswith("https://") for origin in origins):
+        return None
+    unverified = row.get("unverified_origin") if isinstance(row.get("unverified_origin"), dict) else {}
+    icon = app.get("icon")
+    return {"catalog_app_id": catalog_app_id, "name": _app_text(app.get("display_name"), 80, secrets),
+            "version": _app_text(app.get("version"), 64, secrets),
+            "summary": _app_text(app.get("summary"), 280, secrets),
+            "publisher": {"name": _app_text(publisher.get("name"), 80, secrets),
+                          "id": _app_text(publisher.get("id"), 64, secrets)},
+            "icon": icon if isinstance(icon, str) and INLINE_ICON.fullmatch(icon) else "",
+            "scopes": scopes, "elevated": [item["scope"] for item in scopes if item["tier"] == "elevated"],
+            "browser_origins": [_app_text(origin, 300, secrets) for origin in origins[:8]],
+            "verified": False, "state": row["state"], "paired": _key_ids(row.get("paired")),
+            "pending_pairing": row.get("pending_pairing") is True,
+            "unverified_origin": {"paired": _key_ids(unverified.get("paired")),
+                                  "pending_pairing": unverified.get("pending_pairing") is True}}
+
+
+def entries_view(body: Any, secrets: tuple[str, ...] = ()) -> tuple[list[dict], int]:
+    """The entries that match the contract, and how many did not (those are withheld, never shown raw)."""
+    rows = body.get("entries") if isinstance(body, dict) and isinstance(body.get("entries"), list) else []
+    shown = [entry_view(row, secrets) for row in rows]
+    kept = [row for row in shown if row is not None]
+    return kept, len(shown) - len(kept)
+
+
+def marketplace_slots(requests: Any, secrets: tuple[str, ...] = ()) -> dict[str, list[dict]]:
+    """Armed slots still in play, by catalog app id. App-initiated requests stay on the Pairing requests page."""
+    slots: dict[str, list[dict]] = {}
+    for row in requests if isinstance(requests, list) else []:
+        if not isinstance(row, dict) or row.get("kind") != "app" or row.get("armed") is not True:
+            continue
+        shown = pairing_request_view(row, secrets)
+        if shown["id"] and shown["state"] in SLOT_STATES and CATALOG_APP_ID.fullmatch(shown["catalog_app_id"]):
+            slots.setdefault(shown["catalog_app_id"], []).append(shown)
+    return slots

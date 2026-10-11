@@ -55,6 +55,8 @@ def register_pairing(app, fake, owner):
                 "disclosures": [{"scope": s, "tier": "elevated" if s in ELEVATED or s == "admin" else "standard",
                                  "text": row.get("text", {}).get(s, DISCLOSURES.get(s, ""))} for s in scopes]}
 
+    fake.pairing_view = view
+
     def hub_rows():
         """The Hub's own claims, which the real daemon lists with every other request."""
         now = time.time()

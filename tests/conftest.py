@@ -25,6 +25,7 @@ from harness_hub.server import create_app
 
 from .admin_fake import register_administration
 from .apps_fake import register_apps
+from .marketplace_fake import register_marketplace
 from .modules_fake import register_inventory
 from .pairing_fake import register_pairing
 from .settings_fake import register_settings
@@ -47,6 +48,7 @@ class FakeDaemon:
         self.minted: list[str] = []
         self.redeem_role = "hub"
         self.down = False
+        self.sent: list[str] = []  # every URL the Hub asked for, so tests can prove what it never fetched
         self.app = self._build()
 
     # owner actions on the daemon host
@@ -162,6 +164,7 @@ class FakeDaemon:
             return {"claimed": self.hub is not None, "hub": self.hub, "requests": []}
 
         register_pairing(app, self, owner)
+        register_marketplace(app, self, owner)
         register_apps(app, self, owner)
         register_inventory(app, self, owner)
         register_administration(app, self, owner)
@@ -176,6 +179,7 @@ class FakeDaemon:
                 self.inner = httpx.ASGITransport(app=fake.app)
 
             async def handle_async_request(self, request):
+                fake.sent.append(str(request.url))
                 if fake.down:
                     raise httpx.ConnectError("refused", request=request)
                 return await self.inner.handle_async_request(request)
