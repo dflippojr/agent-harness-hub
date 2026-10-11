@@ -113,3 +113,19 @@ def test_settings_unreachable_and_release_confirmation(claimed, fake_daemon):
 def test_settings_require_claim(hub):
     hub.sign_in()
     assert hub.get("/api/settings/config").status_code == 409
+
+
+def test_registry_sensitive_values_and_guard_fail_closed(claimed, fake_daemon):
+    hidden = next(row for row in fake_daemon.schema if row["key"] == "provider.credential")
+    hidden["default"] = "provider-secret-sentinel"
+    fake_daemon.values["provider.credential"] = "provider-secret-sentinel"
+    fake_daemon.values["labels.names"] = {"credential": "provider-secret-sentinel"}
+    shown = claimed.get("/api/settings/config")
+    assert shown.status_code == 200
+    fields = {row["key"]: row for row in shown.json()["settings"]}
+    assert fields["provider.credential"]["default"] is None
+    assert fields["provider.credential"]["effective"] is None
+    assert fields["labels.names"]["effective"] is None
+    fake_daemon.values["queue.limit"] = fake_daemon.hub_token
+    assert claimed.get("/api/settings/config").status_code == 500
+    assert_no_secrets(claimed.bodies, fake_daemon.hub_token, "provider-secret-sentinel")
