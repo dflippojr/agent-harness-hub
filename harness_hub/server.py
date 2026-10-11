@@ -26,9 +26,19 @@ from .auth import SESSION_TTL_SECONDS, Sessions
 from .claim import CLAIMED, ClaimError, ClaimManager
 from .config import Settings
 from .daemon import DaemonClient, DaemonUnreachable
-from .guard import ResponseGuard
+from .guard import ResponseGuard, leaks
+from .inventory import InventoryCache, valid_inventory
 from .state import SERVER_FILE, StateStore, write_private
-from .views import claim_view, control_view, health_view, overview, ownership_view, registry_view, settings_error
+from .views import (
+    claim_view,
+    control_view,
+    health_view,
+    module_view,
+    overview,
+    ownership_view,
+    registry_view,
+    settings_error,
+)
 
 log = logging.getLogger("harness_hub")
 
@@ -92,6 +102,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     claims = ClaimManager(store, daemon, name=settings.claim_name, claim_file=settings.claim_file,
                           poll_seconds=settings.poll_seconds)
     sessions = Sessions(settings.state_dir)
+    inventory = InventoryCache(store.dir, settings.daemon_url)
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -116,6 +127,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     app.state.claims = claims
     app.state.store = store
     app.state.sessions = sessions
+    app.state.inventory = inventory
     restart = {"active": False, "target": None, "not_before": 0.0}
 
     @app.middleware("http")
@@ -220,6 +232,41 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         result = overview(claims, settings.daemon_url, health, ownership, error)
         result["restarting"] = restart["active"]
         return result
+
+    @app.get("/api/modules")
+    async def get_modules():
+        key = claims.key()
+        if key is None:
+            return _error(409, "Claim this Hub on Overview before reading Modules.")
+        good = inventory.get(key["key_id"])
+        state, error = "ready", ""
+        try:
+            reply = await daemon.inventory(key["token"])
+            if reply.status == 401:
+                confirmation = await daemon.admin(key["token"])
+                if confirmation.status == 401:
+                    claims.released()
+                return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
+            if reply.ok:
+                if not valid_inventory(reply.body):
+                    state, error = "error", "The daemon returned an invalid inventory."
+                elif leaks(json.dumps(module_view(reply.body)).encode(), store.secrets()):
+                    state, error = "error", "Inventory withheld: it contained a credential-like string."
+                else:
+                    good = inventory.save(reply.body, key["key_id"])
+            elif reply.status == 404:
+                state, error = "absent", "The Hub inventory module is not installed."
+            elif reply.status == 400 and "disabled" in reply.detail.lower():
+                state, error = "disabled", "Hub inventory is disabled. Switch it on below."
+            else:
+                state, error = "error", settings_error(reply.body, reply.status)["detail"]
+        except DaemonUnreachable:
+            state, error = "error", "The daemon did not answer."
+        except (OSError, ValueError):
+            state, error = "error", "The inventory could not be saved in the private state directory."
+        return {"state": state, "error": error, "stale": state != "ready" and good is not None,
+                "fetched_at": good["fetched_at"] if good else None,
+                "modules": module_view(good["inventory"]) if good else None}
 
     @app.get("/api/settings/health")
     async def settings_health():

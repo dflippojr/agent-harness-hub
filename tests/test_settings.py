@@ -1,20 +1,9 @@
 """Owner Settings flows, concurrency, explicit writes, and response secrecy."""
 import time
 
-import pytest
-
 from .conftest import HUB_HOST, assert_no_secrets
 
 ORIGIN = {"Origin": f"http://{HUB_HOST}"}
-
-
-@pytest.fixture
-def claimed(hub, fake_daemon):
-    hub.sign_in()
-    pending = hub.post("/api/claim").json()
-    fake_daemon.approve(pending["request_id"])
-    hub.wait_for("claimed")
-    return hub
 
 
 def write(hub, method, resource, body):

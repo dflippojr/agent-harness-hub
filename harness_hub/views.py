@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -164,6 +165,7 @@ def registry_entry(body: Any) -> dict:
     out.update({key: _bool(body.get(key)) for key in ("readable", "writable", "available", "file_only")})
     out.update({key: _num(body.get(key)) for key in ("minimum", "maximum")})
     out["enum"] = setting_value(body.get("enum"))
+    out["modules"] = _names(body.get("modules"))
     hidden = body.get("sensitivity") in ("hidden", "redact") or body.get("readable") is False
     for key in ("default", "configured", "effective", "inherited", "pending"):
         out[key] = None if hidden else setting_value(body.get(key))
@@ -238,3 +240,25 @@ def control_view(operation: str, body: Any) -> Any:
         return {"enabled": _bool(body.get("enabled")), "ready": _bool(body.get("ready")),
                 "preflight": preflight_view(body.get("preflight"))}
     return {"sent": _bool(body.get("sent"))}
+
+
+def module_view(body: Any) -> list[dict]:
+    """Only module identity, presence and up to eight scalar status fields reach the browser."""
+    rows = body.get("modules", []) if isinstance(body, dict) else []
+    out = []
+    for row in rows:
+        shown = {"name": _str(row.get("name"), 200), "state": row.get("state")}
+        detail = row.get("status")
+        if isinstance(detail, dict):
+            fields = {}
+            for key, value in list(detail.items())[:8]:
+                if not isinstance(key, str) or len(key) > 200:
+                    continue
+                if isinstance(value, str):
+                    fields[key] = _str(value, 200)
+                elif value is None or type(value) is bool or type(value) is int and value.bit_length() <= 64 or (
+                        type(value) is float and math.isfinite(value)):
+                    fields[key] = value
+            shown["status"] = fields
+        out.append(shown)
+    return out

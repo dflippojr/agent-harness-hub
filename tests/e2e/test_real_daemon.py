@@ -224,6 +224,32 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         assert changed["effective"] == row["effective"] + 1
         assert first.call("GET", "/api/overview").json()["restarting"] is False
 
+        # The inventory switch is live and harmless: it leaves claims and the
+        # settings registry running, so Modules can switch it back on.
+        inventory = first.call("GET", "/api/modules").json()
+        assert inventory["state"] == "ready"
+        assert next(m for m in inventory["modules"] if m["name"] == "hub")["state"] == "present"
+        switch = next(s for s in schema.json()["settings"] if s["type"] == "bool" and
+                      s["key"].endswith(".enabled") and "hub" in s["modules"])
+        for enabled in (False, True):
+            current = first.call("GET", "/api/settings/config").json()
+            answer = first.call("PATCH", "/api/settings/config", headers=origin,
+                                json={"revision": current["revision"], "changes": {switch["key"]: enabled}})
+            assert answer.status_code == 200, answer.text
+            result = first.call("GET", "/api/modules").json()
+            assert result["state"] == ("ready" if enabled else "disabled")
+            if not enabled:
+                assert result["stale"] and result["modules"] == inventory["modules"]
+        entries = daemon["root"] / "config" / "hub.entries.json"
+        entries.write_text("{invalid", encoding="utf-8")
+        try:
+            broken = first.call("GET", "/api/modules").json()
+            assert broken["state"] == "error" and "hub.entries: invalid JSON" in broken["error"]
+            assert broken["stale"] and broken["modules"]
+        finally:
+            entries.unlink()
+        assert first.call("GET", "/api/modules").json()["state"] == "ready"
+
         # Read every moved control; disabled modules return their actual error or
         # disabled state without ever exposing provider credentials.
         for resource in ("smart-approvals", "backends", "memory", "github", "google"):

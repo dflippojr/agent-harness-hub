@@ -23,6 +23,7 @@ from harness_hub.auth import create_signin_code
 from harness_hub.config import Settings
 from harness_hub.server import create_app
 
+from .modules_fake import register_inventory
 from .settings_fake import register_settings
 
 HUB_HOST = "127.0.0.1:8120"
@@ -155,6 +156,7 @@ class FakeDaemon:
                 return JSONResponse({"detail": "requests from this machine need the local owner token"}, 401)
             return {"claimed": self.hub is not None, "hub": self.hub, "requests": []}
 
+        register_inventory(app, self, owner)
         register_settings(app, self, owner)
         return app
 
@@ -241,6 +243,15 @@ def make_hub(tmp_path, fake_daemon):
 @pytest.fixture
 def hub(make_hub):
     return make_hub()
+
+
+@pytest.fixture
+def claimed(hub, fake_daemon):
+    hub.sign_in()
+    pending = hub.post("/api/claim").json()
+    fake_daemon.approve(pending["request_id"])
+    hub.wait_for("claimed")
+    return hub
 
 
 def assert_no_secrets(bodies: list[str], *secrets_: str) -> None:

@@ -269,3 +269,7 @@ details summary { min-height: var(--tap); display: flex; align-items: center; cu
 .field-error { color: var(--bad); }
 .setting-field [aria-invalid="true"] { border-color: var(--bad); }
 @media (max-width: 699px) { .page-head { flex-wrap: wrap; } }
+
+.module-facts { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+.module-facts dt, .grid .card h2 { overflow-wrap: anywhere; }
+.restart-link { display: inline-flex; align-items: center; text-decoration: none; }

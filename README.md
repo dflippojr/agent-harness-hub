@@ -97,6 +97,18 @@ When the daemon already has a Hub, the claim is refused (409) and the Hub shows 
 `harness hub release --confirm`. An expired or denied claim shows that, with a button to start a new one. If the Hub
 is released later, the Hub notices that its key no longer works, forgets it and offers a new claim.
 
+## Modules
+
+Modules shows each daemon module's running presence, saved switch and scalar status detail, including status errors.
+Switches come from the settings schema and save with the current revision. A pending switch is labelled until the
+daemon restarts; **Restart in Settings** opens the existing confirmation and health recovery flow.
+
+When inventory is disabled, Modules offers its registry switch. If the package is absent, the page points to the
+daemon installer's `--enable-modules` option. Inventory errors, including a named entries-file error, appear beside
+the last good snapshot and its timestamp. The complete snapshot is kept in memory and in private `inventory.json`,
+bound to the daemon URL and this Hub's key ID; future Apps and Marketplace views can reuse it. Only allowlisted
+module fields are sent to the browser.
+
 ## Security rules
 
 - The Hub's server holds the `hub` key, the claim's PKCE verifier and the sign-in codes' hashes in its owner-only
@@ -126,12 +138,15 @@ is released later, the Hub notices that its key no longer works, forgets it and 
 python -m pip install --require-hashes -r requirements-dev.lock -r requirements-build.lock
 python -m pip install --no-deps --no-build-isolation -e .
 ruff check .
+node --test tests/browser-session.test.mjs
 pytest                     # unit tests against a fake daemon
 HUB_E2E_DAEMON_SRC=../agent-harness pytest -m e2e   # a real daemon from a checkout (its requirements installed)
 ```
 
 The UI is plain ES modules in `harness_hub/static` with no build step. Every tap target is at least 44 px, and the
 layout switches from a phone menu to a left rail at 900 px.
+The Modules browser flow can also be run with `playwright-cli run-code --filename=tests/modules-browser.js`
+on a signed-in Modules page backed by a fresh `tests.conftest.FakeDaemon` (one browser session).
 
 Dependency versions and artifact hashes are reviewed in `requirements*.lock`; CI also pins the daemon fixture,
 Actions commits, and the Docker base digest. Update locks deliberately with uv:

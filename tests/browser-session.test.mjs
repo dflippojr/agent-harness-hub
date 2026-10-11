@@ -1,6 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { api } from "../harness_hub/static/lib/api.mjs";
+import { switchFor } from "../harness_hub/static/pages/modules.mjs";
+
+test("module switches use schema relationships, reject unrelated and ambiguous bool settings", () => {
+  const notification = { key: "notify.enabled", type: "bool", modules: ["notifications"] };
+  const schema = { settings: [notification,
+    { key: "notifications.debug.enabled", type: "bool", modules: ["notifications"] },
+    { key: "notifications.interval", type: "int", modules: ["notifications"] },
+    { key: "missing.enabled", type: "bool", modules: [] }] };
+  assert.equal(switchFor("notifications", schema), notification);
+  assert.equal(switchFor("missing", schema), null);
+  assert.equal(switchFor("notify", schema), null);
+  assert.equal(switchFor("notifications", null), null);
+  schema.settings.push({ key: "another.enabled", type: "bool", modules: ["notifications"] });
+  assert.equal(switchFor("notifications", schema), null);
+});
 
 test("origin binding survives reloads, accompanies API calls and ends at sign-out", async () => {
   const storage = new Map();
