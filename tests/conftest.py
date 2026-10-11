@@ -28,6 +28,7 @@ from .apps_fake import register_apps
 from .marketplace_fake import register_marketplace
 from .modules_fake import register_inventory
 from .pairing_fake import register_pairing
+from .response_capture import capture_response
 from .settings_fake import register_settings
 
 HUB_HOST = "127.0.0.1:8120"
@@ -196,11 +197,7 @@ class HubClient:
         self.bodies: list[str] = []
 
     def _keep(self, response):
-        self.bodies.append(response.text)
-        # Session cookies and bindings are random Hub values, not daemon credentials.
-        self.bodies.extend(v for k, v in response.headers.items()
-                           if k.lower() not in {"set-cookie", "x-hub-session"})
-        return response
+        return capture_response(self.bodies, response)
 
     def get(self, path, **kw):
         return self._keep(self.client.get(path, **kw))
