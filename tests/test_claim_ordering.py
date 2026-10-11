@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import httpx
 import pytest
 
 from harness_hub import state
 from harness_hub.auth import create_signin_code
+from harness_hub.claim import ClaimError
 from harness_hub.config import Settings
 from harness_hub.daemon import Reply
 from harness_hub.server import create_app
@@ -361,9 +363,291 @@ def test_failed_forget_and_release_preserve_state(tmp_path, monkeypatch):
         key = claims.key()
         monkeypatch.setattr(state, "write_private", fail_write)
         with pytest.raises(OSError):
-            claims.released()
+            await claims.released(key["token"])
         assert claims.key() == StateStore(tmp_path).get("key") == key
         assert claims.state() == "claimed"
         assert claims.store.get("outcome") is None
+
+    run_scenario(tmp_path, monkeypatch, KEY_REPLY, exercise)
+
+
+@pytest.mark.parametrize("route", ["/api/overview", "/api/modules"])
+@pytest.mark.parametrize("redeemed", [False, True])
+def test_stale_release_confirmation_preserves_new_claim(tmp_path, monkeypatch, route, redeemed):
+    async def exercise(claims, daemon, browser):
+        old_token = "ho-synthetic-old-key"
+        claims.store.update(key={"token": old_token, "key_id": "k-old",
+                                 "daemon_url": claims.daemon.base_url}, claim=None)
+        confirmation_entered, confirm = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def admin(token, *_):
+            nonlocal calls
+            assert token == old_token
+            calls += 1
+            if calls == (3 if route == "/api/overview" else 1):
+                confirmation_entered.set()
+                await confirm.wait()
+            return Reply(401, {})
+
+        async def inventory(token):
+            assert token == old_token
+            return Reply(401, {})
+
+        monkeypatch.setattr(claims.daemon, "admin", admin)
+        monkeypatch.setattr(claims.daemon, "inventory", inventory)
+        stale = asyncio.create_task(browser.get(route))
+        await confirmation_entered.wait()
+        await claims.released(old_token)
+        daemon.reply = KEY_REPLY if redeemed else PENDING_REPLY
+        await claims.start()
+        await daemon.entered.wait()
+        confirm.set()
+        await asyncio.wait_for(claims._lock.waiters.get(), timeout=2)
+        assert claims.pending()["request_id"] == "pr-new"
+        daemon.respond.set()
+        response = await stale
+        assert response.status_code in (200, 409)
+        assert claims.state() == ("claimed" if redeemed else "pending")
+        assert claims.store.get("outcome") is None
+        if redeemed:
+            assert claims.key()["token"] == KEY_REPLY.body["token"]
+        else:
+            assert claims.pending()["request_id"] == "pr-new"
+        await claims.released("")
+        assert claims.state() == ("claimed" if redeemed else "pending")
+
+    run_scenario(tmp_path, monkeypatch, KEY_REPLY, exercise)
+
+
+@pytest.mark.parametrize("method", ["DELETE", "POST"])
+def test_control_wait_is_bounded_without_cancelling_redeem(tmp_path, monkeypatch, method):
+    async def exercise(claims, daemon, browser):
+        claims.ensure_polling()
+        await daemon.entered.wait()
+        claims.wait_seconds = 0  # expire at the next suspension, without wall-clock timing
+        response = await browser.request(method, "/api/claim")
+        assert response.status_code == 503 and response.json()["claim"]["state"] == "pending"
+        assert claims.pending()["request_id"] == "pr-old"
+        assert not claims._poller.done() and not daemon.respond.is_set()
+        claims.wait_seconds = 15
+        daemon.respond.set()
+        await claims._poller
+        assert claims.state() == "claimed" and len(daemon.redemptions) == 1
+        assert StateStore(tmp_path).get("key") == claims.key()
+
+    run_scenario(tmp_path, monkeypatch, KEY_REPLY, exercise)
+
+
+def test_start_network_deadline_releases_claim_lock(tmp_path, monkeypatch):
+    async def exercise(claims, daemon, _browser):
+        async def wedged_start(*_):
+            daemon.starts += 1
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(claims.daemon, "start_hub_claim", wedged_start)
+        claims.wait_seconds = 0
+        with pytest.raises(ClaimError) as error:
+            await claims.start()
+        assert error.value.state == "failed" and daemon.starts == 1
+        assert not claims._lock.locked() and claims.pending() is None
+        claims.wait_seconds = 15
+        await claims.forget()
+        assert claims.state() == "unclaimed"
+        assert daemon.redemptions == []
+
+    run_scenario(tmp_path, monkeypatch, KEY_REPLY, exercise)
+
+
+@pytest.mark.parametrize("interrupt", ["cancel", "deadline"])
+def test_interrupted_shutdown_drains_redeem_and_final_save(tmp_path, monkeypatch, interrupt):
+    async def exercise(claims, daemon, _browser):
+        claims.ensure_polling()
+        await daemon.entered.wait()
+        real_write = state.write_private
+        attempts = 0
+        closed = asyncio.Event()
+        real_close = claims.daemon.aclose
+
+        def fail_once(path, text):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("synthetic failure")
+            real_write(path, text)
+
+        async def close():
+            closed.set()
+            await real_close()
+
+        monkeypatch.setattr(state, "write_private", fail_once)
+        monkeypatch.setattr(claims.daemon, "aclose", close)
+        if interrupt == "deadline":
+            claims.wait_seconds = 0
+        stopping = asyncio.create_task(claims.stop())
+        await claims._stopping.wait()
+        if interrupt == "cancel":
+            stopping.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await stopping
+        else:
+            await stopping
+        assert not closed.is_set() and not claims._poller.done()
+        assert not claims._shutdown_task.cancelled()
+        daemon.respond.set()
+        await claims._shutdown_task
+        assert attempts == 2 and len(daemon.redemptions) == 1
+        assert claims.state() == "claimed" and closed.is_set()
+        assert claims._poller.done()
+        assert StateStore(tmp_path).get("key") == claims.key()
+
+    run_scenario(tmp_path, monkeypatch, KEY_REPLY, exercise)
+
+
+@pytest.mark.parametrize("reply, expected", [
+    (DENIED_REPLY, "denied"), (FAILED_REPLY, "failed"),
+    (Reply(409, {"error": {"code": "hub_claimed"}}), "refused"), (Reply(404, {}), "expired"),
+])
+def test_terminal_write_retries_original_outcome_without_redeeming(tmp_path, monkeypatch, reply, expected):
+    async def exercise(claims, daemon, browser):
+        real_write = state.write_private
+        original = claims.store.path.read_bytes()
+
+        def fail_write(*_):
+            raise OSError("synthetic storage failure")
+
+        monkeypatch.setattr(state, "write_private", fail_write)
+        daemon.respond.set()
+        assert await claims.poll_once() is False
+        assert claims.state() == expected
+        outcome = dict(claims._terminal_outcome)
+        daemon.reply = Reply(404, {})
+        assert await claims.poll_once() is False
+        assert claims._terminal_outcome == outcome
+        assert claims.store.path.read_bytes() == original and claims.claim_file.exists()
+        assert (await browser.get("/api/claim")).json()["state"] == expected
+        # No user action may replace a result that has not been saved yet.
+        monkeypatch.setattr(claims, "ensure_polling", lambda: None)
+        await claims.forget()
+        with pytest.raises(ClaimError) as error:
+            await claims.start()
+        assert error.value.state == "persisting" and daemon.starts == 0
+        monkeypatch.setattr(state, "write_private", real_write)
+        assert await claims.poll_once() is True
+        assert len(daemon.redemptions) == 1
+        assert claims.state() == expected
+        assert StateStore(tmp_path).get("outcome") == outcome
+        assert claims.pending() is None and not claims.claim_file.exists()
+
+    run_scenario(tmp_path, monkeypatch, reply, exercise)
+
+
+def test_persistence_backoff_is_capped_and_logs_are_rate_limited(tmp_path, monkeypatch, caplog):
+    async def exercise(claims, daemon, _browser):
+        now = [0.0]
+        claims.monotonic = lambda: now[0]
+        real_write = state.write_private
+
+        def fail_write(*_):
+            raise OSError(KEY_REPLY.body["token"])
+
+        monkeypatch.setattr(state, "write_private", fail_write)
+        daemon.respond.set()
+        delays = []
+        for _ in range(8):
+            assert await claims.poll_once() is False
+            delays.append(claims._retry_delay())
+        assert delays == [2, 4, 8, 16, 32, 60, 60, 60]
+        assert caplog.text.count("waiting for private state storage") == 1
+        now[0] = 60
+        assert await claims.poll_once() is False
+        assert caplog.text.count("waiting for private state storage") == 2
+        assert len(daemon.redemptions) == 1
+        claims.ensure_polling()
+        assert claims._retry_delay() == 2  # explicit wake resets the delay
+        monkeypatch.setattr(state, "write_private", real_write)
+        await claims._poller
+        assert claims._persist_failures == 0 and claims._last_persist_log is None
+        assert claims.state() == "claimed"
+        assert_no_secrets([caplog.text], KEY_REPLY.body["token"])
+
+    run_scenario(tmp_path, monkeypatch, KEY_REPLY, exercise)
+
+
+def test_blocked_persistence_keeps_event_loop_and_state_reads_responsive(tmp_path, monkeypatch):
+    async def exercise(claims, daemon, browser):
+        entered, resume = asyncio.Event(), threading.Event()
+        loop = asyncio.get_running_loop()
+        real_write = state.write_private
+        original_thread = threading.get_ident()
+
+        def blocked_write(path, text):
+            assert threading.get_ident() != original_thread
+            loop.call_soon_threadsafe(entered.set)
+            assert resume.wait(timeout=5), "test did not release the storage latch"
+            real_write(path, text)
+
+        monkeypatch.setattr(state, "write_private", blocked_write)
+        daemon.respond.set()
+        polling = asyncio.create_task(claims.poll_once())
+        try:
+            await entered.wait()
+            response = await browser.get("/api/claim")
+            assert response.json()["state"] == "persisting"
+            assert claims.store.get("key") is None
+            assert "synthetic-private-verifier" in claims.secrets()
+            assert not polling.done()
+        finally:
+            resume.set()
+            await polling
+        assert claims.state() == "claimed" and len(daemon.redemptions) == 1
+
+    run_scenario(tmp_path, monkeypatch, KEY_REPLY, exercise)
+
+
+
+def test_release_clears_only_its_key_not_pending_metadata(tmp_path, monkeypatch):
+    async def exercise(claims, _daemon, _browser):
+        pending = claims.pending()
+        claims.store.update(key={"token": "ho-synthetic-old", "daemon_url": claims.daemon.base_url})
+        await claims.released("ho-synthetic-old")
+        assert claims.key() is None
+        assert claims.pending() == StateStore(tmp_path).get("claim") == pending
+
+    run_scenario(tmp_path, monkeypatch, PENDING_REPLY, exercise)
+
+
+def test_start_lock_deadline_is_retryable_even_before_any_claim(tmp_path, monkeypatch):
+    async def exercise(claims, daemon, browser):
+        claims.store.update(claim=None)
+        await claims._lock.acquire()
+        claims.wait_seconds = 0
+        try:
+            response = await browser.post("/api/claim")
+            assert response.status_code == 503
+            assert response.json()["claim"]["state"] == "unclaimed"
+            assert daemon.starts == 0 and daemon.redemptions == []
+        finally:
+            claims._lock.release()
+            claims.wait_seconds = 15
+
+    run_scenario(tmp_path, monkeypatch, KEY_REPLY, exercise)
+
+
+@pytest.mark.parametrize("stored_pending", [False, True])
+def test_lifespan_starts_and_drains_claim_poller(tmp_path, monkeypatch, stored_pending):
+    async def exercise(claims, daemon, browser):
+        if not stored_pending:
+            claims.store.update(claim=None)
+        app = browser._transport.app.fastapi
+        async with app.router.lifespan_context(app):
+            await daemon.entered.wait()
+            assert daemon.starts == (0 if stored_pending else 1)
+            assert claims.claim_file.exists()
+            daemon.respond.set()
+            await claims._poller
+            assert claims.state() == "claimed"
+        assert claims._shutdown_task.done() and claims.daemon._client.is_closed
+        assert StateStore(tmp_path).get("key") == claims.key()
 
     run_scenario(tmp_path, monkeypatch, KEY_REPLY, exercise)
