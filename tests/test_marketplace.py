@@ -241,3 +241,11 @@ def test_marketplace_needs_a_claimed_hub_and_a_signed_in_owner(hub, fake_daemon,
     hub.sign_in()
     assert hub.get("/api/marketplace").status_code == 409
     assert arm(hub, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]}).status_code == 409
+
+
+def test_a_token_shaped_entry_name_never_becomes_the_slot_name(claimed, fake_daemon, entries):
+    fake_daemon.app_entries[1]["manifest"]["app"]["display_name"] = fake_daemon.hub_token
+    reply = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]})
+    assert reply.status_code == 201, reply.text
+    assert fake_daemon.armed[0]["name"] == "[withheld: token-shaped]"
+    assert_no_secrets(claimed.bodies, fake_daemon.hub_token)

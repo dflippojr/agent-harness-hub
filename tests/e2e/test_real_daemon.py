@@ -368,6 +368,107 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
                           json={"confirm": True}).status_code == 403
         assert_no_secrets(first.bodies, paired_token, token)
 
+        # Marketplace (#520, #519 flow 4): the host's example entries list as not paired, and listing grants nothing.
+        host_cli(daemon, "hub", "entries", "init")
+
+        def market():
+            reply = first.call("GET", "/api/marketplace")
+            assert reply.status_code == 200, reply.text
+            return reply.json()
+
+        def entry(data, catalog_app_id):
+            return next(row for row in data["entries"] if row["catalog_app_id"] == catalog_app_id)
+
+        web_id, planner_id = "ahpub.dflippojr.agent-harness-web", "ahpub.dflippojr.financial-planner"
+        listed = market()
+        assert listed["state"] == "ready" and listed["withheld"] == 0 and listed["daemon_url"] == daemon["url"]
+        assert {row["catalog_app_id"] for row in listed["entries"]} == {web_id, planner_id}
+        for row in listed["entries"]:
+            assert row["state"] == "not_paired" and not row["pending_pairing"] and row["verified"] is False
+            assert row["slots"] == [] and row["icon"] == ""
+        assert "example.invalid" not in first.bodies[-1]
+
+        # A native entry: arm, the App claims with its own challenge, the owner confirms the code it shows from the
+        # Hub, and the App redeems. Its key has no origin, so it is listed under unverified_origin, not as paired.
+        def app_claims(rid, origin=""):
+            verifier = secrets.token_urlsafe(48)
+            challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+            claimed_slot = httpx.post(f"{daemon['url']}/api/v1/pair/requests/{rid}/claim", timeout=10,
+                                      headers={"Origin": origin} if origin else {},
+                                      json={"code_challenge": challenge, "code_challenge_method": "S256"})
+            assert claimed_slot.status_code == 200, claimed_slot.text
+            return claimed_slot.json(), verifier
+
+        armed = first.call("POST", "/api/marketplace/arm", headers=origin,
+                           json={"catalog_app_id": planner_id, "scopes": ["sessions"]})
+        assert armed.status_code == 201, armed.text
+        slot = armed.json()["request"]
+        assert slot["state"] == "armed" and slot["origin"] == "" and armed.json()["daemon_url"] == daemon["url"]
+        # Before arming the owner read the Hub's copy of the disclosures; the daemon's copy on the slot is the same.
+        assert slot["disclosures"] == [{k: v for k, v in item.items() if k != "justification"}
+                                       for item in entry(listed, planner_id)["scopes"]]
+        planner = entry(market(), planner_id)
+        assert planner["unverified_origin"]["pending_pairing"] is True and planner["slots"][0]["id"] == slot["id"]
+        shown, verifier = app_claims(slot["id"])
+        planner = entry(market(), planner_id)
+        assert planner["slots"][0]["state"] == "claimed" and planner["slots"][0]["match_code"] == shown["match_code"]
+        assert app_redeems(slot["id"], verifier).status_code == 409
+        confirmed = first.call("POST", f"/api/pairing/{slot['id']}/confirm", headers=origin,
+                               json={"match": shown["match_code"]})
+        assert confirmed.status_code == 200 and confirmed.json()["state"] == "approved", confirmed.text
+        redeemed = app_redeems(slot["id"], verifier)
+        assert redeemed.status_code == 201, redeemed.text
+        native_token, native_id = redeemed.json()["token"], redeemed.json()["app"]["id"]
+        planner = entry(market(), planner_id)
+        assert planner["state"] == "not_paired" and planner["unverified_origin"]["paired"] == [native_id]
+        assert planner["slots"] == []
+
+        # A browser entry: the owner gives the web entry its origin on the host (the Hub never edits the file). The
+        # App claims from that exact origin, is approved at once, redeems, and the entry shows as paired.
+        entries_file = daemon["root"] / "config" / "hub.entries.json"
+        document = json.loads(entries_file.read_text(encoding="utf-8"))
+        web_origin = "https://notes.example.test"
+        next(row for row in document["entries"] if row["app"]["app_id"] == web_id)["app"]["browser_origins"] = [
+            web_origin]
+        entries_file.write_text(json.dumps(document), encoding="utf-8")
+        assert first.call("POST", "/api/marketplace/arm", headers=origin, json={
+            "catalog_app_id": web_id, "scopes": ["sessions"]}).status_code == 400
+        armed = first.call("POST", "/api/marketplace/arm", headers=origin,
+                           json={"catalog_app_id": web_id, "scopes": ["sessions"], "origin": web_origin})
+        assert armed.status_code == 201, armed.text
+        rid = armed.json()["request"]["id"]
+        assert entry(market(), web_id)["pending_pairing"] is True
+        shown, verifier = app_claims(rid, web_origin)
+        assert shown["state"] == "approved" and shown["match_code"] == ""
+        redeemed = httpx.post(f"{daemon['url']}/api/v1/pair/requests/{rid}/token", timeout=10,
+                              headers={"Origin": web_origin}, json={"code_verifier": verifier})
+        assert redeemed.status_code == 201, redeemed.text
+        web_token, web_key = redeemed.json()["token"], redeemed.json()["app"]["id"]
+        web = entry(market(), web_id)
+        assert web["state"] == "paired" and web["paired"] == [web_key] and not web["pending_pairing"]
+
+        # An unclaimed slot is withdrawn.
+        spare = first.call("POST", "/api/marketplace/arm", headers=origin,
+                           json={"catalog_app_id": planner_id, "scopes": ["sessions"]}).json()["request"]["id"]
+        withdrawn = first.call("POST", f"/api/pairing/{spare}/deny", headers=origin, json={"confirm": True})
+        assert withdrawn.status_code == 200 and withdrawn.json()["state"] == "denied", withdrawn.text
+        assert entry(market(), planner_id)["slots"] == []
+
+        # An unreadable entries file shows the daemon's named error with the last good entries, and arms nothing.
+        good = entries_file.read_text(encoding="utf-8")
+        entries_file.write_text("{invalid", encoding="utf-8")
+        try:
+            broken = market()
+            assert broken["state"] == "error" and "hub.entries: invalid JSON" in broken["error"]
+            assert broken["stale"] and {row["catalog_app_id"] for row in broken["entries"]} == {web_id, planner_id}
+            refused = first.call("POST", "/api/marketplace/arm", headers=origin,
+                                 json={"catalog_app_id": planner_id, "scopes": ["sessions"]})
+            assert refused.status_code == 409 and "hub.entries: invalid JSON" in refused.json()["detail"]
+        finally:
+            entries_file.write_text(good, encoding="utf-8")
+        assert market()["state"] == "ready"
+        assert_no_secrets(first.bodies, native_token, web_token, token)
+
         # 4. A second Hub is refused with 409 and the release instruction.
         second = Hub(daemon, tmp_path / "hub-b")
         second.sign_in()

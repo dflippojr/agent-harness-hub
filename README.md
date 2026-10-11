@@ -11,8 +11,7 @@ Installing the Hub is optional. Every Hub action is also a `harness` CLI command
 ## Status
 
 The Hub includes the server, first-run claim, sign-in, **Overview**, **Settings**, **Modules**, **Apps**,
-**Pairing requests** and **Accounts and maintenance**.
-Marketplace has its own issue; until it ships, its page lists equivalent CLI commands.
+**Pairing requests**, **Marketplace** and **Accounts and maintenance**.
 
 Settings renders the daemon's complete registry, grouped by category, with types, defaults, allowed values,
 read-only guidance, current and pending revisions, and restart requirements. Validate shows field errors without
@@ -106,7 +105,7 @@ daemon restarts; **Restart in Settings** opens the existing confirmation and hea
 When inventory is disabled, Modules offers its registry switch. If the package is absent, the page points to the
 daemon installer's `--enable-modules` option. Inventory errors, including a named entries-file error, appear beside
 the last good snapshot and its timestamp. The complete snapshot is kept in memory and in private `inventory.json`,
-bound to the daemon URL and this Hub's key ID; future Apps and Marketplace views can reuse it. Only allowlisted
+bound to the daemon URL and this Hub's key ID; Apps and Marketplace reuse it. Only allowlisted
 module fields are sent to the browser.
 
 ## Security rules
@@ -218,9 +217,43 @@ read-only and show `harness hub approve <id> --match <code>`, because they are d
 
 Approval changes the request's state only: the App then redeems its own token from the daemon with its PKCE
 verifier, so the Hub never calls the App-side `claim` or `token` routes and never sees an App token. Every action
-shows its `harness pairing-requests` CLI equivalent. Arming slots for Hub entries belongs to Marketplace.
+shows its `harness pairing-requests` CLI equivalent. Arming slots for Hub entries belongs to [Marketplace](#marketplace).
 Run the isolated browser regressions with Playwright installed locally:
 `npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1 pairing-security.spec.cjs`.
+
+### Marketplace
+
+Marketplace lists the owner's local Hub entries ([agent-harness #520](https://github.com/dflippojr/agent-harness/issues/520))
+from the daemon's `GET /hub`, under the line **Being listed here grants nothing.** Each entry shows the manifest's app
+name, publisher, summary and version, its declared scopes and browser origins, "Local entry, not verified", and its
+state: **Paired** (with the matching key ids), **Not paired** or **Pending**. Native keys and requests that match only
+the catalog id are listed separately under "Native keys and requests (origin not verified)", as the daemon reports
+them under `unverified_origin`. Only display fields reach the browser: the manifest's URLs, e-mail addresses and
+review evidence do not, and nothing named by an entry is ever fetched. An icon is shown only when it is an inline
+`data:` PNG, JPEG, GIF or WebP image; anything else becomes a letter.
+
+**Set up** opens a consent screen before anything is armed: the scopes the app will get, each with its `standard` or
+`elevated` badge, the daemon's disclosure text and the publisher's stated reason; the exact origin a browser app's
+slot is bound to (chosen from the entry's origins when it lists several); and a separate acknowledgement for elevated
+scopes. Until a slot exists the disclosure text is the Hub's copy of the daemon's own copy (agent-harness
+`harness/pairing_requests.py`); once armed, the daemon's `disclosures` on the request are shown, and the real-daemon
+e2e checks the two are identical. Only **Approve** calls the daemon's `POST /pairing-requests`. The server re-reads
+the entries first and arms only a listed entry, with exactly its declared scopes and one of its declared origins, so a
+stale page or a crafted request cannot widen what the owner approved.
+
+After arming, the page shows the request id and the daemon URL as copyable text, with "Give this only to <app>; it
+lets that app claim the slot once." No secret exists then: the app claims the slot with its own PKCE challenge and
+fetches its own token from the daemon. A browser app's claim from the bound origin is approved at once. A native
+app's claim shows its match code on the entry with a one-click **Codes match: confirm**; confirm only when the app
+shows the same code. **Withdraw** ends a slot after an in-page confirmation. Every action shows its CLI equivalent
+(`harness hub status`, `harness hub entries init|validate`, `harness pairing-requests arm|confirm|deny`).
+
+A stale or unreadable entries file makes `GET /hub` answer 400 with a named error (`hub.entries: invalid JSON`,
+`entries[0].app.app_id: duplicate id`, ...). The page shows that error with the last good entries from the shared
+inventory snapshot, never an empty list and never entries the daemon did not validate, and setting up is refused
+until the file is fixed. Entries that do not match the contract are withheld and counted.
+Run the isolated browser regressions with Playwright installed locally:
+`npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1 marketplace-security.spec.cjs`.
 
 ### Accounts and maintenance
 

@@ -369,7 +369,9 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return _error(409, f"The entries could not be read ({detail}). Fix them before setting up an app.")
             if not valid_inventory(reply.body):
                 return _error(502, "The daemon returned an invalid inventory.")
-            entries, _ = entries_view(reply.body, tuple(store.secrets()))
+            # No exact-secret pass-through here: the entry's name becomes the slot's name on the daemon, so a
+            # token-shaped one (the Hub key included) is redacted rather than kept for the response guard.
+            entries, _ = entries_view(reply.body)
             entry = next((row for row in entries if row["catalog_app_id"] == catalog_app_id), None)
             if entry is None:
                 return _error(404, "No local entry has that catalog app id. Refresh the Marketplace.")
