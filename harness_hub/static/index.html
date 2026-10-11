@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>Hub</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="modulepreload" href="/static/lib/api.mjs">
+  <link rel="modulepreload" href="/static/lib/dom.mjs">
+  <link rel="modulepreload" href="/static/pages/overview.mjs">
+  <link rel="modulepreload" href="/static/pages/section.mjs">
+  <link rel="modulepreload" href="/static/pages/signin.mjs">
+  <script type="module" src="/static/app.mjs"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="topbar">
+    <button id="menu-button" class="btn icon menu-button" type="button" aria-controls="nav" aria-expanded="false" aria-label="Sections">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+    <a class="brand" href="#/overview"><img src="/static/icon.svg" alt="" width="28" height="28"><span>Hub</span></a>
+    <button id="signout-button" class="btn ghost signout" type="button">Sign out</button>
+  </header>
+  <nav id="nav" class="nav" aria-label="Sections"></nav>
+  <main id="main" class="main" tabindex="-1">
+    <p class="muted">Loading…</p>
+  </main>
+  <noscript><p class="card">The Hub needs JavaScript.</p></noscript>
+</body>
+</html>

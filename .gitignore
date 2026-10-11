@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+# Local Hub state from manual runs: it holds the Hub key.
+.hub-state/
+
+# Disposable validation checkouts.
+.validation/

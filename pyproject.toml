@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-harness-hub"
+dynamic = ["version"]
+description = "Hub: the standalone admin console for an Agent Harness daemon"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.142.2",
+    "uvicorn==0.54.0",
+    "httpx==0.28.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.5",
+    "pytest-cov==6.2.1",
+    "ruff==0.16.10",
+]
+
+[project.scripts]
+harness-hub = "harness_hub.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/dflippojr/agent-harness-hub"
+
+[tool.setuptools.dynamic]
+version = {attr = "harness_hub.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["harness_hub*"]
+
+[tool.setuptools.package-data]
+harness_hub = ["static/*", "static/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "e2e: runs a real Agent Harness daemon from a checkout named by HUB_E2E_DAEMON_SRC",
+]
+addopts = "-m 'not e2e'"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S603", "S607"]
