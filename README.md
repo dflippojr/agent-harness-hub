@@ -159,3 +159,38 @@ uv pip compile pyproject.toml requirements-daemon.in --extra dev --universal --p
 ```
 
 Update exact versions in `pyproject.toml` and the daemon commit/requirements snapshot together when needed.
+
+### Apps
+
+Apps shows the daemon inventory's connection state, last seen, scopes, origins,
+catalog identity, token age (warning at 90 days; no automatic expiry), aggregate
+sessions, usage and errors. Installed entries use the inventory's paired ids,
+including its origin checks, rather than matching display names. The complete
+inventory stays in the owner-only cache shared with Modules; a failed refresh
+shows the last good snapshot and disables management until a fresh read succeeds.
+
+App names are labeled as App-supplied; duplicate names and the reserved "This Hub"
+label show warnings. Revoke is offered only for App and device keys. Its confirmation shows
+the key id, origins, catalog id, creation time and verified-entry pairing. Owner
+and runner keys are managed on the host, without App erasure or restore hints. This Hub
+has no revoke control; release it on the host with `harness hub release --confirm`.
+The erasure queue shows deadlines. Restore stays on the daemon host: run the exact
+`harness apps restore <app_id>` command shown for the revoked App before erasure.
+The CLI returns a replacement credential once; reconnect the App using that
+credential. The Hub never calls the restore route or receives an App token.
+Restore remains CLI-only by the owner decision in agent-harness#597.
+
+The App detail view supports running/queued session caps (blank restores daemon
+defaults) and retention (blank keeps sessions until deleted). Saving retention
+requires confirmation because shortening it can erase older sessions during
+cleanup. All controls show their supported host CLI equivalents.
+
+Token-shaped App display fields are replaced with `[withheld: token-shaped]` so
+an App name cannot block inventory or revoke. Exact Hub keys and claim verifiers
+still withhold the whole affected view; Apps and Modules are checked separately.
+Malformed erasure or session-cap replies show errors instead of an empty queue or
+editable default caps.
+
+With Playwright installed locally, run the isolated Apps security regressions:
+`npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1`.
+These specs intercept all network requests and start no servers.

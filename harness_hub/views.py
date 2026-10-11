@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import math
+import re
 import time
 from typing import Any
 
 from . import __version__
 from .claim import CLAIMED, PENDING, RELEASE_COMMAND, ClaimManager
+from .guard import TOKEN_SHAPE
 
 MESSAGES = {
     "unclaimed": "This Hub has not claimed the daemon yet.",
@@ -261,4 +263,112 @@ def module_view(body: Any) -> list[dict]:
                     fields[key] = value
             shown["status"] = fields
         out.append(shown)
+    return out
+
+
+APP_STATES = {"active", "idle", "stale", "never_used", "revoked", "erasure_pending"}
+SESSION_STATES = ("queued", "running", "waiting_approval", "waiting_target", "waiting_app", "waiting_limit",
+                  "done", "failed", "cancelled")
+
+
+def _finite(value: Any) -> float | None:
+    if type(value) is int and value.bit_length() > 64:
+        return None
+    number = _num(value)
+    return number if number is not None and math.isfinite(number) else None
+
+
+def _app_id(value: Any) -> str:
+    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", value) else ""
+
+
+def _app_text(value: Any, limit: int = 200, secrets: tuple[str, ...] = ()) -> str:
+    """Redact token-shaped display text without masking an exact credential leak from the guard."""
+    if isinstance(value, str):
+        for secret in secrets:
+            if secret and secret in value:
+                return secret  # The response guard must withhold the entire view.
+        if TOKEN_SHAPE.search(value):
+            return "[withheld: token-shaped]"
+    return _str(value, limit)
+
+
+def app_view(row: Any, key_id: str = "", secrets: tuple[str, ...] = ()) -> dict:
+    row = row if isinstance(row, dict) else {}
+    store = row.get("store") if isinstance(row.get("store"), dict) else {}
+    usage = store.get("usage") if isinstance(store.get("usage"), dict) else {}
+    sessions = store.get("sessions") if isinstance(store.get("sessions"), dict) else {}
+    out = {key: _str(row.get(key), 200) for key in ("id", "name", "kind", "role", "catalog_app_id")}
+    out["id"] = _app_id(row.get("id"))
+    for field in ("name", "catalog_app_id"):
+        out[field] = _app_text(row.get(field), secrets=secrets)
+    out.update({key: _finite(row.get(key)) for key in
+                ("created_at", "last_used_at", "token_age_seconds", "revoked_at", "erase_after", "erased_at",
+                 "retention_days")})
+    out["scopes"] = _app_text(row.get("scopes"), 2000, secrets)
+    out["origins"] = [_app_text(origin, 2000, secrets) for origin in row.get("origins", [])[:32]
+                      if isinstance(origin, str)] if isinstance(row.get("origins"), list) else []
+    state = row.get("state")
+    out["state"] = state if isinstance(state, str) and state in APP_STATES else "unknown"
+    out["errors"] = row.get("errors") is True
+    out["this_hub"] = bool(key_id and row.get("id") == key_id)
+    out["token_age_warning"] = out["token_age_seconds"] is not None and out["token_age_seconds"] >= 90 * 86400
+    out["store"] = {
+        "sessions": {key: _int(sessions[key]) for key in SESSION_STATES if key in sessions},
+        "usage": {key: _finite(usage.get(key)) for key in
+                  ("requests", "prompt_tokens", "completion_tokens", "cost_usd")},
+        "errors": _int(store.get("errors")), "last_error": _app_text(store.get("last_error"), 200, secrets),
+        "last_error_at": _finite(store.get("last_error_at")),
+    }
+    return out
+
+
+def apps_view(body: Any, key_id: str, secrets: tuple[str, ...] = ()) -> dict:
+    body = body if isinstance(body, dict) else {}
+    entries = []
+    for row in body.get("entries", []):
+        if not isinstance(row, dict):
+            continue
+        manifest = row.get("manifest") if isinstance(row.get("manifest"), dict) else {}
+        app = manifest.get("app") if isinstance(manifest.get("app"), dict) else {}
+        entries.append({"catalog_app_id": _app_text(row.get("catalog_app_id"), 200, secrets),
+                        "name": _app_text(app.get("display_name"), 200, secrets),
+                        "state": _str(row.get("state"), 32), "paired": _names(row.get("paired")),
+                        "verified": row.get("verified") is True})
+    return {"apps": [app_view(row, key_id, secrets) for row in body.get("apps", []) if isinstance(row, dict)],
+            "entries": entries}
+
+
+def erasures_view(body: Any, secrets: tuple[str, ...] = ()) -> list[dict]:
+    return [{"id": _app_id(row.get("id")), **{key: _app_text(row.get(key), 200, secrets) for key in ("name", "kind")},
+             **{key: _finite(row.get(key)) for key in ("revoked_at", "erase_after")}}
+            for row in body if isinstance(row, dict) and _app_id(row.get("id"))] if isinstance(body, list) else []
+
+
+def valid_limits(body: Any) -> bool:
+    """Unknown or malformed caps must never become editable default resets."""
+    if not isinstance(body, dict):
+        return False
+    for group in ("configured", "effective"):
+        values = body.get(group)
+        if not isinstance(values, dict):
+            return False
+        for key in ("max_running", "max_queued"):
+            if key not in values:
+                return False
+            value = values[key]
+            if value is None and group == "configured":
+                continue
+            if type(value) is not int or not 1 <= value <= 2**63 - 1:
+                return False
+    return True
+
+
+def limits_view(body: Any) -> dict:
+    body = body if isinstance(body, dict) else {}
+    out = {"app_id": _str(body.get("app_id"), 200)}
+    for group in ("configured", "effective"):
+        values = body.get(group) if isinstance(body.get(group), dict) else {}
+        out[group] = {key: _int(values.get(key)) for key in ("max_running", "max_queued")}
+    out.update({key: _int(body.get(key)) for key in ("running", "queued", "parked")})
     return out
