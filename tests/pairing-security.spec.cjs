@@ -205,3 +205,23 @@ test("requester metadata is unverified and owner-armed metadata explains its sou
   await expect(owner).not.toContainText("stated by the requester, not verified");
   expect(errors).toEqual([]);
 });
+
+
+for (const field of ["name", "origin", "catalog_app_id"]) {
+  for (const [state, needs] of [["pending", "approve"], ["claimed", "confirm"]]) {
+    test(`withheld ${field} prevents ${needs} but keeps Deny`, async ({ page }) => {
+      const row = request("pr-withheld", { [field]: "[withheld: token-shaped]", state, needs, armed: state === "claimed" });
+      const { writes, errors } = await mount(page, [row]);
+      const box = card(page, row.id);
+      await expect(box.locator('[data-action="approve"], [data-action="confirm"]')).toHaveCount(0);
+      await expect(box.locator("input")).toHaveCount(0);
+      await expect(box).toContainText("Review this request with harness pairing-requests list on the host.");
+      await expect(box.getByText("harness pairing-requests list", { exact: true })).toBeVisible();
+      await box.locator('[data-action="deny"]').click();
+      await page.getByRole("button", { name: "Confirm deny", exact: true }).click();
+      await expect.poll(() => writes.length).toBe(1);
+      expect(writes[0]).toMatchObject({ path: "/api/pairing/pr-withheld/deny", body: { confirm: true } });
+      expect(errors).toEqual([]);
+    });
+  }
+}

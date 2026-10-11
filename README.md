@@ -210,7 +210,9 @@ and refuses a wrong code. If the App shows no code or an error, deny. If your Ap
 claimed, withdraw that request. The owner's decision (2026-10-11) to withhold App codes from the owner view departs
 from #519 step 2; the daemon and CLI follow-up will apply the same rule as Hub claims. Elevated scopes (`sessions:all`, `approvals`, `remote_control`,
 `memory_library`, `homelab`) need a separate acknowledgement: Approve stays disabled until it is ticked, and the
-server refuses an approval without it before calling the daemon. Deny and Withdraw ask for confirmation in the page.
+server refuses an approval without it before calling the daemon. If a name, origin or catalog id is withheld,
+Approve and Confirm are unavailable; review the request with `harness pairing-requests list` on the host. Deny
+remains available. Deny and Withdraw ask for confirmation in the page.
 A request that changed state (409) or no longer exists (404) refreshes the list with a short note. Hub claims are
 read-only and show `harness hub approve <id> --match <code>`, because they are decided only on the daemon host.
 

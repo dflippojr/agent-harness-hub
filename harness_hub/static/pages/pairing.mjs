@@ -154,7 +154,12 @@ export function renderPairing(main) {
           command(`harness hub approve ${row.id} --match <code>`), command(`harness hub deny ${row.id}`));
       }
     } else if (row.kind === "app") {
-      if (row.state === "pending") box.append(decision(row, "approve"));
+      const withheld = [row.name, row.origin, row.catalog_app_id].some(value => value?.startsWith("[withheld:"));
+      if (withheld && ["pending", "claimed"].includes(row.state)) {
+        box.append(h("p", { class: "notice bad" },
+          "Review this request with harness pairing-requests list on the host."),
+          command("harness pairing-requests list"));
+      } else if (row.state === "pending") box.append(decision(row, "approve"));
       else if (row.state === "claimed") box.append(decision(row, "confirm"));
       if (ACTIVE.includes(row.state)) {
         const verb = ["pending", "claimed"].includes(row.state) ? "Deny" : "Withdraw";

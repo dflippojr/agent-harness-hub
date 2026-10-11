@@ -202,3 +202,16 @@ def test_no_owner_projection_contains_the_request_match_code(kind, state):
     shown = pairing_request_view({"id": "pr-code", "kind": kind, "state": state, "match_code": "482913"})
     assert "match_code" not in shown
     assert "482913" not in str(shown)
+
+
+@pytest.mark.parametrize("field,value", [("name", "ha-synthetic-looking-name"),
+                                        ("origin", "https://hp-printer.example"),
+                                        ("catalog_app_id", "com.ha-tools.app")])
+@pytest.mark.parametrize("state", ["pending", "claimed"])
+def test_withheld_pairing_identity_fields_are_marked_for_host_review(claimed, fake_daemon, field, value, state):
+    rid = fake_daemon.add_pairing("Synthetic notes", ["sessions"], state=state)
+    fake_daemon.pairing_rows[rid][field] = value
+    shown = rows(claimed)[rid]
+    assert shown[field] == "[withheld: token-shaped]"
+    assert "match_code" not in shown
+    assert post(claimed, rid, "deny", {"confirm": True}).json()["state"] == "denied"
