@@ -1,6 +1,9 @@
 """Marketplace: local entries, the consent-gated arm, native confirm, withdraw, last good entries and secrecy."""
+import asyncio
 import json
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
 import pytest
@@ -440,3 +443,31 @@ def test_new_daemon_elevated_scope_can_be_reviewed_instead_of_leaving_owner_stuc
     success = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"],
                             "acknowledge_elevated": True})
     assert success.status_code == 201, success.text
+
+
+def test_concurrent_tabs_cannot_read_a_slot_until_disclosure_review_finishes(claimed, fake_daemon, entries):
+    shown = by_id(market(claimed))["test.example.native"]
+    fake_daemon.arm_disclosures["sessions"] += " New daemon text."
+    denying, release = threading.Event(), threading.Event()
+    async def pause_deny():
+        denying.set()
+        assert await asyncio.to_thread(release.wait, 5), "test did not release the withdrawal"
+    fake_daemon.before_pairing_deny = pause_deny
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        armed = executor.submit(arm, claimed, {"catalog_app_id": shown["catalog_app_id"], "scopes": ["sessions"],
+                                              "consent_digest": shown["consent_digest"]})
+        try:
+            assert denying.wait(5), "the new slot did not reach disclosure withdrawal"
+            rid = next(iter(fake_daemon.pairing_rows))
+            assert fake_daemon.pairing_rows[rid]["state"] == "armed"
+            polls = [executor.submit(claimed.get, path) for path in ("/api/marketplace", "/api/pairing")]
+            for poll in polls:
+                with pytest.raises(TimeoutError):
+                    poll.result(timeout=0.1)
+        finally:
+            release.set()
+        response = armed.result(timeout=5)
+        assert response.status_code == 409 and rid not in response.text
+        marketplace, pairing = [poll.result(timeout=5).json() for poll in polls]
+        assert by_id(marketplace)[shown["catalog_app_id"]]["slots"] == []
+        assert next(row for row in pairing["requests"] if row["id"] == rid)["state"] == "denied"

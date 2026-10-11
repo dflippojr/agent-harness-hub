@@ -7,6 +7,7 @@ daemon.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -307,6 +308,9 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         return {"state": state, "error": error, "stale": state != "ready" and good is not None,
                 "fetched_at": good["fetched_at"] if good else None, **shown}
 
+    # Listings must not publish a new slot while its disclosures are being checked or it is being withdrawn.
+    pairing_consent_lock = asyncio.Lock()
+
     # Bound to the Hub key and the entry's displayed identity, with a bounded ten-minute lifetime.
     consent_copies: dict[tuple[str, str], tuple[str, float, list[dict], bool]] = {}
 
@@ -348,7 +352,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         entries, withheld = entries_view(good["inventory"], secrets) if good else (None, 0)
         slots, slots_error = {}, ""
         try:
-            reply = await daemon.pairing(key["token"], "list")
+            async with pairing_consent_lock:
+                reply = await daemon.pairing(key["token"], "list")
             if reply.status == 401:
                 return await refused(key["token"])
             if reply.ok and isinstance(reply.body, list):
@@ -366,6 +371,10 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     @app.post("/api/marketplace/arm")
     async def arm_slot(request: Request):
+        async with pairing_consent_lock:
+            return await checked_arm_slot(request)
+
+    async def checked_arm_slot(request: Request):
         """Arm a pre-approved slot for one entry once the owner approved its consent screen (#519, flow 4).
 
         The scopes and origin must be exactly what the entry declares as the daemon validates it now, so a stale page
@@ -626,7 +635,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                                       error={"code": "acknowledgement_required"})
                     reply = None
             if reply is None:
-                reply = await daemon.pairing(key["token"], operation, rid, body)
+                async with pairing_consent_lock:
+                    reply = await daemon.pairing(key["token"], operation, rid, body)
             if reply.status == 401:
                 confirmation = await daemon.admin(key["token"])
                 if confirmation.status == 401:

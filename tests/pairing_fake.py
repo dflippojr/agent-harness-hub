@@ -27,6 +27,7 @@ def register_pairing(app, fake, owner):
     fake.pairing_rows = {}
     fake.pairing_list_error = None
     fake.pairing_deny_error = None
+    fake.before_pairing_deny = None
 
     def add(name, scopes, state="pending", origin="https://app.test", catalog_app_id="", text=None):
         """A request as the App made it (or as the owner armed it). Returns its id; the code is on the row."""
@@ -136,6 +137,8 @@ def register_pairing(app, fake, owner):
 
     @app.post("/api/admin/v1/pairing-requests/{rid}/deny")
     async def deny(rid: str, request: Request):
+        if fake.before_pairing_deny:
+            await fake.before_pairing_deny()
         if fake.pairing_deny_error == "refused":
             return refusal(500, "withdrawal failed")
         if fake.pairing_deny_error == "unreachable":

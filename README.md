@@ -240,7 +240,9 @@ scopes and any scope without Hub disclosure text. Initially the disclosure text 
 (agent-harness `harness/pairing_requests.py`). Every successful arm reply is checked for identical scope, tier and
 text. A difference, including a blank Hub description for an add-on scope, immediately withdraws the new slot and
 returns 409 without its id. The consent screen reopens with the daemon's text and a new digest; the owner must
-approve again. A newer daemon's acknowledgement requirement also reopens consent with a separate checkbox.
+approve again. Marketplace and Pairing requests wait for that check to finish before publishing slots, including
+when another browser tab polls during withdrawal. A newer daemon's acknowledgement requirement also reopens
+consent with a separate checkbox.
 Unsafe or incomplete disclosures never become a consent screen, and a failed withdrawal reports an error instead
 of a hand-off. CI compares the daemon's entire DISCLOSURES and ELEVATED tables with the Hub's.
 The owner-API disclosure preview follow-up is [agent-harness #604](https://github.com/dflippojr/agent-harness/issues/604);
