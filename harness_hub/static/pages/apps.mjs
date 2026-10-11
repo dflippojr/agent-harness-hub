@@ -84,7 +84,7 @@ export function renderApps(main) {
     for (const row of rows) {
       const name = row.this_hub ? "This Hub" : row.name || row.id;
       const box = h("section", { class: "card" + (row.errors ? " bad" : ""), "data-app-id": row.id },
-        h("h3", {}, name),
+        h("h3", {}, row.kind === "app" ? name + " · " + row.id : name),
         row.kind === "app" ? h("p", { class: "muted" }, "App-supplied name · " + row.id) : null,
         identityWarning(row, rows) ? h("p", { class: "notice warn" }, identityWarning(row, rows)) : null,
         h("p", {}, "Connection: ", h("span", { class: "pill " +

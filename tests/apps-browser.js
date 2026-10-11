@@ -59,7 +59,7 @@ async page => {
   await page.getByRole("button", { name: "Refresh apps", exact: true }).click();
   await main.getByText("hub.entries: invalid JSON", { exact: true }).waitFor();
   await main.getByText(/Last good inventory from/).waitFor();
-  await main.getByRole("heading", { name: "<img src=x onerror=alert(1)>", exact: true }).waitFor();
+  await main.getByRole("heading", { name: "<img src=x onerror=alert(1)> · k-never", exact: true }).waitFor();
   if (await main.locator("img").count()) throw Error("markup parsed");
   const enabled = await main.getByRole("button", { name: /^(Revoke|Manage) / }).evaluateAll(nodes => nodes.filter(n => !n.disabled).length);
   if (enabled) throw Error("stale inventory allowed management");

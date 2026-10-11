@@ -75,7 +75,8 @@ test("redacted App remains revocable, owner and runner keys never enter the App 
 
 test("duplicate and reserved names are flagged and confirmation identifies the actual key", async ({ page }) => {
   const rows = [app("k-real", "Web client"), app("k-copy", "web client"), app("k-impostor", "This Hub"),
-    app("k-hub", "Actual Hub", { kind: "owner", role: "hub", this_hub: true })];
+    app("k-hub", "Actual Hub", { kind: "owner", role: "hub", this_hub: true }),
+    app("k-markup", "<img src=x onerror=alert(1)>")];
   const { writes, errors } = await mount(page, rows, { entries: [
     { name: "Web entry", catalog_app_id: "catalog-web", paired: ["k-real"], verified: true },
     { name: "Untrusted entry", catalog_app_id: "catalog-copy", paired: ["k-copy"], verified: false }] });
@@ -83,6 +84,9 @@ test("duplicate and reserved names are flagged and confirmation identifies the a
   await expect(card(page, "k-impostor")).toContainText("reserved This Hub label");
   await expect(card(page, "k-hub").getByText(/reserved This Hub label/)).toHaveCount(0);
   await expect(card(page, "k-copy")).toContainText("App-supplied name · k-copy");
+  await expect(card(page, "k-copy").getByRole("heading")).toHaveText("web client · k-copy");
+  await expect(card(page, "k-markup").getByRole("heading")).toHaveText("<img src=x onerror=alert(1)> · k-markup");
+  await expect(page.locator("img")).toHaveCount(0);
   await card(page, "k-copy").getByRole("button", { name: /^Revoke/ }).click();
   const dialog = page.locator("section[role=alert]");
   for (const text of ["k-copy", "Origins", "https://app.test", "Catalog app", "catalog-web", "Created",
