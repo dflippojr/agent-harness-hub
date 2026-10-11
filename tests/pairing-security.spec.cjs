@@ -191,3 +191,17 @@ for (const [state, needs] of [["pending", "approve"], ["claimed", "confirm"]]) {
     expect(errors).toEqual([]);
   });
 }
+
+
+test("requester metadata is unverified and owner-armed metadata explains its source", async ({ page }) => {
+  const { errors } = await mount(page, [request("pr-app"),
+    request("pr-owner", { state: "claimed", needs: "confirm", armed: true })]);
+  const app = card(page, "pr-app"), owner = card(page, "pr-owner");
+  await expect(app.locator("dt").filter({ hasText: "stated by the requester, not verified" })).toHaveCount(2);
+  await expect(app.locator("dt").filter({ hasText: /^Started from$/ }).locator("+ dd")).toHaveText("the app");
+  await expect(app).toContainText("only the match code on your app's screen proves this is your app");
+  await expect(owner.locator("dt").filter({ hasText: /^Started from$/ }).locator("+ dd")).toHaveText("this Hub");
+  await expect(owner).toContainText("You set the origin and catalog app id when you armed this slot.");
+  await expect(owner).not.toContainText("stated by the requester, not verified");
+  expect(errors).toEqual([]);
+});

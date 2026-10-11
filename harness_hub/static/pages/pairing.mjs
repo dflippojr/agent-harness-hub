@@ -123,17 +123,24 @@ export function renderPairing(main) {
     const box = h("section", { class: "card" + (row.elevated.length ? " warn" : ""), "data-request-id": row.id },
       h("h3", {}, `${name} · ${row.id}`),
       h("p", { class: "muted" }, row.kind === "hub" ? "Hub claim · name supplied by the requester" :
-        "App-supplied name · check the origin and catalog app id"),
+        "App-supplied name · only the match code on your app's screen proves this is your app"),
       h("p", {}, "State: ", h("span", { class: "pill " + (row.state === "redeemed" ? "ok" :
         ACTIVE.includes(row.state) ? "wait" : "off") }, row.state)),
       h("p", { class: "pairing-next" }, "Next step: " + nextStep(row)),
       facts([["Kind", row.kind === "hub" ? "Hub claim" : row.kind === "app" ? "App" : "Unknown"],
-        ["Origin", row.origin || "native app"], ["Catalog app", row.catalog_app_id || "None"],
+        ...(row.kind === "app" ? [["Started from", row.armed ? "this Hub" : "the app"]] : []),
+        [row.kind === "app" && !row.armed ? "Origin (stated by the requester, not verified)" : "Origin",
+          row.origin || "native app"],
+        [row.kind === "app" && !row.armed ? "Catalog app (stated by the requester, not verified)" : "Catalog app",
+          row.catalog_app_id || "None"],
         ["Scopes", row.scopes.join(", ") || "None"], ["Created", when(row.created_at)],
         ACTIVE.includes(row.state) && typeof row.expires_at === "number" ?
           ["Expires", h("span", { "data-expires": row.expires_at }, countdown(row.expires_at - now()))] :
           ["Finished", when(row.finished_at)],
         ...(row.key_id ? [["Key id", row.key_id]] : [])]));
+    if (row.kind === "app" && row.armed) {
+      box.append(h("p", { class: "muted" }, "You set the origin and catalog app id when you armed this slot."));
+    }
     if (row.disclosures.length) {
       box.append(h("h4", {}, "What each scope allows"), h("ul", { class: "disclosures" }, row.disclosures.map((item) =>
         h("li", { "data-scope": item.scope },

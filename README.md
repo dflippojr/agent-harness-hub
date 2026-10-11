@@ -201,6 +201,9 @@ Pairing requests lists the App pairing requests of the last day ([agent-harness 
 newest first and grouped by state, with each one's name, scopes, catalog app id, origin (or "native app"), expiry
 countdown and next step. The Hub never projects or renders an App request's match code. Every scope shows the daemon's
 disclosure text exactly as given, as text, with its `standard` or `elevated` badge. The page polls every 5 seconds.
+Started from distinguishes owner-armed slots from App-initiated requests. App-initiated origin and catalog ids are
+stated by the requester, not verified; only the match code on your App's screen proves this is your App. For an armed
+slot, the page explains that you set the origin and catalog id when arming it.
 
 Approve and Confirm need the code the App is showing right now, typed into an empty field; the daemon compares it
 and refuses a wrong code. If the App shows no code or an error, deny. If your App reported that the slot was already
