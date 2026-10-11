@@ -23,14 +23,16 @@ from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__
+from .administration import OPERATIONS, TARGET, validate_fields
 from .auth import SESSION_TTL_SECONDS, Sessions
 from .claim import CLAIMED, ClaimError, ClaimManager
 from .config import Settings
-from .daemon import DaemonClient, DaemonUnreachable
+from .daemon import ADMIN_ROUTES, DaemonClient, DaemonUnreachable
 from .guard import ResponseGuard, leaks
 from .inventory import InventoryCache, valid_inventory
 from .state import SERVER_FILE, StateStore, write_private
 from .views import (
+    administration_view,
     app_view,
     apps_view,
     claim_view,
@@ -368,6 +370,79 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return {"id": app_view(reply.body)["id"], "retention_days": app_view(reply.body)["retention_days"]}
         except DaemonUnreachable:
             return _error(503, "The daemon did not answer. Refresh the state before repeating a write.")
+
+    @app.get("/api/manage/catalog")
+    async def administration_catalog():
+        return {"operations": [{"id": name, "group": spec[0], "label": spec[1], "cli": spec[2],
+                                "fields": [{"name": field, "type": kind, "required": field in spec[4]}
+                                           for field, kind in spec[3].items()],
+                                "confirmation": spec[5], "method": ADMIN_ROUTES[name][0],
+                                "targets": re.findall(r"{(\w+)}", ADMIN_ROUTES[name][1])}
+                               for name, spec in OPERATIONS.items()],
+                "not_offered": [
+                    {"label": "Mac runner pairing codes", "reason": "A Hub key cannot mint owner keys "
+                               "(daemon refuses with hub_key).",
+                     "cli": "harness runner-pairing-codes create"},
+                    {"label": "Creating owner keys", "reason": "A Hub key cannot mint owner keys (daemon refuses with hub_key).",
+                     "cli": "harness keys create"}]}
+
+    @app.api_route("/api/manage/{operation}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+    async def administration_action(operation: str, request: Request):
+        if operation not in OPERATIONS or request.method != ADMIN_ROUTES[operation][0]:
+            return _error(404, "Unknown administration operation")
+        key = claims.key()
+        if key is None:
+            return _error(409, "Claim this Hub on Overview before administering the daemon.")
+        target_names = re.findall(r"{(\w+)}", ADMIN_ROUTES[operation][1])
+        targets = {name: request.query_params.get(name, "") for name in target_names}
+        if any(not TARGET.fullmatch(value) for value in targets.values()):
+            return _error(400, "A valid target identifier is required")
+        if len(request.query_params.multi_items()) != len(set(request.query_params)):
+            return _error(400, "Repeated query fields are refused")
+        params = {name: value for name, value in request.query_params.items() if name not in targets}
+        body = None
+        try:
+            if request.method == "GET":
+                fields = OPERATIONS[operation][3]
+                if set(params) - set(fields):
+                    return _error(400, "Unexpected query fields")
+                for name, value in params.items():
+                    if fields[name] == "integer":
+                        params[name] = int(value)
+                    elif fields[name] == "number":
+                        params[name] = float(value)
+                params = validate_fields(operation, params)
+            else:
+                if params:
+                    return _error(400, "Unexpected query fields")
+                if not request.headers.get("origin"):
+                    return _error(403, "Administration writes require a same-origin Origin")
+                data = bytearray()
+                async for chunk in request.stream():
+                    if len(data) + len(chunk) > 65536:
+                        return _error(413, "Administration body is too large")
+                    data.extend(chunk)
+                body = validate_fields(operation, json.loads(data or b"{}"))
+        except (ValueError, OverflowError):
+            return _error(400, "Invalid administration fields; check required values and confirmation")
+        try:
+            reply = await daemon.administration(key["token"], operation, targets, body, params)
+            if reply.status == 401:
+                confirmation = await daemon.admin(key["token"])
+                if confirmation.status == 401:
+                    claims.released()
+                return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
+            if not reply.ok:
+                return JSONResponse(settings_error(reply.body, reply.status), status_code=reply.status)
+            if reply.status == 204:
+                return Response(status_code=204)
+            try:
+                shown = administration_view(operation, reply.body)
+            except ValueError:
+                return _error(502, "The daemon returned invalid administration data. Refresh before repeating a write.")
+            return JSONResponse(shown, status_code=reply.status)
+        except DaemonUnreachable:
+            return _error(503, "The daemon did not answer. Read its current state before repeating a write.")
 
     @app.get("/api/settings/health")
     async def settings_health():

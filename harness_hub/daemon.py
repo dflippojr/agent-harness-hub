@@ -46,6 +46,54 @@ APPS_ROUTES = {
 }
 
 
+ADMIN_ROUTES = {
+    "accounts": ("GET", "/accounts"),
+    "account": ("GET", "/accounts/{user_id}"),
+    "account_add": ("POST", "/accounts"),
+    "account_save": ("PATCH", "/accounts/{user_id}"),
+    "github_reset": ("POST", "/accounts/{user_id}/github-connection/reset"),
+    "google_invite": ("POST", "/accounts/{user_id}/google/invitation"),
+    "google_cancel": ("DELETE", "/accounts/{user_id}/google/invitation"),
+    "google_revoke": ("POST", "/accounts/{user_id}/google/revoke-sessions"),
+    "google_unlink": ("DELETE", "/accounts/{user_id}/google"),
+    "account_audit": ("GET", "/accounts/audit"),
+    "credentials": ("GET", "/provider-credentials"),
+    "credential_set": ("POST", "/provider-credentials"),
+    "credential_revoke": ("DELETE", "/provider-credentials/{credential_id}"),
+    "skills": ("GET", "/skills"),
+    "skills_enabled": ("GET", "/skills/enabled"),
+    "proposal": ("GET", "/skills/proposals/{pid}"),
+    "skill_install": ("POST", "/skills/proposals/{pid}/install"),
+    "skill_reject": ("POST", "/skills/proposals/{pid}/reject"),
+    "skill_reopen": ("POST", "/skills/proposals/{pid}/reopen"),
+    "skill_review": ("POST", "/skills/proposals/{pid}/review"),
+    "proposal_delete": ("DELETE", "/skills/proposals/{pid}"),
+    "skill_enable": ("POST", "/skills/{slug}/enable"),
+    "skill_disable": ("POST", "/skills/{slug}/disable"),
+    "skill_projects": ("PUT", "/skills/{slug}/projects"),
+    "skill_rollback": ("POST", "/skills/{slug}/rollback"),
+    "skill_uninstall": ("POST", "/skills/{slug}/uninstall"),
+    "skill_export": ("GET", "/skills/{slug}/export"),
+    "maintenance": ("GET", "/maintenance"),
+    "cleanup": ("POST", "/maintenance/cleanup"),
+    "backup": ("POST", "/maintenance/backup"),
+    "retention_preview": ("POST", "/maintenance/image-archive/retention/preview"),
+    "retention_apply": ("POST", "/maintenance/image-archive/retention/apply"),
+    "runners": ("GET", "/runners"),
+    "runner_update": ("POST", "/runners/{name}/update"),
+    "projects": ("GET", "/projects"),
+    "project_add": ("POST", "/projects"),
+    "remote": ("GET", "/remote-control"),
+    "folder_trust": ("POST", "/remote-control/{project}/trust"),
+    "folder_forget": ("DELETE", "/remote-control/folders/{slug}"),
+    "scan_start": ("POST", "/remote-control/discovery/scans"),
+    "scan": ("GET", "/remote-control/discovery/scans/{scan_id}"),
+    "scan_cancel": ("DELETE", "/remote-control/discovery/scans/{scan_id}"),
+    "scan_promote": ("POST", "/remote-control/discovery/scans/{scan_id}/candidates/{candidate_id}/promote"),
+    "audit": ("GET", "/audit"),
+}
+
+
 class DaemonUnreachable(Exception):
     """The daemon did not answer (stopped, restarting, or the URL is wrong)."""
 
@@ -83,10 +131,12 @@ class DaemonClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def _call(self, method: str, path: str, *, token: str = "", json: Any = None) -> Reply:
+    async def _call(self, method: str, path: str, *, token: str = "", json: Any = None,
+                    params: dict | None = None, timeout: float | httpx.Timeout = TIMEOUT) -> Reply:
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         try:
-            response = await self._client.request(method, path, json=json, headers=headers)
+            response = await self._client.request(
+                method, path, json=json, headers=headers, params=params, timeout=timeout)
         except httpx.HTTPError as exc:
             raise DaemonUnreachable(type(exc).__name__) from None
         try:
@@ -111,6 +161,12 @@ class DaemonClient:
             # The server validates this single path segment before dispatch.
             path = path.format(name=name)
         return await self._call(method, ADMIN + path, token=token, json=body)
+
+    async def administration(self, token: str, operation: str, targets: dict, body: dict | None = None,
+                             params: dict | None = None) -> Reply:
+        method, path = ADMIN_ROUTES[operation]
+        return await self._call(method, ADMIN + path.format(**targets), token=token, json=body, params=params,
+                                timeout=310.0 if operation in ("runner_update", "backup", "cleanup") else TIMEOUT)
 
     async def start_hub_claim(self, name: str, challenge: str) -> Reply:
         return await self._call("POST", CLAIM_REQUESTS, json={

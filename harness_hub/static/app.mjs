@@ -4,6 +4,7 @@ import { api } from "./lib/api.mjs";
 import { clear, h } from "./lib/dom.mjs";
 import { renderOverview } from "./pages/overview.mjs";
 import { renderSettings } from "./pages/settings.mjs";
+import { renderAdmin } from "./pages/admin.mjs";
 import { renderApps } from "./pages/apps.mjs";
 import { renderModules } from "./pages/modules.mjs";
 import { renderSection, SECTIONS } from "./pages/section.mjs";
@@ -51,7 +52,7 @@ async function route() {
   const section = SECTIONS.find((s) => s.id === id);
   document.title = `${section.label} · Hub`;
   stopPage = id === "overview" ? renderOverview(main) : id === "settings" ? renderSettings(main) :
-    id === "modules" ? renderModules(main) : id === "apps" ? renderApps(main) : renderSection(main, section);
+    id === "modules" ? renderModules(main) : id === "apps" ? renderApps(main) : id === "admin" ? renderAdmin(main) : renderSection(main, section);
   main.focus({ preventScroll: true });
 }
 
