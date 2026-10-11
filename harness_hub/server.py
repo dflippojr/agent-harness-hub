@@ -339,13 +339,24 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if operation == "erasures":
                 return erasures_view(reply.body)
             if operation in ("limits", "limits_save"):
+                shown = limits_view(reply.body)
+                if operation == "limits_save":
+                    return shown
                 # /hub does not carry retention; read only the token-free key list for this detail.
                 keys = await daemon.apps(key["token"], "keys")
+                if keys.status == 401:
+                    confirmation = await daemon.admin(key["token"])
+                    if confirmation.status == 401:
+                        claims.released()
+                    return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
                 if not keys.ok:
                     return _error(keys.status, f"App detail could not be read (HTTP {keys.status}).")
-                row = next((row for row in keys.body if isinstance(row, dict) and row.get("id") == app_id), {}) if (
-                    isinstance(keys.body, list)) else {}
-                return {**limits_view(reply.body), "retention_days": app_view(row)["retention_days"]}
+                if not isinstance(keys.body, list):
+                    return _error(502, "The daemon returned invalid App detail.")
+                row = next((row for row in keys.body if isinstance(row, dict) and row.get("id") == app_id), None)
+                if row is None:
+                    return _error(404, "The App no longer appears in the key list. Refresh Apps.")
+                return {**shown, "retention_days": app_view(row)["retention_days"]}
             return {"id": app_view(reply.body)["id"], "retention_days": app_view(reply.body)["retention_days"]}
         except DaemonUnreachable:
             return _error(503, "The daemon did not answer. Refresh the state before repeating a write.")

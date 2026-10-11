@@ -271,8 +271,14 @@ SESSION_STATES = ("queued", "running", "waiting_approval", "waiting_target", "wa
 
 
 def _finite(value: Any) -> float | None:
+    if type(value) is int and value.bit_length() > 64:
+        return None
     number = _num(value)
     return number if number is not None and math.isfinite(number) else None
+
+
+def _app_id(value: Any) -> str:
+    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", value) else ""
 
 
 def app_view(row: Any, key_id: str = "") -> dict:
@@ -281,7 +287,7 @@ def app_view(row: Any, key_id: str = "") -> dict:
     usage = store.get("usage") if isinstance(store.get("usage"), dict) else {}
     sessions = store.get("sessions") if isinstance(store.get("sessions"), dict) else {}
     out = {key: _str(row.get(key), 200) for key in ("id", "name", "kind", "role", "catalog_app_id")}
-    out["id"] = out["id"] if re.fullmatch(r"[A-Za-z0-9_-]{1,80}", out["id"]) else ""
+    out["id"] = _app_id(row.get("id"))
     out.update({key: _finite(row.get(key)) for key in
                 ("created_at", "last_used_at", "token_age_seconds", "revoked_at", "erase_after", "erased_at",
                  "retention_days")})
@@ -320,7 +326,7 @@ def apps_view(body: Any, key_id: str) -> dict:
 
 
 def erasures_view(body: Any) -> list[dict]:
-    return [{**{key: _str(row.get(key), 200) for key in ("id", "name", "kind")},
+    return [{"id": _app_id(row.get("id")), **{key: _str(row.get(key), 200) for key in ("name", "kind")},
              **{key: _finite(row.get(key)) for key in ("revoked_at", "erase_after")}}
             for row in body if isinstance(row, dict)] if isinstance(body, list) else []
 

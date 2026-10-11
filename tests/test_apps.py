@@ -129,7 +129,8 @@ def test_apps_key_rejection_withholds_cache_and_release(claimed, fake_daemon):
 
 def test_bad_body_route_and_daemon_errors_fail_closed(claimed, fake_daemon):
     for body in (b"{invalid", b"x" * 1025):
-        reply = claimed._keep(claimed.client.request("DELETE", "/api/apps/k-minute/revoke", content=body, headers=ORIGIN))
+        reply = claimed._keep(claimed.client.request("DELETE", "/api/apps/k-minute/revoke",
+                                                    content=body, headers=ORIGIN))
         assert reply.status_code in (400, 413)
     for resource in ("k-minute/limits/extra", "k.minute/revoke", "arbitrary", "k-minute/restore"):
         assert write(claimed, "POST", resource, {"confirm": True}).status_code == 404
@@ -151,3 +152,27 @@ def test_projection_rejects_nonfinite_and_nested_metrics():
     assert shown["store"]["sessions"] == {"running": None}
     assert shown["store"]["usage"]["requests"] is None and shown["store"]["usage"]["cost_usd"] is None
     assert app_view({"token_age_seconds": 90 * 86400})["token_age_warning"] is True
+
+
+@pytest.mark.parametrize("operation", ["limits", "keys"])
+def test_transient_detail_rejection_retains_claim_without_exposing_data(claimed, fake_daemon, monkeypatch, operation):
+    from harness_hub.daemon import DaemonClient, Reply
+
+    original = DaemonClient.apps
+
+    async def rejected(self, token, action, app_id="", body=None):
+        if action == operation:
+            return Reply(401, {"detail": "synthetic rejection"})
+        return await original(self, token, action, app_id, body)
+
+    monkeypatch.setattr(DaemonClient, "apps", rejected)
+    reply = claimed.get("/api/apps/k-minute/limits")
+    assert reply.status_code == 409 and "configured" not in reply.json()
+    assert claimed.get("/api/claim").json()["state"] == "claimed"
+    assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
+
+
+def test_caps_write_does_not_read_keys_or_repeat_write(claimed, fake_daemon):
+    reply = write(claimed, "PUT", "k-minute/limits", {"max_running": 3})
+    assert reply.status_code == 200
+    assert fake_daemon.apps_calls == [("PUT", "/api/admin/v1/apps/k-minute/limits")]
