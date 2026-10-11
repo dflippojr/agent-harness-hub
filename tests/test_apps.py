@@ -112,9 +112,10 @@ def test_inventory_cache_shared_with_modules_and_keeps_last_good(claimed, fake_d
     assert path.read_bytes() == before
     fake_daemon.down = False
     good = claimed.get("/api/apps").json()
-    fake_daemon.apps_rows[0]["name"] = "ha-synthetic-secret"
+    fake_daemon.apps_rows[0]["name"] = fake_daemon.hub_token
     bad = claimed.get("/api/apps").json()
-    assert bad["stale"] and bad["apps"] == good["apps"] and bad["fetched_at"] == good["fetched_at"]
+    assert bad["state"] == "error" and bad["stale"]
+    assert bad["apps"] == good["apps"] and bad["fetched_at"] == good["fetched_at"]
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 
 
@@ -176,3 +177,73 @@ def test_caps_write_does_not_read_keys_or_repeat_write(claimed, fake_daemon):
     reply = write(claimed, "PUT", "k-minute/limits", {"max_running": 3})
     assert reply.status_code == 200
     assert fake_daemon.apps_calls == [("PUT", "/api/admin/v1/apps/k-minute/limits")]
+
+
+@pytest.mark.parametrize("name", ["ha-tools", "Home hp-printer helper", "Web client"])
+def test_app_display_redaction_preserves_both_inventory_views_and_revoke(claimed, fake_daemon, name):
+    row = fake_daemon.apps_rows[0]
+    row.update(name=name, catalog_app_id="ho-catalog", scopes="ha-scopes", origins=["https://hp-x.example", "https://ho-mesite.example"])
+    row["store"]["last_error"] = "hp-error"
+    fake_daemon.app_entries[0]["manifest"]["app"]["display_name"] = "ha-entry"
+    fake_daemon.app_entries[0]["catalog_app_id"] = "hp-entry"
+    marker = "[withheld: token-shaped]"
+    for path in ("/api/apps", "/api/modules"):
+        reply = claimed.get(path)
+        assert reply.status_code == 200 and reply.json()["state"] == "ready" and not reply.json()["stale"]
+    shown = claimed.get("/api/apps").json()
+    app = next(app for app in shown["apps"] if app["id"] == row["id"])
+    assert app["name"] == (name if name == "Web client" else marker)
+    assert app["catalog_app_id"] == app["scopes"] == app["store"]["last_error"] == marker
+    assert app["origins"] == ["https://hp-x.example", marker]
+    assert shown["entries"][0]["name"] == shown["entries"][0]["catalog_app_id"] == marker
+    assert write(claimed, "DELETE", row["id"] + "/revoke", {"confirm": True}).status_code == 204
+    erased = next(app for app in claimed.get("/api/apps/erasures").json() if app["id"] == row["id"])
+    assert erased["name"] == app["name"]
+    assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
+
+
+@pytest.mark.parametrize("credential", ["key", "verifier"])
+def test_app_display_exact_secrets_are_withheld_even_beyond_display_limit(claimed, fake_daemon, credential):
+    verifier = "synthetic-verifier-sentinel"
+    store = claimed.client.app.fastapi.state.store
+    store.update(claim={"verifier": verifier})
+    secret = fake_daemon.hub_token if credential == "key" else verifier
+    fake_daemon.apps_rows[0]["name"] = "x" * 220 + secret
+    data = claimed.get("/api/apps").json()
+    assert data["state"] == "error" and data["apps"] is None
+    # Apps display data cannot disable Module controls.
+    assert claimed.get("/api/modules").json()["state"] == "ready"
+    fake_daemon.apps_error = (200, [{"id": "k-pending", "name": "x" * 220 + secret}])
+    assert claimed.get("/api/apps/erasures").status_code == 500
+    assert_no_secrets(claimed.bodies, fake_daemon.hub_token, verifier)
+
+
+@pytest.mark.parametrize("body", [None, {}, {"erasures": []}, "invalid"])
+def test_invalid_erasures_reply_is_an_error_not_an_empty_list(claimed, fake_daemon, body):
+    fake_daemon.apps_error = (200, body)
+    reply = claimed.get("/api/apps/erasures")
+    assert reply.status_code == 502 and "invalid erasure" in reply.json()["detail"]
+
+
+def test_invalid_erasure_ids_are_skipped(claimed, fake_daemon):
+    fake_daemon.apps_error = (200, [{"id": value, "name": "Bad"} for value in
+                                  (None, "", "k; command", "x" * 81, [], 4)] +
+                             [{"id": "k-valid", "name": "Valid", "erase_after": 123}])
+    data = claimed.get("/api/apps/erasures").json()
+    assert len(data) == 1 and data[0]["id"] == "k-valid"
+
+
+@pytest.mark.parametrize("body", [None, [], {}, {"configured": {}}, {"effective": {}},
+                                  {"configured": [], "effective": {}}, {"configured": {}, "effective": None},
+                                  {"configured": {}, "effective": {}},
+                                  {"configured": {"max_running": None, "max_queued": "10"},
+                                   "effective": {"max_running": 2, "max_queued": 10}},
+                                  {"configured": {"max_running": None, "max_queued": 10},
+                                   "effective": {"max_running": True, "max_queued": 10}}])
+@pytest.mark.parametrize("method", ["GET", "PUT"])
+def test_invalid_limits_reply_is_an_error_before_loading_caps(claimed, fake_daemon, body, method):
+    fake_daemon.apps_error = (200, body)
+    reply = claimed.get("/api/apps/k-minute/limits") if method == "GET" else write(
+        claimed, "PUT", "k-minute/limits", {"max_running": 3})
+    assert reply.status_code == 502 and "configured" not in reply.json()
+    assert len(fake_daemon.apps_calls) == 1  # No key read or repeated write after the invalid answer.

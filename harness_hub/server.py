@@ -43,6 +43,7 @@ from .views import (
     ownership_view,
     registry_view,
     settings_error,
+    valid_limits,
 )
 
 log = logging.getLogger("harness_hub")
@@ -256,7 +257,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if reply.ok:
                 if not valid_inventory(reply.body):
                     state, error = "error", "The daemon returned an invalid inventory."
-                elif leaks(json.dumps([module_view(reply.body), apps_view(reply.body, key["key_id"])]).encode(),
+                elif leaks(json.dumps(apps_view(reply.body, key["key_id"], tuple(store.secrets()))
+                                      if request.url.path == "/api/apps" else module_view(reply.body)).encode(),
                            store.secrets()):
                     state, error = "error", "Inventory withheld: it contained a credential-like string."
                 else:
@@ -271,9 +273,11 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             state, error = "error", "The daemon did not answer."
         except (OSError, ValueError):
             state, error = "error", "The inventory could not be saved in the private state directory."
-        shown = apps_view(good["inventory"], key["key_id"]) if good and request.url.path == "/api/apps" else (
-            {"apps": None, "entries": []} if request.url.path == "/api/apps" else
-            {"modules": module_view(good["inventory"]) if good else None})
+        if request.url.path == "/api/apps":
+            shown = apps_view(good["inventory"], key["key_id"], tuple(store.secrets())) if good else {
+                "apps": None, "entries": []}
+        else:
+            shown = {"modules": module_view(good["inventory"]) if good else None}
         return {"state": state, "error": error, "stale": state != "ready" and good is not None,
                 "fetched_at": good["fetched_at"] if good else None, **shown}
 
@@ -337,8 +341,12 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if operation == "revoke":
                 return Response(status_code=204)
             if operation == "erasures":
-                return erasures_view(reply.body)
+                if not isinstance(reply.body, list):
+                    return _error(502, "The daemon returned invalid erasure data.")
+                return erasures_view(reply.body, tuple(store.secrets()))
             if operation in ("limits", "limits_save"):
+                if not valid_limits(reply.body):
+                    return _error(502, "The daemon returned invalid session limits.")
                 shown = limits_view(reply.body)
                 if operation == "limits_save":
                     return shown

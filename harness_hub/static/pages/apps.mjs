@@ -3,7 +3,8 @@ import { clear, command, h, when } from "../lib/dom.mjs";
 
 const text = (value) => value === null || value === undefined ? "Unavailable" : String(value);
 const revoked = (row) => row.revoked_at !== null || ["revoked", "erasure_pending"].includes(row.state);
-const canRevoke = (row) => Boolean(row.id) && !row.this_hub && row.role !== "hub" && row.kind !== "web" && !revoked(row);
+const hasAppData = (row) => ["app", "device"].includes(row.kind);
+const canRevoke = (row) => Boolean(row.id) && !row.this_hub && row.role !== "hub" && hasAppData(row) && !revoked(row);
 
 export function renderApps(main) {
   let stopped = false, busy = false, timer, inventory;
@@ -50,6 +51,19 @@ export function renderApps(main) {
     refresh.disabled = false;
     schedule();
   }
+  function identityWarning(row, rows = inventory?.apps || []) {
+    const name = (row.name || "").trim().toLowerCase();
+    if (row.this_hub || !name) return "";
+    if (name === "this hub") return "App-supplied name uses the reserved This Hub label. Check the key id and origins.";
+    if (rows.some(other => other.id !== row.id && (other.name || "").trim().toLowerCase() === name)) {
+      return "This name matches another paired key. Check the key id and origins.";
+    }
+    return "";
+  }
+  function verifiedPairing(row) {
+    const matches = (inventory?.entries || []).filter(entry => entry.verified && entry.paired.includes(row.id));
+    return matches.length ? matches.map(entry => entry.catalog_app_id).join(", ") : "No verified entry pairs this key id";
+  }
   function draw() {
     clear(entries); clear(list);
     const rows = inventory?.apps || [];
@@ -70,7 +84,10 @@ export function renderApps(main) {
     for (const row of rows) {
       const name = row.this_hub ? "This Hub" : row.name || row.id;
       const box = h("section", { class: "card" + (row.errors ? " bad" : ""), "data-app-id": row.id },
-        h("h3", {}, name), h("p", {}, "Connection: ", h("span", { class: "pill " +
+        h("h3", {}, name),
+        row.kind === "app" ? h("p", { class: "muted" }, "App-supplied name · " + row.id) : null,
+        identityWarning(row, rows) ? h("p", { class: "notice warn" }, identityWarning(row, rows)) : null,
+        h("p", {}, "Connection: ", h("span", { class: "pill " +
           (row.state === "active" ? "ok" : "off") }, row.state)),
         row.errors ? h("p", { class: "notice bad" }, "Errors in the last 24 hours") : null,
         row.token_age_warning ? h("p", { class: "notice warn" }, "Token is at least 90 days old. No automatic expiry.") : null,
@@ -87,9 +104,13 @@ export function renderApps(main) {
           ["Erased", when(row.erased_at)]]));
       if (row.this_hub || row.role === "hub") box.append(h("p", {}, "Release this Hub on the daemon host:"),
         command("harness hub release --confirm"));
+      else if (!hasAppData(row)) box.append(h("p", { class: "muted" }, row.kind === "owner" ?
+        "Admin key: revocation stops CLI or runner access at once. Manage keys on the daemon host; create a new key if revoked." :
+        "Manage this key on the daemon host."));
       else if (revoked(row)) box.append(h("p", {}, "Restore on the daemon host before the erasure deadline. " +
         (row.erased_at !== null ? "Data has already been erased; restore is no longer available." :
-          "The host CLI returns the replacement credential to the owner.")), command("harness apps restore " + row.id));
+          "The host CLI returns the replacement credential to the owner.")),
+        row.erased_at === null ? command("harness apps restore " + row.id) : null);
       else if (canRevoke(row)) {
         const revoke = button("Revoke " + name, () => confirmRevoke(row));
         revoke.disabled = inventory.state !== "ready";
@@ -110,15 +131,16 @@ export function renderApps(main) {
       erasures.append(h("p", { class: "notice bad", role: "alert" }, result.reason.message)); return;
     }
     for (const row of result.value) erasures.append(h("p", {}, (row.name || row.id) + " (" + row.id +
-      "): " + when(row.erase_after)), command("harness apps restore " + row.id));
+      "): " + when(row.erase_after)), hasAppData(row) ? command("harness apps restore " + row.id) :
+      h("p", {}, "Manage this key on the daemon host."));
     if (!result.value.length) erasures.append(h("p", { class: "muted" }, "No apps are waiting to be erased."));
   }
-  function confirmAction(title, explanation, action) {
+  function confirmAction(title, explanation, action, identity = null) {
     clearTimeout(timer);
     const cancel = button("Cancel", () => { clear(confirmation); schedule(); });
     const ok = button("Confirm " + title, () => perform(action));
     clear(confirmation, h("section", { class: "card warn", role: "alert" }, h("h2", {}, title + "?"),
-      h("p", {}, explanation), h("div", { class: "settings-actions" }, ok, cancel)));
+      h("p", {}, explanation), identity, h("div", { class: "settings-actions" }, ok, cancel)));
     ok.focus();
   }
   function confirmRevoke(row) {
@@ -126,7 +148,12 @@ export function renderApps(main) {
     confirmAction("revoke " + (row.name || row.id), "Revoke access for " + (row.name || row.id) +
       " (" + row.id + ") immediately. App and device data will be scheduled for erasure. Restore stays on the host CLI.",
     async () => { await api("apps/" + row.id + "/revoke", { method: "DELETE", body: { confirm: true } });
-      message("Revoked " + (row.name || row.id) + ". Review the refreshed erasure deadline below."); });
+      message("Revoked " + (row.name || row.id) + ". Review the refreshed erasure deadline below."); },
+    h("div", {}, h("p", {}, "App-supplied name: " + (row.name || "None")),
+      identityWarning(row) ? h("p", { class: "notice warn" }, identityWarning(row)) : null,
+      facts([["Key id", row.id], ["Origins", row.origins.join(", ") || "None"],
+        ["Catalog app", row.catalog_app_id || "None"], ["Created", when(row.created_at)],
+        ["Verified entry pairing", verifiedPairing(row)]])));
   }
   async function perform(action) {
     if (busy || stopped || inventory?.state !== "ready") return;
