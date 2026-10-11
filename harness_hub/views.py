@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from . import __version__
+from .administration import TARGET
 from .claim import CLAIMED, PENDING, RELEASE_COMMAND, ClaimManager
 from .guard import TOKEN_SHAPE
 
@@ -378,6 +379,8 @@ TEXT = "text"
 NUMBER = "number"
 BOOL = "bool"
 LONG = "long"
+IDENTIFIER = "identifier"
+HASH = "hash"
 NAMES = [TEXT]
 GOOGLE = {"linked": BOOL, "email": TEXT, "linked_at": NUMBER, "last_sign_in_at": NUMBER,
           "active_web_sessions": NUMBER, "invitation_expires_at": NUMBER, "revoked": NUMBER}
@@ -385,9 +388,9 @@ ACCOUNT = {**dict.fromkeys(("user_id", "account_hint", "login", "display_name"),
            "enabled": BOOL, **dict.fromkeys(("disk_quota_bytes", "disk_used_bytes", "max_running", "max_queued",
                                             "running", "queued", "last_activity_at", "created_at",
                                             "updated_at"), NUMBER),
-           "google": GOOGLE}
+           "google": GOOGLE, "user_id": IDENTIFIER}
 CREDENTIAL = {**dict.fromkeys(("id", "app_id", "app_name", "backend", "secret_ref", "policy"), TEXT),
-              "models": NAMES, "created_at": NUMBER, "revoked_at": NUMBER, "available": BOOL}
+              "id": IDENTIFIER, "models": NAMES, "created_at": NUMBER, "revoked_at": NUMBER, "available": BOOL}
 FINDING = {"code": TEXT, "path": TEXT, "message": TEXT, "severity": TEXT}
 REVIEW = {"recommendation": TEXT, "summary": LONG, "error": TEXT,
           **dict.fromkeys(("scope", "trigger_precision", "conflicts", "prompt_injection", "sensitive_data",
@@ -397,21 +400,25 @@ SKILL = {**dict.fromkeys(("id", "slug", "title", "purpose", "activation_suggesti
          **dict.fromkeys(("version", "created_at", "updated_at", "installed_at", "example_count",
                          "reference_count"), NUMBER), "enabled": BOOL, "projects": NAMES,
          "static_findings": [FINDING], "review": REVIEW, "skill_md": LONG, "diff": LONG,
-         "references": [{"path": TEXT, "content": LONG}], "examples": [{"path": TEXT, "content": LONG}]}
+         "references": [{"path": TEXT, "content": LONG}],
+         "examples": [{"prompt": LONG, "expected": LONG, "expected_behavior": LONG}],
+         "source_session_id": TEXT, "id": IDENTIFIER, "slug": IDENTIFIER, "content_hash": HASH,
+         "manifest": {**dict.fromkeys(("slug", "title", "purpose", "activation_suggestion",
+                                      "content_hash", "validator_version"), TEXT)}}
 RUNNER_UPDATE = {"ok": BOOL, "version": TEXT, "build_id": TEXT, "at": NUMBER, "message": TEXT,
                  "plist_changed": BOOL}
-RUNNER = {"name": TEXT, "online": BOOL, "last_seen_seconds": NUMBER, "pending_requests": NUMBER,
+RUNNER = {"name": IDENTIFIER, "online": BOOL, "last_seen_seconds": NUMBER, "pending_requests": NUMBER,
           "update_supported": BOOL, "manual_update": TEXT, "last_update": RUNNER_UPDATE,
           "info": {"version": TEXT, "protocol": NUMBER, "platform": TEXT, "arch": TEXT},
           "compatibility": {"state": TEXT, "notice": TEXT, "supported": {"min": NUMBER, "max": NUMBER}}}
-PROJECT = {"name": TEXT, "description": TEXT, "repo": BOOL, "homelab": BOOL, "target": TEXT, "managed": BOOL}
+PROJECT = {"name": IDENTIFIER, "description": TEXT, "repo": BOOL, "homelab": BOOL, "target": TEXT, "managed": BOOL}
 FOLDER = {**dict.fromkeys(("project", "name", "folder", "path", "status", "invalid", "reason", "message"), TEXT),
           **dict.fromkeys(("running", "trusted", "git", "managed", "owner_only", "trust_required"), BOOL),
-          "pid": NUMBER, "started_at": NUMBER, "trust_prompt_open": BOOL}
-CANDIDATE = {**dict.fromkeys(("id", "path", "suggested_slug", "reason"), TEXT), "markers": NAMES,
+          "pid": NUMBER, "started_at": NUMBER, "trust_prompt_open": BOOL, "project": IDENTIFIER}
+CANDIDATE = {"id": IDENTIFIER, "suggested_slug": IDENTIFIER, "path": TEXT, "reason": TEXT, "markers": NAMES,
              **dict.fromkeys(("git", "requires_git", "launchable", "configured_duplicate", "promoted",
                              "trusted"), BOOL)}
-SCAN = {"id": TEXT, "revision": NUMBER, "status": TEXT, "visited": NUMBER, "candidates": [CANDIDATE],
+SCAN = {"id": IDENTIFIER, "revision": NUMBER, "status": TEXT, "visited": NUMBER, "candidates": [CANDIDATE],
         "errors": [{"location": TEXT, "code": TEXT}], "truncated": BOOL, "reason": TEXT, "expires_in": NUMBER}
 # Audit metadata is deliberately narrower than free text or caller-defined objects.
 AUDIT = {**dict.fromkeys(("actor_id", "actor_kind", "key_id", "source", "target_id", "target_kind", "action",
@@ -457,23 +464,27 @@ SCHEMAS = {
 }
 
 
-def project(value: Any, schema: Any) -> Any:
+def project(value: Any, schema: Any, secrets: tuple[str, ...] = ()) -> Any:
     if value is None:
         return None
     if isinstance(schema, dict):
         if not isinstance(value, dict):
             raise ValueError("Invalid daemon object")
-        return {key: project(value[key], shape) for key, shape in schema.items() if key in value}
+        return {key: project(value[key], shape, secrets) for key, shape in schema.items() if key in value}
     if isinstance(schema, list):
         if not isinstance(value, list):
             raise ValueError("Invalid daemon list")
         if isinstance(schema[0], dict) and any(not isinstance(row, dict) for row in value):
             raise ValueError("Invalid daemon list row")
-        return [project(row, schema[0]) for row in value[:1000]]
-    if schema in (TEXT, LONG):
+        return [project(row, schema[0], secrets) for row in value[:1000]]
+    if schema in (TEXT, LONG, IDENTIFIER, HASH):
         if not isinstance(value, str):
             raise ValueError("Invalid daemon text")
-        return _str(value, 262144 if schema == LONG else 32768)
+        shown = _app_text(value, 262144 if schema == LONG else 32768, secrets)
+        if schema in (IDENTIFIER, HASH) and not any(secret and secret in value for secret in secrets):
+            pattern = TARGET if schema == IDENTIFIER else re.compile(r"[a-fA-F0-9]{64}")
+            return value if pattern.fullmatch(value) and shown == value else ""
+        return shown
     if schema == BOOL:
         if _bool(value) is None:
             raise ValueError("Invalid daemon boolean")
@@ -483,11 +494,35 @@ def project(value: Any, schema: Any) -> Any:
     return _int(value) if type(value) is int else _finite(value)
 
 
-def administration_view(operation: str, body: Any) -> Any:
+def complete_skill_review(body: dict, shown: dict) -> bool:
+    """An installable review contains every hash-covered byte, with no lossy projection."""
+    fields = ("slug", "title", "purpose", "activation_suggestion", "skill_md", "references", "examples")
+    return bool(shown.get("id") and shown.get("content_hash") and all(
+        key in body and body[key] == shown.get(key) for key in fields
+    ) and all(isinstance(body[key], str) for key in fields[:5])
+        and isinstance(body["references"], list) and isinstance(body["examples"], list) and all(
+        isinstance(row, dict) and set(row) == {"path", "content"}
+        and isinstance(row["path"], str) and isinstance(row["content"], str)
+        for row in body["references"]
+    ) and all(
+        isinstance(row, dict) and "prompt" in row and ("expected" in row or "expected_behavior" in row)
+        and set(row) <= {"prompt", "expected", "expected_behavior"}
+        and all(isinstance(value, str) for value in row.values()) for row in body["examples"]
+    ))
+
+
+def administration_view(operation: str, body: Any, secrets: tuple[str, ...] = ()) -> Any:
     schema = SCHEMAS.get(operation, RESULT)
     if not isinstance(body, list if isinstance(schema, list) else dict):
         raise ValueError("Invalid daemon response")
-    shown = project(body, schema)
+    shown = project(body, schema, secrets)
+    if operation == "proposal":
+        shown["review_complete"] = complete_skill_review(body, shown)
+    if operation in ("scan_start", "scan", "scan_cancel"):
+        for raw, candidate in zip(body.get("candidates", []), shown.get("candidates", []), strict=False):
+            candidate["promotion_available"] = bool(candidate.get("id") and candidate.get("suggested_slug")
+                                                    and all(raw.get(k) == candidate.get(k)
+                                                            for k in ("path", "markers")))
     if operation == "google_invite" and (not shown.get("code") or shown.get("expires_at") is None):
         raise ValueError("Invalid invitation response")
     return shown

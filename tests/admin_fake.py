@@ -49,6 +49,8 @@ PROPOSAL = {
     "slug": "synthetic",
     "title": "Synthetic proposal",
     "purpose": "Fixture",
+    "activation_suggestion": "When synthetic work needs a fixture",
+    "source_session_id": "s-synthetic",
     "content_hash": "a" * 64,
     "status": "ready",
     "review_status": "reviewed",
@@ -60,7 +62,7 @@ PROPOSAL = {
     "static_findings": [],
     "skill_md": "<script>alert('fixture')</script>",
     "references": [{"path": "notes.txt", "content": "Synthetic text"}],
-    "examples": [],
+    "examples": [{"prompt": "<img src=x onerror=alert(1)>", "expected": "Synthetic expected behavior"}],
     "manifest": {"credential": "provider-secret-sentinel"},
     "diff": "+Synthetic",
 }

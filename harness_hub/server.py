@@ -427,6 +427,14 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         except (ValueError, OverflowError):
             return _error(400, "Invalid administration fields; check required values and confirmation")
         try:
+            if operation == "skill_install":
+                review = await daemon.administration(key["token"], "proposal", targets)
+                try:
+                    reviewed = administration_view("proposal", review.body, tuple(store.secrets())) if review.ok else {}
+                except ValueError:
+                    reviewed = {}
+                if not reviewed.get("review_complete") or reviewed.get("content_hash") != body["content_hash"]:
+                    return _error(409, "The complete proposal must be reviewed at this hash. Review on the host CLI.")
             reply = await daemon.administration(key["token"], operation, targets, body, params)
             if reply.status == 401:
                 confirmation = await daemon.admin(key["token"])
@@ -438,7 +446,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if reply.status == 204:
                 return Response(status_code=204)
             try:
-                shown = administration_view(operation, reply.body)
+                shown = administration_view(operation, reply.body, tuple(store.secrets()))
             except ValueError:
                 return _error(502, "The daemon returned invalid administration data. Refresh before repeating a write.")
             return JSONResponse(shown, status_code=reply.status)

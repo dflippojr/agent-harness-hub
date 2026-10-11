@@ -24,9 +24,12 @@ const catalog = [op("accounts", "accounts", "List members"), op("account", "acco
   op("audit", "audit", "Read retained audit", "GET", [], [field("action"), field("before_id", "integer")])];
 const member = { user_id: "u-synthetic", display_name: "Synthetic member", enabled: true, google: { linked: false } };
 const proposal = { id: "p-synthetic", title: "Synthetic proposal", content_hash: "a".repeat(64), skill_md: "<img src=x onerror=alert(1)>",
+  slug: "synthetic", purpose: "Synthetic purpose", activation_suggestion: "Synthetic activation",
+  source_session_id: "s-synthetic", review_complete: true,
+  examples: [{ prompt: "<script>example prompt</script>", expected: "<img src=x onerror=alert(1)>expected text" }],
   references: [{ path: "notes.txt", content: "<script>fixture</script>" }] };
 
-async function mount(page, { failure = false } = {}) {
+async function mount(page, { failure = false, overrides = {} } = {}) {
   const writes = [], reads = [], errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.route("http://hub.test/**", async route => {
@@ -43,7 +46,7 @@ async function mount(page, { failure = false } = {}) {
         retention_preview: { count: 2, bytes: 1024, confirmation: "DELETE 2 synthetic" }, retention_apply: { removed: 2 },
         runners: [], google_invite: { code: "ahg-synthetic-once", expires_at: 4102444800 },
         audit: { items: [{ id: 2, action: "create" }], next_before_id: url.searchParams.has("before_id") ? null : 2 } };
-      return route.fulfill({ json: replies[id] ?? { ok: true } });
+      return route.fulfill({ json: overrides[id] ?? replies[id] ?? { ok: true } });
     }
     if (pathname === "/") return route.fulfill({ contentType: "text/html", body:
       '<link rel="stylesheet" href="/static/style.css"><main id="main"></main><script type="module">import {renderAdmin} from "/static/pages/admin.mjs"; window.stopAdmin = renderAdmin(document.querySelector("main"));</script>' });
@@ -92,7 +95,10 @@ test("proposal markup stays text and installation uses the reviewed hash", async
   await expect(page.getByRole("heading", { name: "Synthetic proposal" })).toBeVisible();
   await page.locator(".admin-row").getByRole("button", { name: "Read proposal" }).click();
   await form(page).getByRole("button").click(); await expect(page.locator(".admin-output")).toContainText("<img src=x onerror=alert(1)>");
-  expect(await page.locator("img").count()).toBe(0);
+  expect(await page.locator("img, .admin-output script").count()).toBe(0);
+  for (const text of [proposal.slug, proposal.purpose, proposal.activation_suggestion, proposal.source_session_id,
+    proposal.examples[0].prompt, proposal.examples[0].expected, proposal.references[0].path, proposal.references[0].content])
+    await expect(page.locator(".admin-output")).toContainText(text);
   await expect(form(page).getByRole("button")).toBeEnabled();
   await page.locator(".admin-output").getByRole("button", { name: "Install reviewed proposal" }).click();
   await expect(form(page).getByLabel("Exact reviewed content hash")).toHaveValue("a".repeat(64));
@@ -125,4 +131,28 @@ for (const width of [390, 1280]) test("layout and audit paging at " + width, asy
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const heights = await page.locator("button, input, select, textarea").evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
   expect(heights.every(height => height >= 44)).toBe(true); expect(errors).toEqual([]);
+});
+
+
+test("incomplete review blocks both the install shortcut and a manually selected install", async ({ page }) => {
+  const { writes } = await mount(page, { overrides: { proposal: { ...proposal, review_complete: false } } });
+  await page.getByRole("button", { name: "Skills", exact: true }).click();
+  await select(page, "proposal"); await form(page).getByLabel("Proposal id").fill(proposal.id);
+  await form(page).getByRole("button").click();
+  await expect(page.locator(".admin-output")).toContainText("review on the host CLI");
+  await expect(page.locator(".admin-output").getByRole("button", { name: "Install reviewed proposal" })).toHaveCount(0);
+  await select(page, "skill_install"); await form(page).getByLabel("Proposal id").fill(proposal.id);
+  await form(page).getByLabel("Exact reviewed content hash").fill(proposal.content_hash);
+  await form(page).getByRole("button").click();
+  await expect(page.getByRole("status")).toContainText("Read the complete proposal");
+  expect(writes).toHaveLength(0);
+});
+
+test("invalid targets lose only their own actions and safe rows remain actionable", async ({ page }) => {
+  await mount(page, { overrides: { skills: { proposals: [{ id: "", title: "[withheld: token-shaped]" }, proposal], installed: [] } } });
+  await page.getByRole("button", { name: "Skills", exact: true }).click();
+  const bad = page.locator(".admin-row").filter({ has: page.getByRole("heading", { name: "[withheld: token-shaped]", exact: true }) });
+  await expect(bad.getByRole("button")).toHaveCount(0);
+  const good = page.locator(".admin-row").filter({ has: page.getByRole("heading", { name: "Synthetic proposal" }) });
+  await expect(good.getByRole("button", { name: "Read proposal" })).toBeEnabled();
 });

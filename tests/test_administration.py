@@ -72,7 +72,8 @@ def test_each_group_dispatches_exact_owner_route_and_withholds_extra_fields(clai
     method, path = ADMIN_ROUTES[operation]
     assert fake_daemon.admin_calls[-1][:2] == (method, path.format(**TARGETS).lstrip("/"))
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token, "provider-secret-sentinel", "private-subject")
-    assert "manifest" not in response.text
+    if response.content and isinstance(response.json(), dict):
+        assert "credential" not in response.json().get("manifest", {})
     if operation != "google_invite":
         assert fake_daemon.invitation_code not in response.text
 
@@ -244,3 +245,97 @@ def test_structured_review_and_runner_history_are_allowlisted(claimed):
     assert runner["last_update"]["ok"] is True
     assert runner["last_update"]["version"] == "1"
     assert "token" not in runner["info"]
+
+
+def test_proposal_and_export_preserve_examples_and_all_hash_covered_fields(claimed, fake_daemon):
+    for operation in ("proposal", "skill_export"):
+        reply = call(claimed, operation)
+        assert reply.status_code == 200
+        shown = reply.json()
+        for key in ("slug", "title", "purpose", "activation_suggestion", "skill_md", "references", "examples"):
+            assert shown[key] == fake_daemon.proposal[key]
+        assert shown["source_session_id"] == "s-synthetic"
+        if operation == "proposal":
+            assert shown["review_complete"] is True
+
+
+@pytest.mark.parametrize("field,value", [
+    ("examples", [{"prompt": "shown", "expected": "shown", "hidden_instruction": "not shown"}]),
+    ("examples", [{"prompt": "x" * 262145, "expected": "shown"}]),
+    ("examples", [{"prompt": "shown", "expected": "ho-hidden-instruction"}]),
+    ("examples", [{"expected": "missing prompt"}]),
+    ("examples", None),
+    ("references", [{"path": "notes.md", "content": "shown", "extra": "hidden"}]),
+    ("references", [{"path": "notes.md", "content": "x" * 262145}]),
+    ("references", [{"path": "notes.md", "content": "hp-hidden-instruction"}]),
+    ("references", None),
+    ("skill_md", "x" * 262145),
+    ("title", "x" * 32769),
+    ("purpose", "ha-hidden-instruction"),
+    ("content_hash", "invalid"),
+], ids=lambda value: type(value).__name__)
+def test_partial_or_redacted_proposals_never_authorize_install(claimed, fake_daemon, field, value):
+    fake_daemon.proposal[field] = value
+    response = call(claimed, "proposal")
+    assert response.status_code == 200
+    assert response.json()["review_complete"] is False
+    assert call(claimed, "skill_install", {**INPUTS["skill_install"], "confirm": True}).status_code == 409
+    assert not any(path.endswith("/install") for _, path, _, _ in fake_daemon.admin_calls)
+
+
+def test_missing_hash_covered_field_disables_install_and_alias_examples_survive(claimed, fake_daemon):
+    fake_daemon.proposal["examples"] = [{"prompt": "Question", "expected_behavior": "Answer"}]
+    assert call(claimed, "proposal").json()["examples"] == fake_daemon.proposal["examples"]
+    assert call(claimed, "proposal").json()["review_complete"] is True
+    del fake_daemon.proposal["activation_suggestion"]
+    assert call(claimed, "proposal").json()["review_complete"] is False
+    assert call(claimed, "skill_install", {**INPUTS["skill_install"], "confirm": True}).status_code == 409
+
+
+@pytest.mark.parametrize("operation,path,body", [
+    ("skills", "skills", {"enabled": True, "proposals": [{"id": "p-safe", "slug": "ha-tools", "title": "ho-hum notes"}],
+                          "installed": [{"slug": "safe-skill", "title": "Safe skill"}]}),
+    ("remote", "remote-control", {"projects": [{"project": "safe-folder", "path": "/srv/ha-config"}]}),
+    ("scan", "remote-control/discovery/scans/scan-synthetic", {"id": "scan-synthetic", "candidates": [
+        {"id": "bad", "suggested_slug": "bad", "path": "/srv/ha-config", "markers": [".git"]},
+        {"id": "good", "suggested_slug": "good", "path": "/srv/safe", "markers": [".git"]}]}),
+    ("audit", "audit", {"items": [{"id": 2, "target_id": "hp-printer"}], "next_before_id": 2}),
+    ("account_audit", "accounts/audit", [{"id": 2, "target_id": "hp-printer"}]),
+    ("runners", "runners", [{"name": "ha-runner"}, {"name": "safe-runner"}]),
+    ("projects", "projects", [{"name": "ho-project", "description": "hp-printer helper"}]),
+    ("maintenance", "maintenance", {"backup": {"path": "/srv/ha-backup"}}),
+    ("accounts", "accounts", [{"user_id": "safe-member", "display_name": "ho-hum member"}]),
+])
+def test_token_shaped_text_cannot_blank_administration_areas(claimed, fake_daemon, operation, path, body):
+    fake_daemon.admin_overrides[path] = body
+    reply = call(claimed, operation)
+    assert reply.status_code == 200, reply.text
+    assert_no_secrets([reply.text], fake_daemon.hub_token)
+    if operation == "skills":
+        assert reply.json()["proposals"][0]["slug"] == ""
+        assert reply.json()["installed"][0]["slug"] == "safe-skill"
+    if operation == "scan":
+        assert [row["promotion_available"] for row in reply.json()["candidates"]] == [False, True]
+    if operation == "audit":
+        assert reply.json()["next_before_id"] == 2
+
+
+@pytest.mark.parametrize("field", ["title", "slug", "skill_md", "examples", "references"])
+def test_exact_secrets_still_withhold_the_entire_proposal_even_beyond_limits(claimed, fake_daemon, field):
+    secret = fake_daemon.hub_token
+    text = "x" * 262145 + secret
+    value = [{"prompt": text, "expected": "shown"}] if field == "examples" else (
+        [{"path": "notes.md", "content": text}] if field == "references" else text)
+    fake_daemon.proposal[field] = value
+    response = call(claimed, "proposal")
+    assert response.status_code == 500
+    assert secret not in response.text
+
+
+@pytest.mark.parametrize("operation,path,key", [
+    ("accounts", "accounts", "user_id"), ("runners", "runners", "name"),
+    ("credentials", "provider-credentials", "id"),
+])
+def test_invalid_action_identifiers_are_not_truncated_into_valid_targets(claimed, fake_daemon, operation, path, key):
+    fake_daemon.admin_overrides[path] = [{key: "../unsafe"}, {key: "x" * 81}, {key: "safe-target"}]
+    assert [row[key] for row in call(claimed, operation).json()] == ["", "", "safe-target"]

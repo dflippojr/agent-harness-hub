@@ -12,10 +12,12 @@ const LABELS = { login: "Exact Tailscale login", display_name: "Display name", s
 const targetLabel = name => ({ user_id: "Member id", pid: "Proposal id", slug: "Skill or folder slug", credential_id: "Assignment id",
   scan_id: "Scan id", candidate_id: "Candidate id", project: "Project or folder", name: "Runner name" })[name] || name;
 const button = (label, action) => h("button", { type: "button", class: "btn", onclick: action }, label);
+const validTarget = value => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/.test(value) && !/(?:^|[^A-Za-z0-9])(?:ha|ho|hp)-[A-Za-z0-9_-]{4,}/.test(value);
+const validHash = value => typeof value === "string" && /^[a-fA-F0-9]{64}$/.test(value);
 const readable = value => String(value).replaceAll("_", " ");
 
 export function renderAdmin(main) {
-  let stopped = false, busy = false, catalogue = [], active = "accounts", selected, codeTimer, preview = null;
+  let stopped = false, busy = false, catalogue = [], active = "accounts", selected, codeTimer, preview = null, reviewedProposal = null;
   const notice = h("p", { class: "notice", role: "status", "aria-live": "polite" });
   const navigation = h("div", { class: "settings-actions", "aria-label": "Administration areas" });
   const workspace = h("section", { class: "card admin-workspace" });
@@ -35,11 +37,12 @@ export function renderAdmin(main) {
   function chooseGroup(group) {
     if (busy || stopped) return;
     active = group; selected = catalogue.find(op => op.id === DEFAULT[group]);
-    preview = null; eraseOutput(); drawForm(); execute(selected, {}, {});
+    preview = null; reviewedProposal = null; eraseOutput(); drawForm(); execute(selected, {}, {});
     for (const control of navigation.children) control.setAttribute("aria-pressed", String(control.dataset.group === group));
   }
   function chooseOperation(id, targets = {}, values = {}) {
     if (busy || stopped) return;
+    if (id !== "skill_install") reviewedProposal = null;
     eraseOutput(); selected = catalogue.find(op => op.id === id); drawForm(targets, values);
   }
   function inputField(name, kind, required, value, isTarget = false) {
@@ -71,6 +74,8 @@ export function renderAdmin(main) {
           body[field.name] = spec.type === "boolean" ? field.value === "true" : ["integer", "number"].includes(spec.type) ?
             Number(field.value) : spec.type === "list" ? field.value.split("\n").map(v => v.trim()).filter(Boolean) : field.value;
         }
+        if (selected.id === "skill_install" && (!reviewedProposal || reviewedProposal.id !== target.pid ||
+          reviewedProposal.content_hash !== body.content_hash)) throw Error("Read the complete proposal at this hash first, or review on the host CLI.");
         if (selected.id === "retention_apply" && !preview) throw Error("Read a fresh retention preview before applying it.");
         if (selected.confirmation) confirmAction(selected, target, body); else execute(selected, target, body);
       } catch (error) { message(error.message, true); }
@@ -107,6 +112,8 @@ export function renderAdmin(main) {
       const reply = await api("manage/" + op.id + (query.size ? "?" + query : ""),
         op.method === "GET" ? {} : { method: op.method, body });
       if (stopped) return;
+      if (op.id === "proposal") reviewedProposal = reply.review_complete === true ? reply : null;
+      if (op.id === "skill_install") reviewedProposal = null;
       if (op.id === "retention_preview") preview = reply;
       if (op.id === "retention_apply") preview = null;
       message(op.method === "GET" ? "Current daemon state." : "Daemon accepted " + op.label.toLowerCase() + ". Read current state before another change.");
@@ -127,7 +134,7 @@ export function renderAdmin(main) {
     if (typeof value !== "object") return h("span", {}, String(value));
     if (Array.isArray(value)) return value.length ? h("div", {}, value.map(record)) : h("p", { class: "muted" }, "None");
     return h("dl", { class: "facts module-facts" }, Object.entries(value).map(([key, item]) => [h("dt", {}, readable(key)),
-      h("dd", {}, key === "skill_md" || key === "diff" || key === "content" || key === "summary" ?
+      h("dd", {}, ["skill_md", "diff", "content", "summary", "prompt", "expected", "expected_behavior"].includes(key) ?
         h("pre", { class: "admin-text" }, String(item || "")) : record(item))]));
   }
   function rowActions(op, row) {
@@ -136,12 +143,14 @@ export function renderAdmin(main) {
       op.id === "credentials" ? ["credential_revoke"] : op.id === "runners" ? ["runner_update"] :
       op.id === "proposal" ? ["skill_install", "skill_reject", "skill_reopen", "skill_review", "proposal_delete"] :
       op.id === "remote" ? ["folder_trust", ...(row.managed ? ["folder_forget"] : [])] :
-      op.id === "skills" && row.id ? ["proposal"] : op.id === "skills" || op.id === "skills_enabled" ?
+      op.id === "skills" && Object.hasOwn(row, "id") ? ["proposal"] : op.id === "skills" || op.id === "skills_enabled" ?
       ["skill_enable", "skill_disable", "skill_projects", "skill_rollback", "skill_uninstall", "skill_export"] : [];
-    return h("div", { class: "settings-actions" }, ids.map(id => {
+    return h("div", { class: "settings-actions" }, ids.flatMap(id => {
       const action = catalogue.find(action => action.id === id);
       const targets = Object.fromEntries(action.targets.map(name => [name, ({ pid: row.id, credential_id: row.id,
         user_id: row.user_id, slug: row.slug || row.project, project: row.project, name: row.name })[name]]));
+      if (Object.values(targets).some(value => !validTarget(value)) ||
+        id === "skill_install" && (row.review_complete !== true || !validHash(row.content_hash))) return [];
       return button(action.label, () => chooseOperation(id, targets, id === "skill_install" ? { content_hash: row.content_hash } :
         id === "skill_projects" ? { projects: row.projects } : {}));
     }));
@@ -156,6 +165,8 @@ export function renderAdmin(main) {
         h("h3", {}, row.display_name || row.title || row.name || row.project || row.action || row.id || "Record"), record(row), rowActions(op, row)));
       if (op.id === "skills" || op.id === "remote") output.append(record({ enabled: reply.enabled, discovery: reply.discovery }));
     } else output.append(h("section", { class: "card" }, record(reply), reply ? rowActions(op, reply) : null));
+    if (op.id === "proposal" && reply.review_complete !== true) output.append(h("p", { class: "notice warn" },
+      "This proposal cannot be reviewed completely here. Installation is unavailable; review on the host CLI."));
     if (op.id === "retention_preview") output.append(button("Apply preview", () => chooseOperation("retention_apply")));
     if (op.id === "audit" && reply.next_before_id) output.append(button("Next audit page", () => {
       const previous = {};
@@ -163,12 +174,15 @@ export function renderAdmin(main) {
       chooseOperation("audit", {}, { ...previous, before_id: reply.next_before_id });
       execute(selected, {}, { ...previous, before_id: reply.next_before_id });
     }));
-    if (["scan_start", "scan", "scan_cancel"].includes(op.id) && reply?.id) {
+    if (["scan_start", "scan", "scan_cancel"].includes(op.id) && validTarget(reply?.id)) {
       output.append(button("Refresh scan", () => { chooseOperation("scan", { scan_id: reply.id }); execute(selected, { scan_id: reply.id }, {}); }),
         button("Cancel scan", () => chooseOperation("scan_cancel", { scan_id: reply.id })));
-      for (const candidate of reply.candidates || []) output.append(button("Add folder " + candidate.suggested_slug, () =>
+      for (const candidate of reply.candidates || []) {
+        if (candidate.promotion_available !== true || !validTarget(candidate.id) || !validTarget(candidate.suggested_slug)) continue;
+        output.append(button("Add folder " + candidate.suggested_slug, () =>
         chooseOperation("scan_promote", { scan_id: reply.id, candidate_id: candidate.id },
           { slug: candidate.suggested_slug, confirmed_path: candidate.path, confirmed_markers: candidate.markers })));
+      }
     }
   }
   async function start() {
