@@ -180,7 +180,8 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         assert first.token() == ""
         pending = second.call("POST", "/api/claim").json()
         assert pending["state"] == "pending"
-        assert pending["approve_command"] == f"harness hub approve {pending['request_id']} --match {pending['match_code']}"
+        rid, match = pending["request_id"], pending["match_code"]
+        assert pending["approve_command"] == f"harness hub approve {rid} --match {match}"
 
         # 6. The owner denies it on the host.
         host_cli(daemon, "hub", "deny", pending["request_id"])
