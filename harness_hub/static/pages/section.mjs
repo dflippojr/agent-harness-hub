@@ -28,10 +28,12 @@ export const SECTIONS = [
       "harness pairing-requests confirm <rid> --match <code>", "harness pairing-requests deny <rid>"],
   },
   {
-    id: "marketplace", label: "Marketplace",
-    about: "The local Hub entries and whether each is paired. Being listed here grants nothing.",
-    cli: ["harness hub status", "harness hub entries validate",
-      "harness pairing-requests arm <catalog_app_id> --scopes <scope>"],
+    id: "marketplace", label: "Marketplace", ready: true,
+    about: "The local Hub entries and whether each is paired; set one up after a consent screen. Being listed here " +
+      "grants nothing.",
+    cli: ["harness hub status", "harness hub entries init", "harness hub entries validate",
+      "harness pairing-requests arm <catalog_app_id> --scopes <scope> [--origin <origin>] [--acknowledge-elevated]",
+      "harness pairing-requests confirm <rid> --match <code>", "harness pairing-requests deny <rid>"],
   },
   {
     id: "admin", label: "Accounts and maintenance", ready: true,

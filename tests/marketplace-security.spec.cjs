@@ -1,0 +1,241 @@
+// Run: playwright test --config=tests/playwright.config.cjs --workers=1 marketplace-security
+// Synthetic intercepted Hub responses: no daemon, Hub server or real account is used.
+const { test, expect } = require("playwright/test");
+const { readFile } = require("node:fs/promises");
+const path = require("node:path");
+
+const NOW = 1700000000;
+const ICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+const SESSIONS = { scope: "sessions", tier: "standard", text: "This app can start agent tasks on your harness.",
+  justification: "Synthetic justification for sessions, long enough for the schema." };
+const HOMELAB = { scope: "homelab", tier: "elevated", text: "This app's tasks can **read your homelab services' logs**.",
+  justification: "Synthetic justification for homelab, long enough for the schema." };
+const entry = (id, extra = {}) => ({
+  catalog_app_id: id, name: "Synthetic " + id.split(".").pop(), version: "1.0.0", summary: "Synthetic local entry.",
+  publisher: { name: "Synthetic publisher", id: "pub-0a1b2c3d4e5f" }, icon: "", scopes: [SESSIONS], elevated: [],
+  browser_origins: [], verified: false, state: "not_paired", paired: [], pending_pairing: false,
+  unverified_origin: { paired: [], pending_pairing: false }, slots: [], ...extra,
+});
+const slot = (id, extra = {}) => ({
+  id, kind: "app", state: "armed", needs: "claim", name: "Synthetic", catalog_app_id: "test.example.native", origin: "",
+  browser: false, armed: true, scopes: ["sessions"], elevated: [],
+  disclosures: [{ scope: "sessions", tier: "standard", text: "Daemon copy for sessions." }], match_code: "",
+  key_id: "", created_at: NOW - 60, expires_at: NOW + 540, approved_at: NOW - 60, finished_at: null, ...extra,
+});
+const view = (entries, extra = {}) => ({ state: "ready", error: "", stale: false, fetched_at: NOW, entries, withheld: 0,
+  slots_error: "", daemon_url: "https://daemon.test", now: NOW, ...extra });
+
+async function mount(page, initial, { answer } = {}) {
+  const writes = [], errors = [], outside = [];
+  let current = initial;
+  page.on("pageerror", error => errors.push(error.message));
+  await page.route("**/*", async route => {
+    const req = route.request(), url = new URL(req.url()), pathname = url.pathname;
+    if (url.host !== "hub.test") {
+      outside.push(req.url());
+      return route.abort();
+    }
+    if (pathname.startsWith("/api/")) {
+      if (pathname === "/api/marketplace" && req.method() === "GET") return route.fulfill({ json: current });
+      const known = pathname === "/api/marketplace/arm" || /^\/api\/pairing\/pr-[a-z0-9]+\/(confirm|deny)$/.test(pathname);
+      if (!known || req.method() !== "POST") throw Error("Unexpected API call: " + req.method() + " " + pathname);
+      writes.push({ path: pathname, body: req.postDataJSON(), headers: req.headers() });
+      const reply = answer ? answer(pathname, req.postDataJSON()) : null;
+      if (reply?.view) current = reply.view;
+      return route.fulfill({ status: reply?.status || 200, json: reply?.json || {} });
+    }
+    if (pathname === "/") return route.fulfill({ contentType: "text/html", body:
+      '<link rel="stylesheet" href="/static/style.css"><main id="main" class="main"></main>' +
+      '<script type="module">import {renderMarketplace} from "/static/pages/marketplace.mjs"; renderMarketplace(document.querySelector("main"));</script>' });
+    if (!/^\/static\/[a-z/.-]+\.(mjs|css)$/.test(pathname)) throw Error("Unexpected resource: " + pathname);
+    return route.fulfill({ contentType: pathname.endsWith(".css") ? "text/css" : "text/javascript",
+      body: await readFile(path.join(__dirname, "../harness_hub", pathname), "utf8") });
+  });
+  await page.goto("http://hub.test/");
+  await expect(page.locator("[data-entry]")).toHaveCount((initial.entries || []).length);
+  return { writes, errors, outside };
+}
+const card = (page, id) => page.locator('[data-entry="' + id + '"]');
+
+test("entries show their state, the not-verified label and native keys; nothing is fetched from an entry", async ({ page }) => {
+  const { errors, outside } = await mount(page, view([
+    entry("test.example.notes", { state: "paired", paired: ["k-notes"], browser_origins: ["https://notes.example.test"], icon: ICON }),
+    entry("test.example.native", { icon: "https://icons.example.invalid/native.png",
+      unverified_origin: { paired: ["k-native"], pending_pairing: true } }),
+    entry("test.example.ops", { pending_pairing: true }),
+  ]));
+  await expect(page.getByText("Being listed here grants nothing.", { exact: true })).toBeVisible();
+  await expect(card(page, "test.example.notes").locator('[data-field="state"]')).toHaveText("Paired");
+  await expect(card(page, "test.example.notes")).toContainText("k-notes");
+  await expect(card(page, "test.example.notes")).toContainText("https://notes.example.test");
+  await expect(card(page, "test.example.native").locator('[data-field="state"]')).toHaveText("Not paired");
+  await expect(card(page, "test.example.ops").locator('[data-field="state"]')).toHaveText("Pending");
+  for (const id of ["test.example.notes", "test.example.native", "test.example.ops"]) {
+    await expect(card(page, id).getByText("Local entry, not verified", { exact: true })).toBeVisible();
+  }
+  const native = card(page, "test.example.native").locator('[data-field="unverified"]');
+  await expect(native).toContainText("Native keys and requests (origin not verified)");
+  await expect(native).toContainText("k-native");
+  await expect(page.locator("main img")).toHaveCount(1);
+  expect(await page.locator("main img").getAttribute("src")).toBe(ICON);
+  await expect(card(page, "test.example.native").locator(".entry-icon")).toHaveText("S");
+  expect(outside).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test("Set up opens the consent screen and nothing is armed until Approve; then the id and daemon URL are shown", async ({ page }) => {
+  const armed = slot("pr-new");
+  const { writes, errors, outside } = await mount(page, view([entry("test.example.native")]), { answer: pathname =>
+    pathname === "/api/marketplace/arm" ? { status: 201, json: { request: armed, daemon_url: "https://daemon.test",
+      name: "Synthetic native" }, view: view([entry("test.example.native", { slots: [armed] })]) } : null });
+  await card(page, "test.example.native").getByRole("button", { name: "Set up Synthetic native" }).click();
+  const consent = page.locator(".market-consent");
+  await expect(consent.getByRole("heading", { name: "Set up Synthetic native?" })).toBeVisible();
+  await expect(consent.locator('[data-scope="sessions"] .disclosure-text')).toHaveText(SESSIONS.text);
+  await expect(consent).toContainText("Publisher's reason (not verified): " + SESSIONS.justification);
+  await expect(consent).toContainText("Native app: when it claims the slot");
+  await expect(consent.getByText("harness pairing-requests arm test.example.native --scopes sessions", { exact: true })).toBeVisible();
+  await consent.getByRole("button", { name: "Cancel" }).click();
+  await expect(consent).toHaveCount(0);
+  expect(writes).toEqual([]);
+  await card(page, "test.example.native").getByRole("button", { name: "Set up Synthetic native" }).click();
+  expect(writes).toEqual([]);
+  await page.locator(".market-consent").getByRole("button", { name: "Approve" }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0]).toMatchObject({ path: "/api/marketplace/arm",
+    body: { catalog_app_id: "test.example.native", scopes: ["sessions"] } });
+  expect(writes[0].headers["x-hub-request"]).toBe("1");
+  const handoff = page.locator(".market-handoff");
+  await expect(handoff).toContainText("Give this only to Synthetic native; it lets that app claim the slot once.");
+  await expect(handoff.getByText("pr-new", { exact: true })).toBeVisible();
+  await expect(handoff.getByText("https://daemon.test", { exact: true })).toBeVisible();
+  await expect(handoff.getByRole("button", { name: "Copy: pr-new" })).toBeVisible();
+  await expect(card(page, "test.example.native").locator('[data-slot="pr-new"]')).toContainText("waiting for the app to claim");
+  expect(outside).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test("elevated scopes need the acknowledgement and a browser app needs its exact origin chosen", async ({ page }) => {
+  const ops = entry("test.example.ops", { scopes: [SESSIONS, HOMELAB], elevated: ["homelab"],
+    browser_origins: ["https://ops.example.test", "https://ops2.example.test"] });
+  const { writes, errors } = await mount(page, view([ops, entry("test.example.web", {
+    browser_origins: ["https://web.example.test"] })]), { answer: () => ({ status: 201, json: {
+    request: slot("pr-ops", { origin: "https://ops2.example.test" }), daemon_url: "https://daemon.test", name: "Synthetic ops" } }) });
+  await card(page, "test.example.ops").getByRole("button", { name: /^Set up/ }).click();
+  const consent = page.locator(".market-consent");
+  await expect(consent.locator('[data-scope="homelab"] .pill')).toHaveText("elevated");
+  await expect(consent.locator('[data-scope="homelab"] .disclosure-text')).toHaveText(HOMELAB.text);
+  const approve = consent.getByRole("button", { name: "Approve" });
+  await expect(approve).toBeDisabled();
+  await consent.getByRole("checkbox").check();
+  await expect(approve).toBeDisabled();
+  await approve.click({ force: true });
+  expect(writes).toEqual([]);
+  await consent.getByRole("radio", { name: "https://ops2.example.test" }).check();
+  await expect(approve).toBeEnabled();
+  await expect(consent.getByText("harness pairing-requests arm test.example.ops --scopes sessions homelab " +
+    "--origin https://ops2.example.test --acknowledge-elevated", { exact: true })).toBeVisible();
+  await consent.getByRole("checkbox").uncheck();
+  await expect(approve).toBeDisabled();
+  await consent.getByRole("checkbox").check();
+  await approve.click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0].body).toEqual({ catalog_app_id: "test.example.ops", scopes: ["sessions", "homelab"],
+    origin: "https://ops2.example.test", acknowledge_elevated: true });
+  await expect(page.locator(".market-handoff")).toContainText("The app must claim it from https://ops2.example.test");
+
+  await page.locator(".market-handoff").getByRole("button", { name: "Done" }).click();
+  await card(page, "test.example.web").getByRole("button", { name: /^Set up/ }).click();
+  await expect(page.locator('.market-consent [data-field="origin"]')).toHaveText("https://web.example.test");
+  await expect(page.locator(".market-consent").getByRole("checkbox")).toHaveCount(0);
+  await expect(page.locator(".market-consent").getByRole("button", { name: "Approve" })).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
+test("a native claim is confirmed with its match code in one click; a slot is withdrawn after confirmation", async ({ page }) => {
+  const claimed = slot("pr-claimed", { state: "claimed", needs: "confirm", match_code: "482913" });
+  const armed = slot("pr-armed");
+  const { writes, errors } = await mount(page, view([entry("test.example.native", { slots: [claimed, armed],
+    unverified_origin: { paired: [], pending_pairing: true } })]));
+  const box = card(page, "test.example.native").locator('[data-slot="pr-claimed"]');
+  await expect(box.locator(".match")).toHaveText("482913");
+  await expect(box.getByText("harness pairing-requests confirm pr-claimed --match 482913", { exact: true })).toBeVisible();
+  await box.getByRole("button", { name: "Codes match: confirm Synthetic native" }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0]).toMatchObject({ path: "/api/pairing/pr-claimed/confirm", body: { match: "482913" } });
+  await expect(page.getByText(/Confirmed Synthetic native/)).toBeVisible();
+
+  const other = card(page, "test.example.native").locator('[data-slot="pr-armed"]');
+  await expect(other.locator(".match")).toHaveCount(0);
+  await other.getByRole("button", { name: "Withdraw slot for Synthetic native" }).click();
+  await expect(page.getByRole("heading", { name: "Withdraw the slot for Synthetic native?" })).toBeVisible();
+  expect(writes).toHaveLength(1);
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(writes).toHaveLength(1);
+  await other.getByRole("button", { name: "Withdraw slot for Synthetic native" }).click();
+  await page.getByRole("button", { name: "Confirm withdraw", exact: true }).click();
+  await expect.poll(() => writes.length).toBe(2);
+  expect(writes[1]).toMatchObject({ path: "/api/pairing/pr-armed/deny", body: { confirm: true } });
+  expect(errors).toEqual([]);
+});
+
+test("a named entries error keeps the last good entries; with none, no entries are shown", async ({ page }) => {
+  const { errors } = await mount(page, view([entry("test.example.native")], { state: "error",
+    error: "hub.entries: invalid JSON", stale: true }));
+  await expect(page.getByRole("alert")).toContainText("hub.entries: invalid JSON");
+  await expect(page.getByRole("alert")).toContainText("Showing the last good entries");
+  await expect(card(page, "test.example.native")).toBeVisible();
+  expect(errors).toEqual([]);
+
+  const empty = await page.context().newPage();
+  const second = await mount(empty, view(null, { state: "error", error: "entries[0].app.app_id: duplicate id",
+    fetched_at: null }));
+  await expect(empty.getByRole("alert")).toContainText("entries[0].app.app_id: duplicate id");
+  await expect(empty.getByRole("alert")).toContainText("There are no last good entries to show.");
+  await expect(empty.locator("[data-entry]")).toHaveCount(0);
+  expect(second.errors).toEqual([]);
+});
+
+test("a 409 on Approve shows the server's reason and refreshes", async ({ page }) => {
+  const { writes, errors } = await mount(page, view([entry("test.example.native")]), { answer: () => ({ status: 409,
+    json: { detail: "The entry's scopes changed since the consent screen was shown. Review it again." } }) });
+  await card(page, "test.example.native").getByRole("button", { name: /^Set up/ }).click();
+  await page.locator(".market-consent").getByRole("button", { name: "Approve" }).click();
+  await expect(page.getByText(/The entry's scopes changed since the consent screen was shown/)).toBeVisible();
+  await expect(page.locator(".market-consent")).toHaveCount(0);
+  expect(writes).toHaveLength(1);
+  expect(errors).toEqual([]);
+});
+
+test("entry text renders as text, never as HTML", async ({ page }) => {
+  const markup = '<img src=x onerror="window.injected=1"><script>window.injected=2</script>';
+  const { errors, outside } = await mount(page, view([entry("test.example.x", { name: markup, summary: markup,
+    publisher: { name: markup, id: "pub-0a1b2c3d4e5f" }, scopes: [{ ...SESSIONS, text: markup, justification: markup }] })]));
+  await expect(card(page, "test.example.x").locator("h2")).toHaveText(markup);
+  await card(page, "test.example.x").getByRole("button", { name: /^Set up/ }).click();
+  await expect(page.locator(".market-consent .disclosure-text")).toHaveText(markup);
+  await expect(page.locator("main img, main script")).toHaveCount(0);
+  expect(await page.evaluate(() => window.injected)).toBeUndefined();
+  expect(outside).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+for (const [label, width] of [["phone", 390], ["desktop", 1280]]) {
+  test(`${label} layout keeps 44px targets and no horizontal scroll`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const long = "https://a-very-long-subdomain-name-for-layout.example.test";
+    const { errors } = await mount(page, view([
+      entry("test.example.ops", { scopes: [SESSIONS, { ...HOMELAB, text: "A long disclosure ".repeat(20) }],
+        elevated: ["homelab"], browser_origins: [long, long + ":8443"], icon: ICON }),
+      entry("test.example.native", { slots: [slot("pr-c", { state: "claimed", needs: "confirm", match_code: "111222" })],
+        unverified_origin: { paired: ["k-native"], pending_pairing: true } })]));
+    await card(page, "test.example.ops").getByRole("button", { name: /^Set up/ }).click();
+    for (const target of await page.locator("main button, main input, main summary").all()) {
+      const box = await target.boundingBox();
+      expect(box.height, await target.evaluate(el => el.outerHTML.slice(0, 80))).toBeGreaterThanOrEqual(44);
+      expect(box.width).toBeGreaterThanOrEqual(44);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    expect(errors).toEqual([]);
+  });
+}
