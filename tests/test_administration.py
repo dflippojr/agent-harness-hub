@@ -339,3 +339,17 @@ def test_exact_secrets_still_withhold_the_entire_proposal_even_beyond_limits(cla
 def test_invalid_action_identifiers_are_not_truncated_into_valid_targets(claimed, fake_daemon, operation, path, key):
     fake_daemon.admin_overrides[path] = [{key: "../unsafe"}, {key: "x" * 81}, {key: "safe-target"}]
     assert [row[key] for row in call(claimed, operation).json()] == ["", "", "safe-target"]
+
+
+def test_project_allowlist_requires_confirmation_and_forwards_empty_scope(claimed, fake_daemon):
+    assert call(claimed, "skill_projects", {"projects": ["new-project"]}).status_code == 400
+    assert not fake_daemon.admin_calls
+    response = call(claimed, "skill_projects", {"projects": [], "confirm": True})
+    assert response.status_code == 200
+    assert response.json()["projects"] == []
+    assert response.json()["projects_complete"] is True
+    assert fake_daemon.admin_calls[-1][2] == {"projects": []}
+    fake_daemon.skill["projects"] = ["ha-tools"]
+    row = call(claimed, "skills").json()["installed"][0]
+    assert row["projects_complete"] is False
+    assert row["projects"] == ["[withheld: token-shaped]"]

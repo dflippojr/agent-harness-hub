@@ -121,7 +121,7 @@ OPERATIONS = {
         "harness skills projects <slug> <project>",
         {"projects": "list"},
         ("projects",),
-        "",
+        "Confirm the before and after project lists. Added projects will receive this skill automatically.",
     ),
     "skill_rollback": (
         "skills",

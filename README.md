@@ -204,8 +204,13 @@ destructive changes show the target and edited fields in an in-page confirmation
 
 Google link codes appear only in the creation response, disappear on dismissal, expiry, or navigation, and are
 never cached or stored by the Hub. Provider assignments accept opaque secret-file names; configure the files
-on the daemon host. Skill proposals, diffs and reference files render as text. Installs send the exact reviewed
-hash, and image retention requires a fresh preview and the daemon's phrase typed exactly by the owner.
+on the daemon host. Skill proposals, diffs and reference files render as text. Proposal review includes the source
+session, examples, metadata, SKILL.md and reference files. Installs send the exact reviewed hash; incomplete,
+truncated or redacted bundles require review on the host CLI. Image retention requires a fresh preview and the
+daemon's phrase typed exactly by the owner.
+An empty skill project allowlist means no project receives it automatically. Allowlist changes show a fresh before
+and after list for confirmation. Token-shaped display fields are withheld individually; unsafe identifiers lose
+their row actions, and unaffected records stay usable.
 Audit supports exclusive row-id paging and exact filters. Folder trust opens an interactive prompt on the daemon
 host; discovery is available only where the daemon supports it. Owner-key and Mac runner pairing-code creation
 remain host CLI actions because the Hub key cannot mint owner keys.

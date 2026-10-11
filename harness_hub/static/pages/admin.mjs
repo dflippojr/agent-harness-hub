@@ -6,7 +6,7 @@ const GROUPS = [["accounts", "Accounts"], ["credentials", "Provider assignments"
 const DEFAULT = { accounts: "accounts", credentials: "credentials", skills: "skills", maintenance: "maintenance", runners: "runners", audit: "audit" };
 const LABELS = { login: "Exact Tailscale login", display_name: "Display name", secret_ref: "Opaque secret-file name (never a key or path)",
   enabled: "Member enabled", disk_quota_bytes: "Disk quota in bytes", max_running: "Running session cap", max_queued: "Queued session cap",
-  content_hash: "Exact reviewed content hash", confirmation: "Type the phrase from the retention preview", projects: "Allowed projects (one per line; empty allows all)",
+  content_hash: "Exact reviewed content hash", confirmation: "Type the phrase from the retention preview", projects: "Allowed projects (one per line; empty means no project gets it automatically)",
   models: "Allowed models (one per line)", confirmed_markers: "Checked markers (one per line)", confirmed_path: "Exact checked folder path",
   before_id: "Before audit row id", since: "Since timestamp (inclusive)", until: "Until timestamp (exclusive)", policy: "Provider policy" };
 const targetLabel = name => ({ user_id: "Member id", pid: "Proposal id", slug: "Skill or folder slug", credential_id: "Assignment id",
@@ -77,7 +77,8 @@ export function renderAdmin(main) {
         if (selected.id === "skill_install" && (!reviewedProposal || reviewedProposal.id !== target.pid ||
           reviewedProposal.content_hash !== body.content_hash)) throw Error("Read the complete proposal at this hash first, or review on the host CLI.");
         if (selected.id === "retention_apply" && !preview) throw Error("Read a fresh retention preview before applying it.");
-        if (selected.confirmation) confirmAction(selected, target, body); else execute(selected, target, body);
+        if (selected.id === "skill_projects") confirmProjects(selected, target, body);
+        else if (selected.confirmation) confirmAction(selected, target, body); else execute(selected, target, body);
       } catch (error) { message(error.message, true); }
     } });
     form.append(...selected.targets.map(name => inputField(name, "text", true, targets[name], true)),
@@ -92,14 +93,28 @@ export function renderAdmin(main) {
       h("div", { class: "setting-field" }, h("label", {}, "Choose action", choices)),
       command(selected.cli), form, h("div", { class: "admin-confirmation" }));
   }
-  function confirmAction(op, targets, body) {
+  async function confirmProjects(op, targets, body) {
+    setBusy(true); message("Reading the current project allowlist…");
+    try {
+      const skills = await api("manage/skills");
+      if (stopped) return;
+      const skill = skills.installed?.find(row => row.slug === targets.slug);
+      if (!skill || skill.projects_complete !== true || !Array.isArray(skill.projects))
+        throw Error("The current project list is unavailable. Review on the host CLI before changing it.");
+      confirmAction(op, targets, body, { before_projects: skill.projects, after_projects: body.projects,
+        added_projects: body.projects.filter(project => !skill.projects.includes(project)) });
+      message("Check the before and after project lists before confirming.");
+    } catch (error) { if (!stopped) message(error.message, true); }
+    finally { if (!stopped) setBusy(false); }
+  }
+  function confirmAction(op, targets, body, detail = {}) {
     const slot = workspace.querySelector(".admin-confirmation");
     const confirm = button("Confirm " + op.label.toLowerCase(), () => {
       clear(slot); execute(op, targets, { ...body, confirm: true });
     });
     clear(slot, h("section", { class: "notice warn", role: "region", "aria-label": "Confirm action" },
       h("h3", {}, "Confirm " + op.label.toLowerCase()), h("p", {}, op.confirmation),
-      h("pre", { class: "admin-text" }, JSON.stringify({ ...targets, ...body }, null, 2)),
+      h("pre", { class: "admin-text" }, JSON.stringify({ ...targets, ...body, ...detail }, null, 2)),
       h("div", { class: "settings-actions" }, confirm, button("Cancel", () => clear(slot)))));
     confirm.focus();
   }
@@ -152,7 +167,7 @@ export function renderAdmin(main) {
       if (Object.values(targets).some(value => !validTarget(value)) ||
         id === "skill_install" && (row.review_complete !== true || !validHash(row.content_hash))) return [];
       return button(action.label, () => chooseOperation(id, targets, id === "skill_install" ? { content_hash: row.content_hash } :
-        id === "skill_projects" ? { projects: row.projects } : {}));
+        id === "skill_projects" ? { projects: row.projects_complete === true ? row.projects : [] } : {}));
     }));
   }
   function showResult(op, reply) {

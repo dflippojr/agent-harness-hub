@@ -470,7 +470,10 @@ def project(value: Any, schema: Any, secrets: tuple[str, ...] = ()) -> Any:
     if isinstance(schema, dict):
         if not isinstance(value, dict):
             raise ValueError("Invalid daemon object")
-        return {key: project(value[key], shape, secrets) for key, shape in schema.items() if key in value}
+        shown = {key: project(value[key], shape, secrets) for key, shape in schema.items() if key in value}
+        if schema is SKILL and "projects" in value:
+            shown["projects_complete"] = isinstance(value["projects"], list) and value["projects"] == shown["projects"]
+        return shown
     if isinstance(schema, list):
         if not isinstance(value, list):
             raise ValueError("Invalid daemon list")
