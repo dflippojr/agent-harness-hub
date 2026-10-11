@@ -285,3 +285,18 @@ details summary { min-height: var(--tap); display: flex; align-items: center; cu
 .admin-row h3 { color: var(--text); margin-top: 0; }
 .admin-form { max-width: 760px; }
 .admin-form > .btn { margin-top: 16px; }
+
+/* Pairing requests reuse the card, form and touch-target tokens. */
+.pairing-group { margin-top: 24px; }
+.pairing-group > h2 { margin: 0; font-size: 1.15rem; }
+.pairing-list .card h3 { margin-top: 0; overflow-wrap: anywhere; font-size: 1.15rem; color: var(--text); }
+.pairing-list .card h4 { margin: 16px 0 6px; font-size: .95rem; }
+.pairing-confirm { margin-top: 16px; overflow-wrap: anywhere; }
+.disclosures { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.disclosures li { border-top: 1px solid var(--line); padding-top: 8px; }
+.disclosure-head { margin: 0; }
+.disclosure-text { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.pairing-decision .setting-field { margin-top: 12px; }
+.pairing-ack { display: flex; align-items: flex-start; gap: 10px; min-height: var(--tap); margin: 12px 0; cursor: pointer; }
+.pairing-ack input { flex: none; width: var(--tap); height: var(--tap); margin: 0; accent-color: var(--accent); }
+.pairing-ack span { padding-top: 10px; }

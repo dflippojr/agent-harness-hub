@@ -491,3 +491,50 @@ def administration_view(operation: str, body: Any) -> Any:
     if operation == "google_invite" and (not shown.get("code") or shown.get("expires_at") is None):
         raise ValueError("Invalid invitation response")
     return shown
+
+
+# App pairing requests (#519). The Hub keeps its own copy of the elevated scopes so a daemon that forgets to flag one
+# still cannot have it approved without the owner's separate acknowledgement.
+PAIRING_STATES = ("pending", "armed", "claimed", "approved", "redeemed", "denied", "expired")
+PAIRING_NEEDS = ("approve", "claim", "confirm", "redeem")
+ELEVATED_SCOPES = frozenset({"sessions:all", "approvals", "remote_control", "memory_library", "homelab"})
+
+
+def pairing_request_view(row: Any, secrets: tuple[str, ...] = ()) -> dict:
+    row = row if isinstance(row, dict) else {}
+    kind = row.get("kind") if row.get("kind") in ("app", "hub") else "unknown"
+    state = row.get("state") if row.get("state") in PAIRING_STATES else "unknown"
+    scopes = [_app_text(s, 64, secrets) for s in row.get("scopes", [])[:32] if isinstance(s, str)] if isinstance(
+        row.get("scopes"), list) else []
+    disclosures = []
+    for item in row.get("disclosures", [])[:32] if isinstance(row.get("disclosures"), list) else []:
+        if isinstance(item, dict) and isinstance(item.get("scope"), str):
+            disclosures.append({"scope": _app_text(item["scope"], 64, secrets),
+                                "tier": "elevated" if item.get("tier") == "elevated" else "standard",
+                                "text": _app_text(item.get("text"), 4000, secrets)})
+    flagged = set(_names(row.get("elevated"))) | {d["scope"] for d in disclosures if d["tier"] == "elevated"}
+    elevated = [s for s in scopes if s in ELEVATED_SCOPES or s in flagged or s == "admin"]
+    for item in disclosures:
+        if item["scope"] in elevated:
+            item["tier"] = "elevated"
+    code = row.get("match_code")
+    # Only while the owner still compares it, and never a Hub claim's: that is read off the Hub's own screen.
+    shown = code if isinstance(code, str) and re.fullmatch(r"[0-9]{1,32}", code) and kind == "app" and state in (
+        "pending", "claimed") else ""
+    needs = row.get("needs") if row.get("needs") in PAIRING_NEEDS else ""
+    return {"id": _app_id(row.get("id")), "kind": kind, "state": state, "needs": needs,
+            "name": _app_text(row.get("name"), 120, secrets),
+            "catalog_app_id": _app_text(row.get("catalog_app_id"), 200, secrets),
+            "origin": _app_text(row.get("origin"), 500, secrets),
+            "browser": row.get("browser") is True, "armed": row.get("armed") is True,
+            "scopes": scopes, "elevated": elevated, "disclosures": disclosures, "match_code": shown,
+            "key_id": _app_id(row.get("key_id")),
+            **{key: _finite(row.get(key)) for key in ("created_at", "expires_at", "approved_at", "finished_at")}}
+
+
+def pairing_view(body: Any, secrets: tuple[str, ...] = ()) -> dict:
+    rows = [pairing_request_view(row, secrets) for row in body if isinstance(row, dict)] if isinstance(
+        body, list) else []
+    rows = [row for row in rows if row["id"]]
+    rows.sort(key=lambda row: row["created_at"] or 0, reverse=True)
+    return {"requests": rows, "now": time.time()}

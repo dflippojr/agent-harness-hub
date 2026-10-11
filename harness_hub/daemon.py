@@ -2,7 +2,8 @@
 
 The Hub calls the public `/health`, the Hub-claim pairing routes for its *own* claim, and the owner API with its
 `hub` key. It never claims or redeems an App's pairing request: App tokens go from the daemon straight to the App
-(agent-harness #519), so the only token response the Hub ever reads is its own Hub key's.
+(agent-harness #519), so the only token response the Hub ever reads is its own Hub key's. The owner API's
+`/pairing-requests` routes carry request metadata only: the owner approves, confirms or denies, and the App redeems.
 """
 
 from __future__ import annotations
@@ -45,6 +46,13 @@ APPS_ROUTES = {
     "retention": ("PUT", "/apps/{app_id}/retention"),
 }
 
+# App pairing requests (#519): owner decisions only. The App-side `claim` and `token` routes are never called for them.
+PAIRING_ROUTES = {
+    "list": ("GET", "/pairing-requests"),
+    "approve": ("POST", "/pairing-requests/{rid}/approve"),
+    "confirm": ("POST", "/pairing-requests/{rid}/confirm"),
+    "deny": ("POST", "/pairing-requests/{rid}/deny"),
+}
 
 ADMIN_ROUTES = {
     "accounts": ("GET", "/accounts"),
@@ -154,6 +162,11 @@ class DaemonClient:
     async def apps(self, token: str, operation: str, app_id: str = "", body: dict | None = None) -> Reply:
         method, path = APPS_ROUTES[operation]
         return await self._call(method, ADMIN + path.format(app_id=app_id), token=token, json=body)
+
+    async def pairing(self, token: str, operation: str, rid: str = "", body: dict | None = None) -> Reply:
+        method, path = PAIRING_ROUTES[operation]
+        # The server validates `rid` as one path segment before dispatch.
+        return await self._call(method, ADMIN + path.format(rid=rid), token=token, json=body)
 
     async def settings(self, token: str, operation: str, body: dict | None = None, name: str = "") -> Reply:
         method, path = SETTINGS_ROUTES[operation]
