@@ -38,8 +38,8 @@ function countdown(seconds) {
 export function renderPairing(main) {
   let stopped = false, busy = false, timer, ticker, data = null, offset = 0, signature = "";
   const drafts = new Map();
-  const notice = h("p", { class: "notice", "aria-live": "polite" });
-  const problem = h("p", { class: "notice bad", role: "alert" });
+  const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true });
+  const problem = h("p", { class: "notice bad", role: "alert", hidden: true });
   const groups = h("div", { class: "pairing-groups" });
   const confirmation = h("div");
   const refresh = button("Refresh requests", () => load(true));
@@ -54,6 +54,11 @@ export function renderPairing(main) {
   function message(value, bad = false) {
     notice.textContent = value;
     notice.className = bad ? "notice bad" : "notice";
+    notice.hidden = !value;
+  }
+  function showProblem(value) {
+    problem.textContent = value;
+    problem.hidden = !value;
   }
   function now() { return Date.now() / 1000 + offset; }
   function schedule() {
@@ -68,10 +73,10 @@ export function renderPairing(main) {
       if (stopped) return;
       data = result;
       offset = typeof result.now === "number" ? result.now - Date.now() / 1000 : 0;
-      problem.textContent = "";
+      showProblem("");
     } catch (error) {
       if (stopped) return;
-      problem.textContent = error.message + (data ? " Showing the last list." : "");
+      showProblem(error.message + (data ? " Showing the last list." : ""));
     }
     draw(force);
     schedule();
