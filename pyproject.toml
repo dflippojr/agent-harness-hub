@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=75"]
+requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,16 +9,16 @@ description = "Hub: the standalone admin console for an Agent Harness daemon"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.142.2",
-    "uvicorn>=0.54.0",
-    "httpx>=0.28.1",
+    "fastapi==0.142.2",
+    "uvicorn==0.54.0",
+    "httpx==0.28.1",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8",
-    "pytest-cov>=6",
-    "ruff>=0.16",
+    "pytest==8.3.5",
+    "pytest-cov==6.2.1",
+    "ruff==0.16.10",
 ]
 
 [project.scripts]

@@ -27,6 +27,12 @@ The Hub listens on `http://127.0.0.1:8120` by default (`--host`, `--port`). The 
 (`install.ps1 -WithHub`, `install.sh --with-hub`) installs and starts it for you, either from pip or as a Docker
 image, and approves the claim in the same run.
 
+Remote access is supported only through an HTTPS proxy, such as `tailscale serve`, with
+`--public-url https://hub.example.ts.net`. Keep the upstream bound to loopback, or a private container network
+that only the proxy can reach. Non-loopback listeners require an HTTPS public URL; this setting does not add TLS
+to the upstream listener. Never expose that HTTP port directly to the LAN or internet.
+A remote `--daemon-url` must use HTTPS; HTTP is accepted only for loopback daemon addresses.
+
 Docker:
 
 ```bash
@@ -57,6 +63,9 @@ python -m harness_hub signin-link --state-dir ~/.agent-harness-hub
 
 The link works once, for ten minutes. Its code travels in the URL fragment, which the browser never sends to a server
 or puts in a Referer; the page posts it once and gets an HttpOnly, SameSite=Strict session cookie for twelve hours.
+The cookie alone cannot authorize requests: a second per-session value is kept in origin-scoped `sessionStorage`
+and sent in `X-Hub-Session`. Each new tab needs its own sign-in link. HTTPS uses a `__Host-hub_session` cookie
+with `Secure`, `HttpOnly`, `SameSite=Strict` and no Domain attribute.
 Proving you can read the Hub's owner-only state directory is the same proof the daemon uses for local callers.
 Sign-in from the owner's tailnet identity is tracked separately.
 
@@ -91,12 +100,19 @@ is released later, the Hub notices that its key no longer works, forgets it and 
   `Origin`; unknown `Host` headers are refused (DNS rebinding); pages are served with a strict Content Security Policy
   and no inline script.
 - The Hub binds to loopback by default. Reach it from other devices the way you reach the daemon, for example with
-  `tailscale serve` and `--public-url`.
+  `tailscale serve` and an HTTPS `--public-url`. Do not publish the HTTP upstream port on the LAN.
+- Windows state gets a protected DACL granting access only to the current user and SYSTEM, including existing
+  state files. Failure to set those permissions prevents startup or sign-in code creation.
+- A 401 must be confirmed with another owner API call before the Hub forgets its persistent key. This prevents
+  a transient rejection from destroying it. Local HTTP does not authenticate the daemon: a process squatting on
+  its port can still receive credentials. Daemon identity pinning or protected local IPC requires upstream
+  Agent Harness support; use an authenticated HTTPS daemon endpoint when this threat matters.
 
 ## Develop
 
 ```bash
-python -m pip install -e ".[dev]"
+python -m pip install --require-hashes -r requirements-dev.lock -r requirements-build.lock
+python -m pip install --no-deps --no-build-isolation -e .
 ruff check .
 pytest                     # unit tests against a fake daemon
 HUB_E2E_DAEMON_SRC=../agent-harness pytest -m e2e   # a real daemon from a checkout (its requirements installed)
@@ -104,3 +120,15 @@ HUB_E2E_DAEMON_SRC=../agent-harness pytest -m e2e   # a real daemon from a check
 
 The UI is plain ES modules in `harness_hub/static` with no build step. Every tap target is at least 44 px, and the
 layout switches from a phone menu to a left rail at 900 px.
+
+Dependency versions and artifact hashes are reviewed in `requirements*.lock`; CI also pins the daemon fixture,
+Actions commits, and the Docker base digest. Update locks deliberately with uv:
+
+```bash
+uv pip compile requirements-build.in --universal --python-version 3.12 --generate-hashes -o requirements-build.lock
+uv pip compile pyproject.toml --universal --python-version 3.12 --generate-hashes -o requirements.lock
+uv pip compile pyproject.toml --extra dev --universal --python-version 3.12 --generate-hashes -o requirements-dev.lock
+uv pip compile pyproject.toml requirements-daemon.in --extra dev --universal --python-version 3.12 --generate-hashes -o requirements-e2e.lock
+```
+
+Update exact versions in `pyproject.toml` and the daemon commit/requirements snapshot together when needed.

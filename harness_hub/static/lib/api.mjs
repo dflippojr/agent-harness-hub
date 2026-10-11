@@ -10,6 +10,8 @@ export class ApiError extends Error {
 
 export async function api(path, { method = "GET", body } = {}) {
   const headers = { Accept: "application/json" };
+  const binding = sessionStorage.getItem("hub.session");
+  if (binding) headers["X-Hub-Session"] = binding;
   if (method !== "GET") headers["X-Hub-Request"] = "1";
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const response = await fetch(`/api/${path}`, {
@@ -30,5 +32,9 @@ export async function api(path, { method = "GET", body } = {}) {
     if (response.status === 401 && path !== "session") window.dispatchEvent(new CustomEvent("hub:signed-out"));
     throw new ApiError(response.status, data);
   }
+  if (path === "session" && method === "POST") {
+    sessionStorage.setItem("hub.session", response.headers.get("X-Hub-Session"));
+  }
+  if (path === "session" && method === "DELETE") sessionStorage.removeItem("hub.session");
   return data;
 }

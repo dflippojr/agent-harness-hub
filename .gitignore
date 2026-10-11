@@ -11,3 +11,6 @@ coverage.xml
 htmlcov/
 # Local Hub state from manual runs: it holds the Hub key.
 .hub-state/
+
+# Disposable validation checkouts.
+.validation/

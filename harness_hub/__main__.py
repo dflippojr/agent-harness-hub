@@ -54,9 +54,14 @@ def signin_parser() -> argparse.ArgumentParser:
 
 
 def signin_link(argv: list[str]) -> int:
-    args = signin_parser().parse_args(argv)
+    parser = signin_parser()
+    args = parser.parse_args(argv)
     url = args.url or (read_json(args.state_dir / SERVER_FILE, {}) or {}).get("url") or (
         f"http://127.0.0.1:{DEFAULT_PORT}")
+    try:
+        url = normalize_public_url(url)
+    except ValueError as exc:
+        parser.error(str(exc))
     code = create_signin_code(args.state_dir)
     print(f"{url.rstrip('/')}/#signin={code}")
     return 0

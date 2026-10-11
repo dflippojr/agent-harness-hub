@@ -32,6 +32,7 @@ def test_sign_in_link_works_once(hub):
     assert first.status_code == 204
     cookie = first.headers["set-cookie"].lower()
     assert "httponly" in cookie and "samesite=strict" in cookie and "path=/" in cookie
+    hub.client.headers["X-Hub-Session"] = first.headers["x-hub-session"]
     assert hub.get("/api/session").json()["signed_in"] is True
     hub.client.cookies.clear()
     assert hub.post("/api/session", json={"code": code}).status_code == 401
@@ -51,9 +52,9 @@ def test_expired_code_and_session(tmp_path):
     now[0] += auth.CODE_TTL_SECONDS + 1
     assert sessions.redeem_code(code) is None
     session = sessions.redeem_code(create_signin_code(tmp_path, now=now[0]))
-    assert sessions.valid(session)
+    assert sessions.valid(*session)
     now[0] += auth.SESSION_TTL_SECONDS + 1
-    assert not sessions.valid(session)
+    assert not sessions.valid(*session)
 
 
 def test_codes_are_stored_hashed(tmp_path):
@@ -65,7 +66,8 @@ def test_failed_sign_ins_are_throttled(hub):
     for _ in range(auth.FAILURES_PER_MINUTE):
         assert hub.post("/api/session", json={"code": "x" * 43}).status_code == 401
     code = create_signin_code(hub.state_dir)
-    assert hub.post("/api/session", json={"code": code}).status_code == 429
+    assert hub.post("/api/session", json={"code": "x" * 43}).status_code == 429
+    assert hub.post("/api/session", json={"code": code}).status_code == 204
 
 
 def test_writes_need_the_hub_header(hub):

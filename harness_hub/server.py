@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__
-from .auth import COOKIE, SESSION_TTL_SECONDS, Sessions
+from .auth import SESSION_TTL_SECONDS, Sessions
 from .claim import CLAIMED, ClaimError, ClaimManager
 from .config import Settings
 from .daemon import DaemonClient, DaemonUnreachable
@@ -33,6 +33,8 @@ log = logging.getLogger("harness_hub")
 STATIC = resources.files("harness_hub") / "static"
 SIGNIN_COMMAND = "python -m harness_hub signin-link"
 REQUEST_HEADER = "x-hub-request"
+SESSION_HEADER = "x-hub-session"
+MAX_SIGNIN_BODY = 1024
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 SECURITY_HEADERS = [
@@ -123,11 +125,13 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if request.headers.get(REQUEST_HEADER) != "1":
                 return _error(403, "missing X-Hub-Request header")
             origin = request.headers.get("origin")
-            if origin is not None and origin.split("://", 1)[-1].lower() != request.headers.get("host", "").lower():
+            expected_origin = f"{'https' if settings.secure_cookies else 'http'}://{request.headers.get('host', '')}"
+            if origin is not None and (origin.lower() not in settings.allowed_origins()
+                                       or origin.lower() != expected_origin.lower()):
                 return _error(403, "cross-origin request refused")
-        if path == "/api/session":
+        if path == "/api/session" and request.method in ("GET", "POST"):
             return await call_next(request)
-        if not sessions.valid(request.cookies.get(COOKIE)):
+        if not sessions.valid(request.cookies.get(settings.cookie_name), request.headers.get(SESSION_HEADER)):
             return _error(401, "sign in first", signin_command=SIGNIN_COMMAND)
         return await call_next(request)
 
@@ -137,32 +141,51 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     @app.get("/api/session")
     async def get_session(request: Request):
-        return {"signed_in": sessions.valid(request.cookies.get(COOKIE)), "signin_command": SIGNIN_COMMAND,
+        return {"signed_in": sessions.valid(request.cookies.get(settings.cookie_name),
+                                            request.headers.get(SESSION_HEADER)), "signin_command": SIGNIN_COMMAND,
                 "version": __version__}
 
     @app.post("/api/session")
     async def sign_in(request: Request):
-        if sessions.throttled():
-            return _error(429, "too many sign-in attempts; wait a minute")
+        length = request.headers.get("content-length")
+        if length is not None:
+            try:
+                if int(length) < 0:
+                    return _error(400, "invalid Content-Length")
+                if int(length) > MAX_SIGNIN_BODY:
+                    return _error(413, "sign-in body is too large")
+            except ValueError:
+                return _error(400, "invalid Content-Length")
+        data = bytearray()
+        async for chunk in request.stream():
+            if len(data) + len(chunk) > MAX_SIGNIN_BODY:
+                return _error(413, "sign-in body is too large")
+            data.extend(chunk)
         try:
-            body = await request.json()
+            body = json.loads(data)
         except ValueError:
             body = None
         code = body.get("code") if isinstance(body, dict) else None
-        session = sessions.redeem_code(code) if isinstance(code, str) else None
-        if session is None:
+        was_throttled = sessions.throttled()
+        credentials = sessions.redeem_code(code)
+        if credentials is None:
+            if was_throttled:
+                return _error(429, "too many sign-in attempts; wait a minute")
             return _error(401, "that sign-in link is not valid; links work once, for ten minutes",
                           signin_command=SIGNIN_COMMAND)
-        response = Response(status_code=204)
-        response.set_cookie(COOKIE, session, max_age=SESSION_TTL_SECONDS, httponly=True, samesite="strict",
+        session, binding = credentials
+        response = Response(status_code=204, headers={SESSION_HEADER: binding})
+        response.set_cookie(settings.cookie_name, session, max_age=SESSION_TTL_SECONDS,
+                            httponly=True, samesite="strict",
                             secure=settings.secure_cookies, path="/")
         return response
 
     @app.delete("/api/session")
     async def sign_out(request: Request):
-        sessions.end(request.cookies.get(COOKIE))
+        sessions.end(request.cookies.get(settings.cookie_name))
         response = Response(status_code=204)
-        response.delete_cookie(COOKIE, path="/")
+        response.delete_cookie(settings.cookie_name, path="/", secure=settings.secure_cookies,
+                               httponly=True, samesite="strict")
         return response
 
     @app.get("/api/overview")
@@ -179,7 +202,12 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 discovery = await daemon.admin(key["token"])
                 record = await daemon.admin(key["token"], "/hub-claim")
                 if 401 in (discovery.status, record.status):
-                    claims.released()
+                    # A transient rejection must not destroy the owner's persistent key.
+                    confirmation = await daemon.admin(key["token"])
+                    if confirmation.status == 401:
+                        claims.released()
+                    else:
+                        error = "the owner API rejected the key once; retained it pending confirmation"
                 elif discovery.ok and record.ok:
                     ownership = ownership_view(discovery.body, record.body, key["key_id"])
                 else:

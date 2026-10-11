@@ -189,6 +189,7 @@ class HubClient:
         code = create_signin_code(self.state_dir)
         response = self.post("/api/session", json={"code": code})
         assert response.status_code == 204, response.text
+        self.client.headers["X-Hub-Session"] = response.headers["x-hub-session"]
         return response
 
     def wait_for(self, state: str, timeout: float = 5.0) -> dict:
@@ -211,7 +212,7 @@ def make_hub(tmp_path, fake_daemon):
     clients = []
 
     def make(**overrides):
-        settings = Settings(**{"daemon_url": "http://daemon.test", "state_dir": tmp_path / "state",
+        settings = Settings(**{"daemon_url": "https://daemon.test", "state_dir": tmp_path / "state",
                                "poll_seconds": 0.02, **overrides})
         app = create_app(settings, transport=fake_daemon.transport())
         client = TestClient(app, base_url=f"http://{HUB_HOST}")

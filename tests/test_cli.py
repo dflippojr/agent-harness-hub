@@ -52,3 +52,9 @@ def test_allowed_hosts():
 def test_bad_arguments_exit(tmp_path):
     with pytest.raises(SystemExit):
         cli.main(["--daemon-url", "ftp://nope", "--state-dir", str(tmp_path)])
+
+
+def test_signin_link_refuses_remote_http(tmp_path):
+    with pytest.raises(SystemExit):
+        cli.main(["signin-link", "--state-dir", str(tmp_path), "--url", "http://192.168.1.20:8120"])
+    assert not (tmp_path / "signin-codes.json").exists()

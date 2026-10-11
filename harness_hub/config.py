@@ -20,6 +20,8 @@ def normalize_daemon_url(value: str) -> str:
         raise ValueError("daemon URL must be http:// or https:// with a host")
     if parts.username or parts.password or parts.query or parts.fragment or parts.path not in ("", "/"):
         raise ValueError("daemon URL must be an origin only (no credentials, path, query or fragment)")
+    if parts.scheme == "http" and not _is_loopback(parts.hostname):
+        raise ValueError("daemon URL must be https unless it is a loopback address")
     return f"{parts.scheme}://{parts.netloc}"
 
 
@@ -51,6 +53,30 @@ class Settings:
     claim_name: str = "Hub"
     poll_seconds: float = 2.0
     extra_hosts: tuple[str, ...] = field(default=())
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "daemon_url", normalize_daemon_url(self.daemon_url))
+        if self.public_url:
+            object.__setattr__(self, "public_url", normalize_public_url(self.public_url))
+        if not _is_loopback(self.host) and not self.secure_cookies:
+            raise ValueError("non-loopback listen addresses require an https --public-url and an HTTPS proxy")
+        normalized = []
+        for host in self.extra_hosts:
+            origin = host if "://" in host else f"{'https' if self.secure_cookies else 'http'}://{host}"
+            parts = urlsplit(normalize_public_url(origin))
+            scheme = "https" if self.secure_cookies else "http"
+            if parts.scheme != scheme:
+                raise ValueError("allowed host must use the same scheme as the Hub public URL")
+            normalized.append(parts.netloc.lower())
+        object.__setattr__(self, "extra_hosts", tuple(normalized))
+
+    def allowed_origins(self) -> frozenset[str]:
+        scheme = "https" if self.secure_cookies else "http"
+        return frozenset(f"{scheme}://{host}" for host in self.allowed_hosts())
+
+    @property
+    def cookie_name(self) -> str:
+        return "__Host-hub_session" if self.secure_cookies else "hub_session"
 
     @property
     def url(self) -> str:

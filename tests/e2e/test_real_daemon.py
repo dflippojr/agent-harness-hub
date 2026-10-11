@@ -123,7 +123,9 @@ class Hub:
         link = subprocess.run([sys.executable, "-m", "harness_hub", "signin-link", "--state-dir", str(self.state_dir)],
                               capture_output=True, text=True, check=True).stdout.strip()
         assert link.startswith(self.url + "/#signin=")
-        assert self.call("POST", "/api/session", json={"code": link.split("#signin=", 1)[1]}).status_code == 204
+        response = self.call("POST", "/api/session", json={"code": link.split("#signin=", 1)[1]})
+        assert response.status_code == 204
+        self.http.headers["X-Hub-Session"] = response.headers["x-hub-session"]
 
     def claim_state(self) -> dict:
         return self.call("GET", "/api/claim").json()

@@ -23,7 +23,11 @@ SERVER_FILE = "server.json"
 def prepare_dir(path: Path) -> Path:
     """Create the state directory with owner-only permissions where the platform has them."""
     path.mkdir(parents=True, exist_ok=True)
-    if os.name != "nt":
+    if os.name == "nt":
+        from .windows_acl import protect
+
+        protect(path)
+    else:
         path.chmod(0o700)
     return path
 
@@ -32,9 +36,13 @@ def write_private(path: Path, text: str) -> None:
     """Atomically replace `path` with `text`, readable by this account only."""
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        if os.name != "nt":
-            os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            if os.name == "nt":
+                from .windows_acl import protect
+
+                protect(Path(tmp))
+            else:
+                os.fchmod(handle.fileno(), 0o600)
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
@@ -47,9 +55,42 @@ def write_private(path: Path, text: str) -> None:
 
 def read_json(path: Path, default: Any) -> Any:
     try:
+        if os.name == "nt" and path.exists():
+            from .windows_acl import protect
+
+            protect(path)
         return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return default
+
+
+@contextlib.contextmanager
+def signin_lock(state_dir: Path):
+    """Serialize CLI/server code updates across processes, using a persistent lock inode."""
+    path = prepare_dir(state_dir) / ".signin.lock"
+    with path.open("a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+
+            # Windows locks a byte range; ensure the byte exists without replacing the lock file.
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 class StateStore:
