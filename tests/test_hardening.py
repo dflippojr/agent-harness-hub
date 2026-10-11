@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
@@ -204,22 +205,23 @@ def test_windows_state_replaces_public_explicit_grants(tmp_path):
     existing.write_text('{"key": {"token": "dummy"}}', encoding="utf-8")
     assert StateStore(path).get("key")["token"] == "dummy"
     write_private(path / "signin-codes.json", "[]")
-    script = """
-param([string]$Target)
-$acl = Get-Acl -LiteralPath $Target
-$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$allowed = @($user, 'S-1-5-18')
-if (-not $acl.AreAccessRulesProtected) { throw 'DACL is not protected' }
-foreach ($rule in $acl.Access) {
-    $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
-    if ($sid -notin $allowed) { throw "unexpected principal $sid" }
-}
-"""
-    verify = tmp_path / "verify-acl.ps1"
-    verify.write_text(script, encoding="utf-8")
-    for target in (path, existing, path / "signin-codes.json"):
-        subprocess.run(["powershell.exe", "-NoProfile", "-File", str(verify), str(target)],
+    identity = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"],
+                              check=True, capture_output=True, text=True, timeout=10).stdout
+    owner_sid = re.search(r"S-1-\d+(?:-\d+)+", identity).group()
+    for number, target in enumerate((path, existing, path / "signin-codes.json")):
+        saved = tmp_path / f"acl-{number}.txt"
+        subprocess.run(["icacls", str(target), "/save", str(saved)],
                        check=True, capture_output=True, text=True, timeout=10)
+        descriptor = saved.read_text(encoding="utf-16-le").splitlines()[1]
+        assert descriptor.startswith("D:P"), descriptor  # protected DACL: no inherited public grants
+        grants = re.findall(r"\(([^)]+)\)", descriptor)
+        assert len(grants) == 2, descriptor
+        principals = set()
+        for grant in grants:
+            kind, _, access, _, _, principal = grant.split(";")
+            assert kind == "A" and access == "FA", descriptor
+            principals.add(principal)
+        assert principals == {owner_sid, "SY"}, descriptor
 
 
 def test_windows_acl_failure_prevents_private_state_use(tmp_path, monkeypatch):
