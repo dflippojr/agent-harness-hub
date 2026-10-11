@@ -196,6 +196,32 @@ auth.create_signin_code(Path(sys.argv[1]))
         proc.communicate(timeout=10)
 
 
+def _windows_sid(value):
+    """Expand SDDL aliases through Windows, so LA means the exact local Administrator SID."""
+    import ctypes
+    from ctypes import wintypes
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.LPVOID)]
+    advapi.ConvertSidToStringSidW.argtypes = [wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR)]
+    kernel.LocalFree.argtypes = [wintypes.HLOCAL]
+    kernel.LocalFree.restype = wintypes.HLOCAL
+    sid = wintypes.LPVOID()
+    text = wintypes.LPWSTR()
+    try:
+        if not advapi.ConvertStringSidToSidW(value, ctypes.byref(sid)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not advapi.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return text.value
+    finally:
+        if text:
+            kernel.LocalFree(ctypes.cast(text, wintypes.HLOCAL))
+        if sid:
+            kernel.LocalFree(sid)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows DACL")
 def test_windows_state_replaces_public_explicit_grants(tmp_path):
     path = tmp_path / "shared-state"
@@ -220,8 +246,8 @@ def test_windows_state_replaces_public_explicit_grants(tmp_path):
         for grant in grants:
             kind, _, access, _, _, principal = grant.split(";")
             assert kind == "A" and access == "FA", descriptor
-            principals.add(principal)
-        assert principals == {owner_sid, "SY"}, descriptor
+            principals.add(_windows_sid(principal))
+        assert principals == {owner_sid, "S-1-5-18"}, descriptor
 
 
 def test_windows_acl_failure_prevents_private_state_use(tmp_path, monkeypatch):
