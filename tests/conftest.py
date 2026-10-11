@@ -26,6 +26,7 @@ from harness_hub.server import create_app
 from .admin_fake import register_administration
 from .apps_fake import register_apps
 from .modules_fake import register_inventory
+from .pairing_fake import register_pairing
 from .settings_fake import register_settings
 
 HUB_HOST = "127.0.0.1:8120"
@@ -108,6 +109,8 @@ class FakeDaemon:
 
         @app.post("/api/v1/pair/requests/{rid}/token")
         async def redeem(rid: str, request: Request):
+            if rid in self.pairing_rows:
+                raise AssertionError("The Hub must never redeem an App's pairing request")
             row = self.requests.get(rid)
             if row is None:
                 return refusal(404, "no pairing request has that id", "not_found")
@@ -158,6 +161,7 @@ class FakeDaemon:
                 return JSONResponse({"detail": "requests from this machine need the local owner token"}, 401)
             return {"claimed": self.hub is not None, "hub": self.hub, "requests": []}
 
+        register_pairing(app, self, owner)
         register_apps(app, self, owner)
         register_inventory(app, self, owner)
         register_administration(app, self, owner)

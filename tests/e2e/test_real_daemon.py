@@ -9,8 +9,11 @@ daemon's own CLI, and every response the browser could see is checked for the Hu
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -299,6 +302,71 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         assert maintenance.status_code == 200, maintenance.text
         assert maintenance.json()["free_gb"] >= 0
         assert_no_secrets(first.bodies, token)
+
+        # Pairing requests (#519): an App asks with the SDK-shaped call and keeps its own verifier. The owner approves
+        # from the Hub with the code the App shows; the App redeems its own token, and no Hub response contains it.
+        def app_asks(name, scopes):
+            verifier = secrets.token_urlsafe(48)
+            challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+            asked = httpx.post(daemon["url"] + "/api/v1/pair/requests", timeout=10, json={
+                "name": name, "scopes": scopes, "catalog_app_id": "test.example.notes",
+                "code_challenge": challenge, "code_challenge_method": "S256"})
+            assert asked.status_code == 201, asked.text
+            return asked.json(), verifier
+
+        def app_redeems(rid, verifier):
+            return httpx.post(f"{daemon['url']}/api/v1/pair/requests/{rid}/token", timeout=10,
+                              json={"code_verifier": verifier})
+
+        def listed(rid):
+            reply = first.call("GET", "/api/pairing")
+            assert reply.status_code == 200, reply.text
+            return next(row for row in reply.json()["requests"] if row["id"] == rid)
+
+        asked, verifier = app_asks("Synthetic notes", ["sessions"])
+        rid, code = asked["id"], asked["match_code"]
+        row = listed(rid)
+        assert row["state"] == "pending" and row["needs"] == "approve" and "match_code" not in row
+        assert row["origin"] == "" and row["catalog_app_id"] == "test.example.notes"
+        assert row["disclosures"][0]["scope"] == "sessions" and row["disclosures"][0]["text"]
+        hub_rows = [r for r in first.call("GET", "/api/pairing").json()["requests"] if r["kind"] == "hub"]
+        assert hub_rows and all("match_code" not in r for r in hub_rows)
+        assert app_redeems(rid, verifier).status_code == 409  # nothing exists before the owner decides
+        wrong = "000000" if code != "000000" else "111111"
+        refused = first.call("POST", f"/api/pairing/{rid}/approve", headers=origin, json={"match": wrong})
+        assert refused.status_code == 400 and "match code" in refused.json()["detail"], refused.text
+        approved = first.call("POST", f"/api/pairing/{rid}/approve", headers=origin, json={"match": code})
+        assert approved.status_code == 200 and approved.json()["state"] == "approved", approved.text
+        assert first.call("POST", f"/api/pairing/{rid}/approve", headers=origin,
+                          json={"match": code}).status_code == 409
+        redeemed = app_redeems(rid, verifier)
+        assert redeemed.status_code == 201, redeemed.text
+        paired_token, paired_id = redeemed.json()["token"], redeemed.json()["app"]["id"]
+        assert paired_token.startswith("ha-")
+        row = listed(rid)
+        assert row["state"] == "redeemed" and row["key_id"] == paired_id and "match_code" not in row
+        assert any(app["id"] == paired_id for app in first.call("GET", "/api/apps").json()["apps"])
+
+        # Elevated scopes need the separate acknowledgement; then the owner withdraws the unredeemed approval.
+        asked, verifier = app_asks("Synthetic approver", ["sessions", "approvals"])
+        rid, code = asked["id"], asked["match_code"]
+        assert listed(rid)["elevated"] == ["approvals"]
+        refused = first.call("POST", f"/api/pairing/{rid}/approve", headers=origin, json={"match": code})
+        assert refused.status_code == 400 and refused.json()["error"]["code"] == "acknowledgement_required"
+        assert listed(rid)["state"] == "pending"
+        approved = first.call("POST", f"/api/pairing/{rid}/approve", headers=origin,
+                              json={"match": code, "acknowledge_elevated": True})
+        assert approved.status_code == 200 and approved.json()["state"] == "approved", approved.text
+        assert first.call("POST", f"/api/pairing/{rid}/deny", headers=origin, json={}).status_code == 400
+        withdrawn = first.call("POST", f"/api/pairing/{rid}/deny", headers=origin, json={"confirm": True})
+        assert withdrawn.status_code == 200 and withdrawn.json()["state"] == "denied", withdrawn.text
+        assert app_redeems(rid, verifier).status_code == 403
+        assert first.call("POST", "/api/pairing/pr-unknown/deny", headers=origin,
+                          json={"confirm": True}).status_code == 404
+        hub_rid = hub_rows[0]["id"]
+        assert first.call("POST", f"/api/pairing/{hub_rid}/deny", headers=origin,
+                          json={"confirm": True}).status_code == 403
+        assert_no_secrets(first.bodies, paired_token, token)
 
         # 4. A second Hub is refused with 409 and the release instruction.
         second = Hub(daemon, tmp_path / "hub-b")

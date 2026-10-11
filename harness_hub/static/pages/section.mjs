@@ -22,7 +22,7 @@ export const SECTIONS = [
     cli: ["harness hub status", "harness keys list", "harness keys revoke <kid>", "harness apps restore <app_id>"],
   },
   {
-    id: "pairing", label: "Pairing requests",
+    id: "pairing", label: "Pairing requests", ready: true,
     about: "Apps asking to pair: name, scopes, origin, match code and what each scope allows.",
     cli: ["harness pairing-requests list", "harness pairing-requests approve <rid> --match <code>",
       "harness pairing-requests confirm <rid> --match <code>", "harness pairing-requests deny <rid>"],

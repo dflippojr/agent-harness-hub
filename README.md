@@ -11,8 +11,8 @@ Installing the Hub is optional. Every Hub action is also a `harness` CLI command
 ## Status
 
 The Hub includes the server, first-run claim, sign-in, **Overview**, **Settings**, **Modules**, **Apps**,
-and **Accounts and maintenance**.
-Pairing requests and Marketplace have their own issues; until they ship, their pages list equivalent CLI commands.
+**Pairing requests** and **Accounts and maintenance**.
+Marketplace has its own issue; until it ships, its page lists equivalent CLI commands.
 
 Settings renders the daemon's complete registry, grouped by category, with types, defaults, allowed values,
 read-only guidance, current and pending revisions, and restart requirements. Validate shows field errors without
@@ -194,6 +194,33 @@ editable default caps.
 With Playwright installed locally, run the isolated Apps security regressions:
 `npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1`.
 These specs intercept all network requests and start no servers.
+
+### Pairing requests
+
+Pairing requests lists the App pairing requests of the last day ([agent-harness #519](https://github.com/dflippojr/agent-harness/issues/519)),
+newest first and grouped by state, with each one's name, scopes, catalog app id, origin (or "native app"), expiry
+countdown and next step. The Hub never projects or renders an App request's match code. Every scope shows the daemon's
+disclosure text exactly as given, as text, with its `standard` or `elevated` badge. The page polls every 5 seconds.
+Started from distinguishes owner-armed slots from App-initiated requests. App-initiated origin and catalog ids are
+stated by the requester, not verified; only the match code on your App's screen proves this is your App. For an armed
+slot, the page explains that you set the origin and catalog id when arming it.
+
+Approve and Confirm need the code the App is showing right now, typed into an empty field; the daemon compares it
+and refuses a wrong code. If the App shows no code or an error, deny. If your App reported that the slot was already
+claimed, withdraw that request. The owner's decision (2026-10-11) to withhold App codes from the owner view departs
+from #519 step 2; the daemon and CLI follow-up will apply the same rule as Hub claims. Elevated scopes (`sessions:all`, `approvals`, `remote_control`,
+`memory_library`, `homelab`) need a separate acknowledgement: Approve stays disabled until it is ticked, and the
+server refuses an approval without it before calling the daemon. If a name, origin or catalog id is withheld,
+Approve and Confirm are unavailable; review the request with `harness pairing-requests list` on the host. Deny
+remains available. Deny and Withdraw ask for confirmation in the page.
+A request that changed state (409) or no longer exists (404) refreshes the list with a short note. Hub claims are
+read-only and show `harness hub approve <id> --match <code>`, because they are decided only on the daemon host.
+
+Approval changes the request's state only: the App then redeems its own token from the daemon with its PKCE
+verifier, so the Hub never calls the App-side `claim` or `token` routes and never sees an App token. Every action
+shows its `harness pairing-requests` CLI equivalent. Arming slots for Hub entries belongs to Marketplace.
+Run the isolated browser regressions with Playwright installed locally:
+`npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1 pairing-security.spec.cjs`.
 
 ### Accounts and maintenance
 

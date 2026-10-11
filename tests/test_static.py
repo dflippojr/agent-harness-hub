@@ -56,12 +56,36 @@ def test_only_the_daemon_client_names_daemon_routes():
 def test_the_hub_never_claims_or_redeems_an_app_request():
     """App tokens go from the daemon straight to the App (agent-harness #519): the Hub only redeems its own claim."""
     daemon = text(PACKAGE / "daemon.py")
+    tree = ast.parse(daemon)
     assert daemon.count("/token") == 1
     assert re.search(r'"kind": "hub"', daemon)
     assert "/claim" not in daemon  # the App-side claim of an armed slot
-    assert "pairing-requests" not in daemon  # the owner API's App requests come with the Pairing section
+    # The one token route is inside the Hub's own claim redemption...
+    redeemers = [node.name for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
+                 and "/token" in ast.unparse(node)]
+    assert redeemers == ["redeem_hub_claim"]
+    # ...which only claim.py calls, with the request id of the Hub's own claim; no browser route reaches it.
+    for path in PYTHON:
+        if path.name not in ("daemon.py", "claim.py"):
+            assert "redeem_hub_claim" not in text(path), path
     claim = text(PACKAGE / "claim.py")
+    assert claim.count("redeem_hub_claim(") == 1 and 'claim["request_id"]' in claim
     assert 'app.get("role") != "hub"' in claim
+    # The owner API's App pairing routes are owner decisions only, never the App-side claim or token.
+    routes = next(node for node in tree.body if isinstance(node, ast.Assign)
+                  and getattr(node.targets[0], "id", "") == "PAIRING_ROUTES")
+    paths = [value.elts[1].value for value in routes.value.values]
+    assert paths == ["/pairing-requests", "/pairing-requests/{rid}/approve", "/pairing-requests/{rid}/confirm",
+                     "/pairing-requests/{rid}/deny"]
+    assert "CLAIM_REQUESTS" not in ast.unparse(next(node for node in ast.walk(tree)
+                                                    if isinstance(node, ast.AsyncFunctionDef)
+                                                    and node.name == "pairing"))
+    # And no Python module or browser file names the App-side routes at all.
+    for path in PYTHON:
+        if path.name != "daemon.py":
+            assert not any("/pair/requests" in value for value in strings(path)), path
+    for path in WEB:
+        assert "/pair/requests" not in text(path), path
 
 
 def test_tap_targets_are_at_least_44px():

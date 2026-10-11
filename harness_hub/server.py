@@ -43,6 +43,8 @@ from .views import (
     module_view,
     overview,
     ownership_view,
+    pairing_request_view,
+    pairing_view,
     registry_view,
     settings_error,
     valid_limits,
@@ -370,6 +372,81 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return {"id": app_view(reply.body)["id"], "retention_days": app_view(reply.body)["retention_days"]}
         except DaemonUnreachable:
             return _error(503, "The daemon did not answer. Refresh the state before repeating a write.")
+
+    @app.api_route("/api/pairing", methods=["GET"])
+    @app.api_route("/api/pairing/{rid}/{action}", methods=["POST"])
+    async def pairing_action(request: Request, rid: str = "", action: str = ""):
+        """App pairing requests: list, approve, confirm or deny. Tokens go from the daemon straight to the App."""
+        operation = action or "list"
+        if operation not in ("list", "approve", "confirm", "deny") or rid and not re.fullmatch(
+                r"[A-Za-z0-9_-]{1,80}", rid):
+            return _error(404, "Unknown pairing operation")
+        key = claims.key()
+        if key is None:
+            return _error(409, "Claim this Hub on Overview before deciding pairing requests.")
+        body = None
+        if request.method == "POST":
+            if not request.headers.get("origin"):
+                return _error(403, "Pairing decisions require a same-origin Origin")
+            data = bytearray()
+            async for chunk in request.stream():
+                if len(data) + len(chunk) > 1024:
+                    return _error(413, "Pairing body is too large")
+                data.extend(chunk)
+            try:
+                body = json.loads(data or b"{}")
+            except ValueError:
+                return _error(400, "Pairing body must be JSON")
+            fields = {"approve": {"match", "acknowledge_elevated"}, "confirm": {"match"}, "deny": {"confirm"}}
+            if not isinstance(body, dict) or set(body) - fields[operation]:
+                return _error(400, "Unexpected pairing fields")
+            if operation == "deny":
+                if body.pop("confirm", None) is not True:
+                    return _error(400, "Confirm this action in the page first")
+                body = None
+            else:
+                match = body.get("match")
+                # Typed by the owner from the App's own screen; the daemon compares it.
+                if not isinstance(match, str) or not re.fullmatch(r"[0-9][0-9 -]{0,31}", match.strip()):
+                    return _error(400, "Type the match code the App shows")
+                body["match"] = match.strip()
+            if operation == "approve":
+                acknowledged = body.get("acknowledge_elevated", False)
+                if type(acknowledged) is not bool:
+                    return _error(400, "acknowledge_elevated must be a boolean")
+                body.pop("acknowledge_elevated", None)
+                if acknowledged:
+                    body["acknowledge_elevated"] = True
+        try:
+            reply = None
+            if operation == "approve" and "acknowledge_elevated" not in body:
+                # Never send an approval for elevated scopes without the owner's separate acknowledgement.
+                reply = await daemon.pairing(key["token"], "list")
+                if reply.ok:
+                    if not isinstance(reply.body, list):
+                        return _error(502, "The daemon returned invalid pairing requests.")
+                    row = next((pairing_request_view(row) for row in reply.body
+                                if isinstance(row, dict) and row.get("id") == rid), None)
+                    if row and row["elevated"]:
+                        return _error(400, "Elevated scopes need the separate acknowledgement before approval.",
+                                      error={"code": "acknowledgement_required"})
+                    reply = None
+            if reply is None:
+                reply = await daemon.pairing(key["token"], operation, rid, body)
+            if reply.status == 401:
+                confirmation = await daemon.admin(key["token"])
+                if confirmation.status == 401:
+                    claims.released()
+                return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
+        except DaemonUnreachable:
+            return _error(503, "The daemon did not answer. Refresh the list before repeating a decision.")
+        if not reply.ok:
+            return JSONResponse(settings_error(reply.body, reply.status), status_code=reply.status)
+        if operation == "list":
+            if not isinstance(reply.body, list):
+                return _error(502, "The daemon returned invalid pairing requests.")
+            return pairing_view(reply.body, tuple(store.secrets()))
+        return pairing_request_view(reply.body, tuple(store.secrets()))
 
     @app.get("/api/manage/catalog")
     async def administration_catalog():
