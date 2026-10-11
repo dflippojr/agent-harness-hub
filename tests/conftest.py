@@ -197,8 +197,9 @@ class HubClient:
 
     def _keep(self, response):
         self.bodies.append(response.text)
-        # Every header but the session cookie, a random value that is not a daemon credential.
-        self.bodies.extend(v for k, v in response.headers.items() if k.lower() != "set-cookie")
+        # Session cookies and bindings are random Hub values, not daemon credentials.
+        self.bodies.extend(v for k, v in response.headers.items()
+                           if k.lower() not in {"set-cookie", "x-hub-session"})
         return response
 
     def get(self, path, **kw):
