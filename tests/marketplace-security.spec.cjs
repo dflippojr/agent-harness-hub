@@ -11,7 +11,7 @@ const SESSIONS = { scope: "sessions", tier: "standard", text: "This app can star
 const HOMELAB = { scope: "homelab", tier: "elevated", text: "This app's tasks can **read your homelab services' logs**.",
   justification: "Synthetic justification for homelab, long enough for the schema." };
 const entry = (id, extra = {}) => ({
-  catalog_app_id: id, name: "Synthetic " + id.split(".").pop(), version: "1.0.0", summary: "Synthetic local entry.",
+  consent_digest: "a".repeat(64), catalog_app_id: id, name: "Synthetic " + id.split(".").pop(), version: "1.0.0", summary: "Synthetic local entry.",
   publisher: { name: "Synthetic publisher", id: "pub-0a1b2c3d4e5f" }, icon: "", scopes: [SESSIONS], elevated: [],
   browser_origins: [], verified: false, state: "not_paired", paired: [], pending_pairing: false,
   unverified_origin: { paired: [], pending_pairing: false }, slots: [], ...extra,
@@ -69,7 +69,9 @@ test("entries show their state, the not-verified label and native keys; nothing 
   await expect(card(page, "test.example.notes")).toContainText("k-notes");
   await expect(card(page, "test.example.notes")).toContainText("https://notes.example.test");
   await expect(card(page, "test.example.native").locator('[data-field="state"]')).toHaveText("Not paired");
-  await expect(card(page, "test.example.ops").locator('[data-field="state"]')).toHaveText("Pending");
+  await expect(card(page, "test.example.ops").locator('[data-field="state"]')).toHaveText("Not paired");
+  await expect(card(page, "test.example.ops").locator('[data-field="pending"]')).toHaveText("Pending");
+  await expect(card(page, "test.example.ops")).toContainText("The requester chose that id; it is not verified.");
   for (const id of ["test.example.notes", "test.example.native", "test.example.ops"]) {
     await expect(card(page, id).getByText("Local entry, not verified", { exact: true })).toBeVisible();
   }
@@ -90,7 +92,7 @@ test("Set up opens the consent screen and nothing is armed until Approve; then t
       name: "Synthetic native" }, view: view([entry("test.example.native", { slots: [armed] })]) } : null });
   await card(page, "test.example.native").getByRole("button", { name: "Set up Synthetic native" }).click();
   const consent = page.locator(".market-consent");
-  await expect(consent.getByRole("heading", { name: "Set up Synthetic native?" })).toBeVisible();
+  await expect(consent.getByRole("heading", { name: "Set up Synthetic native (test.example.native)?" })).toBeVisible();
   await expect(consent.locator('[data-scope="sessions"] .disclosure-text')).toHaveText(SESSIONS.text);
   await expect(consent).toContainText("Publisher's reason (not verified): " + SESSIONS.justification);
   await expect(consent).toContainText("Native app: when it claims the slot");
@@ -141,7 +143,7 @@ test("elevated scopes need the acknowledgement and a browser app needs its exact
   await approve.click();
   await expect.poll(() => writes.length).toBe(1);
   expect(writes[0].body).toEqual({ catalog_app_id: "test.example.ops", scopes: ["sessions", "homelab"],
-    origin: "https://ops2.example.test", acknowledge_elevated: true });
+    origin: "https://ops2.example.test", acknowledge_elevated: true, consent_digest: "a".repeat(64) });
   await expect(page.locator(".market-handoff")).toContainText("The app must claim it from https://ops2.example.test");
 
   await page.locator(".market-handoff").getByRole("button", { name: "Done" }).click();

@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from harness_hub.views import SCOPE_DISCLOSURES, entry_view
+from harness_hub.views import SCOPE_DISCLOSURES, entry_digest, entry_view
 
 from .conftest import HUB_HOST, assert_no_secrets
 from .marketplace_fake import manifest_entry
@@ -39,6 +39,13 @@ def by_id(data):
 
 
 def arm(claimed, body, headers=None):
+    if isinstance(body, dict) and "consent_digest" not in body:
+        listed = claimed.get("/api/marketplace")
+        if listed.status_code == 200:
+            entry = by_id(listed.json()).get(body.get("catalog_app_id")) if isinstance(
+                body.get("catalog_app_id"), str) else None
+            if entry:
+                body = {**body, "consent_digest": entry["consent_digest"]}
     return claimed._keep(claimed.client.post("/api/marketplace/arm", json=body,
                                              headers=ORIGIN if headers is None else headers))
 
@@ -62,7 +69,7 @@ def test_entries_show_display_fields_state_and_unverified_origin_only(claimed, f
     assert ops["scopes"][1]["justification"].startswith("Synthetic justification for homelab")
     assert set(notes) == {"catalog_app_id", "name", "version", "summary", "publisher", "icon", "scopes", "elevated",
                           "browser_origins", "verified", "state", "paired", "pending_pairing", "unverified_origin",
-                          "slots"}
+                          "slots", "consent_digest"}
     body = claimed.bodies[-1]
     # The manifest's URLs, e-mail addresses and review evidence never reach the browser.
     assert "example.invalid" not in body and "@" not in body and "review" not in body
@@ -247,7 +254,74 @@ def test_marketplace_needs_a_claimed_hub_and_a_signed_in_owner(hub, fake_daemon,
 
 def test_a_token_shaped_entry_name_never_becomes_the_slot_name(claimed, fake_daemon, entries):
     fake_daemon.app_entries[1]["manifest"]["app"]["display_name"] = fake_daemon.hub_token
-    reply = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]})
+    reply = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"],
+                          "consent_digest": entry_digest(entry_view(fake_daemon.app_entries[1]))})
     assert reply.status_code == 201, reply.text
     assert fake_daemon.armed[0]["name"] == "[withheld: token-shaped]"
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
+
+
+@pytest.mark.parametrize("field", ["display_name", "summary", "version", "publisher", "icon", "justification"])
+def test_consent_rejects_changed_identity(claimed, fake_daemon, entries, field):
+    shown = by_id(market(claimed))["test.example.native"]
+    app = entries[1]["manifest"]["app"]
+    if field == "publisher":
+        app[field]["name"] = "Different publisher"
+    elif field == "justification":
+        app["scopes"][0][field] = "Different publisher reason"
+    else:
+        app[field] = ICON if field == "icon" else "Different identity"
+    reply = arm(claimed, {"catalog_app_id": shown["catalog_app_id"], "scopes": ["sessions"],
+                          "consent_digest": shown["consent_digest"]})
+    assert reply.status_code == 409 and "entry changed" in reply.json()["detail"]
+    assert fake_daemon.armed == []
+
+
+def test_consent_digest_is_required_and_does_not_include_live_slots(claimed, fake_daemon, entries):
+    shown = by_id(market(claimed))["test.example.native"]
+    assert entry_digest({**shown, "slots": [{"id": "pr-other"}]}) == shown["consent_digest"]
+    reply = claimed._keep(claimed.client.post("/api/marketplace/arm", headers=ORIGIN,
+                                             json={"catalog_app_id": shown["catalog_app_id"], "scopes": ["sessions"]}))
+    assert reply.status_code == 409 and fake_daemon.armed == []
+
+
+@pytest.mark.parametrize("binding", ["token_origin", "long_origin", "many_origins", "many_scopes", "token_scope"])
+def test_lossy_bindings_withhold_entire_entry(claimed, fake_daemon, entries, binding):
+    app = entries[1]["manifest"]["app"]
+    if binding == "token_origin":
+        app["browser_origins"] = ["https://ha-notes.example", "https://ha-tasks.example"]
+    elif binding == "long_origin":
+        app["browser_origins"] = ["https://" + "a" * 290 + ".example.test"]
+    elif binding == "many_origins":
+        app["browser_origins"] = [f"https://app{i}.test" for i in range(9)]
+    elif binding == "many_scopes":
+        app["scopes"] = [{"scope": f"scope{i}"} for i in range(17)]
+    else:
+        app["scopes"] = [{"scope": "invalid-scope"}]
+    data = market(claimed)
+    assert data["withheld"] == 1 and "test.example.native" not in by_id(data)
+    assert arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]}).status_code == 404
+    assert fake_daemon.armed == []
+
+
+def test_raw_origins_are_normalized_like_the_daemon(claimed, fake_daemon, entries):
+    entries[0]["manifest"]["app"]["browser_origins"] = ["https://NOTES.example.test:443/"]
+    reply = arm(claimed, {"catalog_app_id": "test.example.notes", "scopes": ["sessions"],
+                          "origin": "https://notes.example.test/"})
+    assert reply.status_code == 201, reply.text
+    assert fake_daemon.armed[0]["origin"] == "https://notes.example.test"
+
+
+def test_publisher_controls_are_stripped_before_display_cap_and_daemon_name(claimed, fake_daemon, entries):
+    app = entries[1]["manifest"]["app"]
+    controls = "\u202e\u2066\u2067\u2068\u2069\u200b\x00\n\t"
+    app.update(display_name=controls * 20 + "Visible name", summary=controls + "Summary", version=controls + "1.0")
+    app["publisher"].update(name=controls + "Publisher", id=controls + "publisher-id")
+    app["scopes"][0]["justification"] = controls + "Reason"
+    shown = by_id(market(claimed))["test.example.native"]
+    assert shown["name"] == "Visible name" and shown["summary"] == "Summary" and shown["version"] == "1.0"
+    assert shown["publisher"] == {"name": "Publisher", "id": "publisher-id"}
+    assert shown["scopes"][0]["justification"] == "Reason"
+    reply = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]})
+    assert reply.status_code == 201, reply.text
+    assert fake_daemon.armed[0]["name"] == "Visible name"

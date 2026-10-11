@@ -119,7 +119,7 @@ export function renderMarketplace(main) {
     return h("span", { class: "entry-icon", "aria-hidden": "true" }, (entry.name || entry.catalog_app_id).slice(0, 1));
   }
   function card(entry) {
-    const [label, tone] = STATES[entry.pending_pairing ? "pending" : entry.state] || ["Unknown", "off"];
+    const [label, tone] = STATES[entry.state] || ["Unknown", "off"];
     const box = h("section", { class: "card market-entry", "data-entry": entry.catalog_app_id },
       h("div", { class: "entry-head" }, icon(entry), h("div", {},
         h("h2", {}, entry.name || entry.catalog_app_id),
@@ -127,9 +127,11 @@ export function renderMarketplace(main) {
           (entry.version ? ` · version ${entry.version}` : "")))),
       entry.summary ? h("p", {}, entry.summary) : null,
       h("p", { class: "entry-pills" }, h("span", { class: "pill off" }, "Local entry, not verified"), " ",
-        h("span", { class: "pill " + tone, "data-field": "state" }, label)),
-      entry.pending_pairing ? h("p", { class: "muted" }, "A pairing request for this app is in progress." +
-        (entry.state === "paired" ? " It is also already paired." : "")) : null,
+        h("span", { class: "pill " + tone, "data-field": "state" }, label),
+        entry.pending_pairing ? h("span", { class: "pill wait", "data-field": "pending" }, "Pending") : null),
+      entry.pending_pairing && !entry.slots?.length ? h("p", { class: "muted" },
+        "A request naming this app's catalog id is pending on Pairing requests. " +
+        "The requester chose that id; it is not verified.") : null,
       facts([["Catalog app id", entry.catalog_app_id],
         ["Browser origins", entry.browser_origins.join(", ") || "None: a native app"],
         ["Paired key ids", entry.paired.join(", ") || "None"],
@@ -215,7 +217,8 @@ export function renderMarketplace(main) {
     const ack = entry.elevated.length ? h("input", { type: "checkbox", "data-field": "ack" }) : null;
     const approve = button("Approve", () => {
       if (approve.disabled) return;
-      const body = { catalog_app_id: entry.catalog_app_id, scopes: entry.scopes.map((s) => s.scope) };
+      const body = { catalog_app_id: entry.catalog_app_id, scopes: entry.scopes.map((s) => s.scope),
+        consent_digest: entry.consent_digest };
       if (origin) body.origin = origin;
       if (ack) body.acknowledge_elevated = true;
       perform(async () => {
@@ -245,7 +248,7 @@ export function renderMarketplace(main) {
     ack?.addEventListener("change", update);
     const cancel = button("Cancel", () => clear(panel));
     clear(panel, h("section", { class: "card warn market-consent", role: "region", "aria-labelledby": "consent-title" },
-      h("h2", { id: "consent-title", tabindex: "-1" }, `Set up ${name}?`),
+      h("h2", { id: "consent-title", tabindex: "-1" }, `Set up ${name} (${entry.catalog_app_id})?`),
       h("p", {}, `${entry.catalog_app_id} · ${entry.publisher.name || "Unknown publisher"} · Local entry, not verified. ` +
         "Nothing is armed until you approve."),
       h("h3", {}, "Scopes it will get"), disclosureList(entry.scopes),

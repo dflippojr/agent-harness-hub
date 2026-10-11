@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 import time
+import unicodedata
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import __version__
 from .claim import CLAIMED, PENDING, RELEASE_COMMAND, ClaimManager
@@ -573,6 +577,36 @@ def _key_ids(value: Any) -> list[str]:
     return [_app_id(v) for v in value[:64] if _app_id(v)] if isinstance(value, list) else []
 
 
+def entry_text(value: Any, limit: int = 200, secrets: tuple[str, ...] = ()) -> str:
+    """Publisher display text cannot reorder surrounding labels or carry invisible controls."""
+    if isinstance(value, str):
+        value = "".join(char for char in value if unicodedata.category(char) not in {"Cc", "Cf"})
+    return _app_text(value, limit, secrets)
+
+
+def normalize_origin(value: str) -> str:
+    """Mirror the daemon's apps.normalize_origin for entry binding comparisons."""
+    parsed = urlsplit(value.strip())
+    port = parsed.port
+    if (parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password
+            or parsed.query or parsed.fragment or parsed.path not in ("", "/")):
+        raise ValueError("origin must contain only a scheme, host, and optional port")
+    host = parsed.hostname.lower()
+    if parsed.scheme == "http" and host not in ("localhost", "127.0.0.1", "::1"):
+        raise ValueError("browser origins must use https")
+    if ":" in host:
+        host = f"[{host}]"
+    default_port = (parsed.scheme == "http" and port == 80) or (parsed.scheme == "https" and port == 443)
+    return f"{parsed.scheme}://{host}{f':{port}' if port is not None and not default_port else ''}"
+
+
+def entry_digest(entry: dict) -> str:
+    """Bind consent to every displayed entry field; live slots and the digest itself are excluded."""
+    shown = {key: value for key, value in entry.items() if key not in {"slots", "consent_digest"}}
+    canonical = json.dumps(shown, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def entry_view(row: Any, secrets: tuple[str, ...] = ()) -> dict | None:
     """One entry as the daemon validated it, or None when it does not match the entries contract."""
     if not isinstance(row, dict) or row.get("verified") is not False or row.get("state") not in ENTRY_STATES:
@@ -584,33 +618,48 @@ def entry_view(row: Any, secrets: tuple[str, ...] = ()) -> dict | None:
             app.get("app_id") != catalog_app_id) or not isinstance(app.get("display_name"), str):
         return None
     publisher = app.get("publisher") if isinstance(app.get("publisher"), dict) else {}
+    declared = app.get("scopes")
+    if not isinstance(declared, list) or len(declared) > 16:
+        return None
     scopes = []
-    for item in app.get("scopes", [])[:16] if isinstance(app.get("scopes"), list) else []:
+    for item in declared:
         scope = item.get("scope") if isinstance(item, dict) else None
         if not isinstance(scope, str) or not SCOPE_NAME.fullmatch(scope) or scope == "admin":
             return None
         tier = "elevated" if scope in ELEVATED_SCOPES or item.get("risk_tier") == "elevated" else "standard"
         scopes.append({"scope": scope, "tier": tier, "text": SCOPE_DISCLOSURES.get(scope, ""),
-                       "justification": _app_text(item.get("justification"), 1000, secrets)})
+                       "justification": entry_text(item.get("justification"), 1000, secrets)})
     if not scopes:
         return None
     origins = app.get("browser_origins") if isinstance(app.get("browser_origins"), list) else []
-    if any(not isinstance(origin, str) or not origin.startswith("https://") for origin in origins):
+    # Binding fields must survive the display projection exactly: never arm a prefix or a redacted value.
+    if len(origins) > 8 or any(not isinstance(origin, str) or len(origin) > 300
+                               or _app_text(origin, 300) != origin
+                               or any(unicodedata.category(char) in {"Cc", "Cf"} for char in origin)
+                               for origin in origins):
+        return None
+    try:
+        for origin in origins:
+            normalize_origin(origin)
+    except ValueError:
         return None
     unverified = row.get("unverified_origin") if isinstance(row.get("unverified_origin"), dict) else {}
     icon = app.get("icon")
-    return {"catalog_app_id": catalog_app_id, "name": _app_text(app.get("display_name"), 80, secrets),
-            "version": _app_text(app.get("version"), 64, secrets),
-            "summary": _app_text(app.get("summary"), 280, secrets),
-            "publisher": {"name": _app_text(publisher.get("name"), 80, secrets),
-                          "id": _app_text(publisher.get("id"), 64, secrets)},
+    shown = {"catalog_app_id": catalog_app_id, "name": entry_text(app.get("display_name"), 80, secrets),
+            "version": entry_text(app.get("version"), 64, secrets),
+            "summary": entry_text(app.get("summary"), 280, secrets),
+            "publisher": {"name": entry_text(publisher.get("name"), 80, secrets),
+                          "id": entry_text(publisher.get("id"), 64, secrets)},
             "icon": icon if isinstance(icon, str) and INLINE_ICON.fullmatch(icon) else "",
             "scopes": scopes, "elevated": [item["scope"] for item in scopes if item["tier"] == "elevated"],
-            "browser_origins": [_app_text(origin, 300, secrets) for origin in origins[:8]],
+            "browser_origins": list(origins),
             "verified": False, "state": row["state"], "paired": _key_ids(row.get("paired")),
             "pending_pairing": row.get("pending_pairing") is True,
             "unverified_origin": {"paired": _key_ids(unverified.get("paired")),
                                   "pending_pairing": unverified.get("pending_pairing") is True}}
+
+    shown["consent_digest"] = entry_digest(shown)
+    return shown
 
 
 def entries_view(body: Any, secrets: tuple[str, ...] = ()) -> tuple[list[dict], int]:

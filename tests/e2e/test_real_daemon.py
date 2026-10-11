@@ -401,7 +401,8 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
             return claimed_slot.json(), verifier
 
         armed = first.call("POST", "/api/marketplace/arm", headers=origin,
-                           json={"catalog_app_id": planner_id, "scopes": ["sessions"]})
+                           json={"catalog_app_id": planner_id, "scopes": ["sessions"],
+                                 "consent_digest": entry(market(), planner_id)["consent_digest"]})
         assert armed.status_code == 201, armed.text
         slot = armed.json()["request"]
         assert slot["state"] == "armed" and slot["origin"] == "" and armed.json()["daemon_url"] == daemon["url"]
@@ -435,7 +436,8 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         assert first.call("POST", "/api/marketplace/arm", headers=origin, json={
             "catalog_app_id": web_id, "scopes": ["sessions"]}).status_code == 400
         armed = first.call("POST", "/api/marketplace/arm", headers=origin,
-                           json={"catalog_app_id": web_id, "scopes": ["sessions"], "origin": web_origin})
+                           json={"catalog_app_id": web_id, "scopes": ["sessions"], "origin": web_origin,
+                                 "consent_digest": entry(market(), web_id)["consent_digest"]})
         assert armed.status_code == 201, armed.text
         rid = armed.json()["request"]["id"]
         assert entry(market(), web_id)["pending_pairing"] is True

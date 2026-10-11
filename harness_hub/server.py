@@ -38,11 +38,15 @@ from .views import (
     claim_view,
     control_view,
     entries_view,
+    entry_digest,
+    entry_text,
+    entry_view,
     erasures_view,
     health_view,
     limits_view,
     marketplace_slots,
     module_view,
+    normalize_origin,
     overview,
     ownership_view,
     pairing_request_view,
@@ -352,7 +356,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             body = json.loads(data or b"{}")
         except ValueError:
             return _error(400, "Set-up body must be JSON")
-        if not isinstance(body, dict) or set(body) - {"catalog_app_id", "scopes", "origin", "acknowledge_elevated"}:
+        if not isinstance(body, dict) or set(body) - {"catalog_app_id", "scopes", "origin", "acknowledge_elevated",
+                                                               "consent_digest"}:
             return _error(400, "Unexpected set-up fields")
         catalog_app_id, scopes = body.get("catalog_app_id"), body.get("scopes")
         origin, acknowledged = body.get("origin", ""), body.get("acknowledge_elevated", False)
@@ -369,25 +374,34 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return _error(409, f"The entries could not be read ({detail}). Fix them before setting up an app.")
             if not valid_inventory(reply.body):
                 return _error(502, "The daemon returned an invalid inventory.")
-            # No exact-secret pass-through here: the entry's name becomes the slot's name on the daemon, so a
-            # token-shaped one (the Hub key included) is redacted rather than kept for the response guard.
-            entries, _ = entries_view(reply.body)
-            entry = next((row for row in entries if row["catalog_app_id"] == catalog_app_id), None)
+            raw_entry = next((row for row in reply.body.get("entries", [])
+                              if isinstance(row, dict) and row.get("catalog_app_id") == catalog_app_id), None)
+            entry = entry_view(raw_entry)
             if entry is None:
                 return _error(404, "No local entry has that catalog app id. Refresh the Marketplace.")
-            declared = [item["scope"] for item in entry["scopes"]]
+            raw_app = raw_entry["manifest"]["app"]
+            declared = [item["scope"] for item in raw_app["scopes"]]
             if sorted(scopes) != sorted(declared):
                 return _error(409, "The entry's scopes changed since the consent screen was shown. Review it again.")
-            if entry["browser_origins"] and origin not in entry["browser_origins"]:
+            declared_origins = raw_app.get("browser_origins") or []
+            try:
+                bound_origin = normalize_origin(origin) if origin else ""
+                allowed = {normalize_origin(value) for value in declared_origins}
+            except ValueError:
                 return _error(400, "Choose one of the entry's browser origins.")
-            if not entry["browser_origins"] and origin:
+            if allowed and bound_origin not in allowed:
+                return _error(400, "Choose one of the entry's browser origins.")
+            if not allowed and origin:
                 return _error(400, "This entry declares no browser origin: it is set up as a native app.")
+            if body.get("consent_digest") != entry_digest(entry):
+                return _error(409, "The entry changed since the consent screen was shown. Review it again.")
             if entry["elevated"] and not acknowledged:
                 return _error(400, "Elevated scopes need the separate acknowledgement before setup.",
                               error={"code": "acknowledgement_required"})
-            arm = {"catalog_app_id": catalog_app_id, "scopes": declared, "name": entry["name"].strip()[:60]}
-            if origin:
-                arm["origin"] = origin
+            arm = {"catalog_app_id": catalog_app_id, "scopes": declared,
+                   "name": entry_text(raw_app["display_name"], 80).strip()[:60]}
+            if bound_origin:
+                arm["origin"] = bound_origin
             if entry["elevated"]:
                 arm["acknowledge_elevated"] = True
             reply = await daemon.pairing(key["token"], "arm", body=arm)
