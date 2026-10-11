@@ -539,10 +539,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         try:
             reply = await daemon.apps(key["token"], operation, app_id, body)
             if reply.status == 401:
-                confirmation = await daemon.admin(key["token"])
-                if confirmation.status == 401:
-                    claims.released()
-                return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
+                return await refused(key["token"])
             if not reply.ok:
                 return JSONResponse(settings_error(reply.body, reply.status), status_code=reply.status)
             if operation == "revoke":
@@ -560,10 +557,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 # /hub does not carry retention; read only the token-free key list for this detail.
                 keys = await daemon.apps(key["token"], "keys")
                 if keys.status == 401:
-                    confirmation = await daemon.admin(key["token"])
-                    if confirmation.status == 401:
-                        claims.released()
-                    return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
+                    return await refused(key["token"])
                 if not keys.ok:
                     return _error(keys.status, f"App detail could not be read (HTTP {keys.status}).")
                 if not isinstance(keys.body, list):
@@ -638,10 +632,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 async with pairing_consent_lock:
                     reply = await daemon.pairing(key["token"], operation, rid, body)
             if reply.status == 401:
-                confirmation = await daemon.admin(key["token"])
-                if confirmation.status == 401:
-                    claims.released()
-                return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
+                return await refused(key["token"])
         except DaemonUnreachable:
             return _error(503, "The daemon did not answer. Refresh the list before repeating a decision.")
         if not reply.ok:
@@ -718,10 +709,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     return _error(409, "The complete proposal must be reviewed at this hash. Review on the host CLI.")
             reply = await daemon.administration(key["token"], operation, targets, body, params)
             if reply.status == 401:
-                confirmation = await daemon.admin(key["token"])
-                if confirmation.status == 401:
-                    claims.released()
-                return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
+                return await refused(key["token"])
             if not reply.ok:
                 return JSONResponse(settings_error(reply.body, reply.status), status_code=reply.status)
             if reply.status == 204:
@@ -799,10 +787,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         try:
             reply = await daemon.settings(key["token"], operation, body, name)
             if reply.status == 401:
-                confirmation = await daemon.admin(key["token"])
-                if confirmation.status == 401:
-                    claims.released()
-                return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
+                return await refused(key["token"])
         except DaemonUnreachable:
             return _error(503, "The daemon did not answer. Check its health before repeating a write.")
         if not reply.ok:
