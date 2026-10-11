@@ -92,6 +92,8 @@ test("Set up opens the consent screen and nothing is armed until Approve; then t
       name: "Synthetic native" }, view: view([entry("test.example.native", { slots: [armed] })]) } : null });
   await card(page, "test.example.native").getByRole("button", { name: "Set up Synthetic native" }).click();
   const consent = page.locator(".market-consent");
+  await expect(consent).toContainText("Arming grants scope consent.");
+  await expect(consent).toContainText("Both browser and native claims wait for you to type the code");
   await expect(consent.getByRole("heading", { name: "Set up Synthetic native (test.example.native)?" })).toBeVisible();
   await expect(consent.locator('[data-scope="sessions"] .disclosure-text')).toHaveText(SESSIONS.text);
   await expect(consent).toContainText("Publisher's reason (not verified): " + SESSIONS.justification);
@@ -125,6 +127,7 @@ test("elevated scopes need the acknowledgement and a browser app needs its exact
     request: slot("pr-ops", { origin: "https://ops2.example.test" }), daemon_url: "https://daemon.test", name: "Synthetic ops" } }) });
   await card(page, "test.example.ops").getByRole("button", { name: /^Set up/ }).click();
   const consent = page.locator(".market-consent");
+  await expect(consent).toContainText("Claims and redemption must use the chosen exact origin");
   await expect(consent.locator('[data-scope="homelab"] .pill')).toHaveText("elevated");
   await expect(consent.locator('[data-scope="homelab"] .disclosure-text')).toHaveText(HOMELAB.text);
   const approve = consent.getByRole("button", { name: "Approve" });
@@ -145,52 +148,68 @@ test("elevated scopes need the acknowledgement and a browser app needs its exact
   expect(writes[0].body).toEqual({ catalog_app_id: "test.example.ops", scopes: ["sessions", "homelab"],
     origin: "https://ops2.example.test", acknowledge_elevated: true, consent_digest: "a".repeat(64) });
   await expect(page.locator(".market-handoff")).toContainText("The app must claim it from https://ops2.example.test");
+  await expect(page.locator(".market-handoff")).toContainText("confirm before redemption");
+  await expect(page.locator(".market-handoff")).not.toContainText("approves it at once");
 
   await page.locator(".market-handoff").getByRole("button", { name: "Done" }).click();
   await card(page, "test.example.web").getByRole("button", { name: /^Set up/ }).click();
   await expect(page.locator('.market-consent [data-field="origin"]')).toHaveText("https://web.example.test");
+  await expect(page.locator(".market-consent")).toContainText("typed-code confirmation is also required");
+  await expect(page.locator(".market-consent")).not.toContainText("no match code is needed");
+  const recovery = page.locator(".pairing-recovery");
+  await expect(recovery).toContainText("For a redeemed row, revoke its key_id. For an approved or claimed row, deny it.");
+  for (const cli of ["harness pairing-requests list", "harness keys revoke <key_id>", "harness pairing-requests deny <id>"]) {
+    await expect(recovery.getByText(cli, { exact: true })).toBeVisible();
+  }
   await expect(page.locator(".market-consent").getByRole("checkbox")).toHaveCount(0);
   await expect(page.locator(".market-consent").getByRole("button", { name: "Approve" })).toBeEnabled();
   expect(errors).toEqual([]);
 });
 
-test("a native claim is confirmed with the code typed from the app; a slot is withdrawn after confirmation", async ({ page }) => {
-  const claimed = slot("pr-claimed", { state: "claimed", needs: "confirm", match_code: "482913" });
-  const armed = slot("pr-armed");
-  const { writes, errors } = await mount(page, view([entry("test.example.native", { slots: [claimed, armed],
-    unverified_origin: { paired: [], pending_pairing: true } })]), { answer: (pathname, body) =>
-    body.match === "000000" ? { status: 400, json: { detail: "the match code does not match the one the App shows" } } : null });
-  const box = card(page, "test.example.native").locator('[data-slot="pr-claimed"]');
-  // Even if a daemon answer carried a code, the page never shows it: the owner types what the app shows.
-  expect(await box.evaluate(el => el.outerHTML.includes("482913"))).toBe(false);
-  await expect(box.getByText("harness pairing-requests confirm pr-claimed --match <code>", { exact: true })).toBeVisible();
-  const input = box.getByLabel("Match code the app shows");
-  await expect(input).toHaveValue("");
-  const confirm = box.getByRole("button", { name: "Confirm Synthetic native" });
-  await expect(confirm).toBeDisabled();
-  await input.fill("000000");
-  await confirm.click();
-  await expect(page.getByText("the match code does not match the one the App shows")).toBeVisible();
-  expect(writes[0]).toMatchObject({ path: "/api/pairing/pr-claimed/confirm", body: { match: "000000" } });
-  await card(page, "test.example.native").locator('[data-slot="pr-claimed"]').getByLabel("Match code the app shows").fill(" 482913 ");
-  await card(page, "test.example.native").locator('[data-slot="pr-claimed"]').getByRole("button", { name: "Confirm Synthetic native" }).click();
-  await expect.poll(() => writes.length).toBe(2);
-  expect(writes[1]).toMatchObject({ path: "/api/pairing/pr-claimed/confirm", body: { match: "482913" } });
-  await expect(page.getByText(/Confirmed Synthetic native/)).toBeVisible();
+for (const [kind, origin] of [["native", ""], ["browser", "https://app.example.test"]]) {
+  test(`${kind} claims need the typed code; slots are withdrawn after confirmation`, async ({ page }) => {
+    const claimed = slot("pr-claimed", { state: "claimed", needs: "confirm", match_code: "482913",
+      origin, browser: Boolean(origin) });
+    const armed = slot("pr-armed");
+    const { writes, errors } = await mount(page, view([entry("test.example.native", { slots: [claimed, armed],
+      unverified_origin: { paired: [], pending_pairing: true } })]), { answer: (pathname, body) =>
+      body.match === "000000" ? { status: 400, json: { detail: "the match code does not match the one the App shows" } } : null });
+    const box = card(page, "test.example.native").locator('[data-slot="pr-claimed"]');
+    // Even if a daemon answer carried a code, the page never shows it: the owner types what the app shows.
+    expect(await box.evaluate(el => el.outerHTML.includes("482913"))).toBe(false);
+    await expect(box.getByText("harness pairing-requests confirm pr-claimed --match <code>", { exact: true })).toBeVisible();
+    const input = box.getByLabel("Match code the app shows");
+    await expect(input).toHaveValue("");
+    const confirm = box.getByRole("button", { name: "Confirm Synthetic native" });
+    await expect(box).toContainText("Redemption is waiting for confirmation.");
+    await expect(confirm).toBeDisabled();
+    await input.fill("   ");
+    await expect(confirm).toBeDisabled();
+    expect(writes).toEqual([]);
+    await input.fill("000000");
+    await confirm.click();
+    await expect(page.getByText("the match code does not match the one the App shows")).toBeVisible();
+    expect(writes[0]).toMatchObject({ path: "/api/pairing/pr-claimed/confirm", body: { match: "000000" } });
+    await card(page, "test.example.native").locator('[data-slot="pr-claimed"]').getByLabel("Match code the app shows").fill(" 482913 ");
+    await card(page, "test.example.native").locator('[data-slot="pr-claimed"]').getByRole("button", { name: "Confirm Synthetic native" }).click();
+    await expect.poll(() => writes.length).toBe(2);
+    expect(writes[1]).toMatchObject({ path: "/api/pairing/pr-claimed/confirm", body: { match: "482913" } });
+    await expect(page.getByText(/Confirmed Synthetic native/)).toBeVisible();
 
-  const other = card(page, "test.example.native").locator('[data-slot="pr-armed"]');
-  await expect(other.getByLabel("Match code the app shows")).toHaveCount(0);
-  await other.getByRole("button", { name: "Withdraw slot for Synthetic native" }).click();
-  await expect(page.getByRole("heading", { name: "Withdraw the slot for Synthetic native?" })).toBeVisible();
-  expect(writes).toHaveLength(2);
-  await page.getByRole("button", { name: "Cancel", exact: true }).click();
-  expect(writes).toHaveLength(2);
-  await other.getByRole("button", { name: "Withdraw slot for Synthetic native" }).click();
-  await page.getByRole("button", { name: "Confirm withdraw", exact: true }).click();
-  await expect.poll(() => writes.length).toBe(3);
-  expect(writes[2]).toMatchObject({ path: "/api/pairing/pr-armed/deny", body: { confirm: true } });
-  expect(errors).toEqual([]);
-});
+    const other = card(page, "test.example.native").locator('[data-slot="pr-armed"]');
+    await expect(other.getByLabel("Match code the app shows")).toHaveCount(0);
+    await other.getByRole("button", { name: "Withdraw slot for Synthetic native" }).click();
+    await expect(page.getByRole("heading", { name: "Withdraw the slot for Synthetic native?" })).toBeVisible();
+    expect(writes).toHaveLength(2);
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    expect(writes).toHaveLength(2);
+    await other.getByRole("button", { name: "Withdraw slot for Synthetic native" }).click();
+    await page.getByRole("button", { name: "Confirm withdraw", exact: true }).click();
+    await expect.poll(() => writes.length).toBe(3);
+    expect(writes[2]).toMatchObject({ path: "/api/pairing/pr-armed/deny", body: { confirm: true } });
+    expect(errors).toEqual([]);
+  });
+}
 
 test("a typed code survives a poll that changes the list", async ({ page }) => {
   await page.clock.install({ time: NOW * 1000 });
@@ -312,3 +331,22 @@ test("blank add-on copy names the Hub and requires a separate acknowledgement", 
   expect(writes).toEqual([]);
   expect(errors).toEqual([]);
 });
+
+for (const state of ["approved", "redeemed"]) {
+  test(`a browser claim that skips confirmation warns even when already ${state}`, async ({ page }) => {
+    await page.clock.install({ time: NOW * 1000 });
+    const browser = slot("pr-legacy", { browser: true, origin: "https://web.example.test" });
+    const { writes, errors } = await mount(page, view([entry("test.example.web", { slots: [browser] })]));
+    const warning = "This daemon approved the claim without confirmation; update the daemon.";
+    await page.route("http://hub.test/api/marketplace", route => route.fulfill({ json: view([
+      entry("test.example.web", { slots: state === "redeemed" ? [] : [{ ...browser, state, needs: "redeem" }] })
+    ], { confirmation_warning: warning }) }));
+    await page.clock.runFor(5500);
+    await expect(page.getByRole("alert")).toHaveText(warning);
+    await page.getByRole("button", { name: "Refresh entries" }).click();
+    await expect(page.getByRole("alert")).toHaveText(warning);
+    expect(await page.locator("main").evaluate(el => el.outerHTML.includes("482913"))).toBe(false);
+    expect(writes).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+}

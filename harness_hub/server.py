@@ -311,6 +311,26 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     # Listings must not publish a new slot while its disclosures are being checked or it is being withdrawn.
     pairing_consent_lock = asyncio.Lock()
 
+    # A bounded, process-local backstop for an observed browser claim that skipped the confirmation gate.
+    # Share observations across pages/tabs; record successful Hub confirmations under the same lock as polls.
+    browser_slot_states: dict[tuple[str, str], tuple[str, bool]] = {}
+
+    def observe_browser_slots(rows: list, key_id: str, *, confirmed_id: str = "") -> str:
+        warning = False
+        for raw in rows:
+            row = pairing_request_view(raw)
+            if not (row["id"] and row["kind"] == "app" and row["armed"] and row["browser"]):
+                continue
+            identity = (key_id, row["id"])
+            previous, bypassed = browser_slot_states.get(identity, ("", False))
+            bypassed = bypassed or (previous == "armed" and row["state"] in ("approved", "redeemed")
+                                    and row["id"] != confirmed_id)
+            if identity not in browser_slot_states and len(browser_slot_states) >= 256:
+                browser_slot_states.pop(next(iter(browser_slot_states)))
+            browser_slot_states[identity] = (row["state"], bypassed)
+            warning = warning or bypassed
+        return "This daemon approved the claim without confirmation; update the daemon." if warning else ""
+
     # Bound to the Hub key and the entry's displayed identity, with a bounded ten-minute lifetime.
     consent_copies: dict[tuple[str, str], tuple[str, float, list[dict], bool]] = {}
 
@@ -350,10 +370,12 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         good, state, error = result
         # Only the daemon's validated answer, or the last one: never entries the daemon did not validate.
         entries, withheld = entries_view(good["inventory"], secrets) if good else (None, 0)
-        slots, slots_error = {}, ""
+        slots, slots_error, confirmation_warning = {}, "", ""
         try:
             async with pairing_consent_lock:
                 reply = await daemon.pairing(key["token"], "list")
+                if reply.ok and isinstance(reply.body, list):
+                    confirmation_warning = observe_browser_slots(reply.body, key["key_id"])
             if reply.status == 401:
                 return await refused(key["token"])
             if reply.ok and isinstance(reply.body, list):
@@ -367,7 +389,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             entry["slots"] = slots.get(entry["catalog_app_id"], [])
         return {"state": state, "error": error, "stale": state != "ready" and good is not None,
                 "fetched_at": good["fetched_at"] if good else None, "entries": entries, "withheld": withheld,
-                "slots_error": slots_error, "daemon_url": settings.daemon_url, "now": time.time()}
+                "slots_error": slots_error, "confirmation_warning": confirmation_warning,
+                "daemon_url": settings.daemon_url, "now": time.time()}
 
     @app.post("/api/marketplace/arm")
     async def arm_slot(request: Request):
@@ -485,6 +508,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         slot = pairing_request_view(reply.body, tuple(store.secrets()))
         if not slot["id"] or slot["state"] != "armed":
             return _error(502, "The daemon returned an invalid armed slot. Refresh the Marketplace.")
+        observe_browser_slots([slot], key["key_id"])
         return JSONResponse({"request": slot, "daemon_url": settings.daemon_url, "name": entry["name"]},
                             status_code=201)
 
@@ -631,6 +655,11 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if reply is None:
                 async with pairing_consent_lock:
                     reply = await daemon.pairing(key["token"], operation, rid, body)
+                    if reply.ok:
+                        if operation == "list" and isinstance(reply.body, list):
+                            confirmation_warning = observe_browser_slots(reply.body, key["key_id"])
+                        elif operation == "confirm":
+                            observe_browser_slots([reply.body], key["key_id"], confirmed_id=rid)
             if reply.status == 401:
                 return await refused(key["token"])
         except DaemonUnreachable:
@@ -640,7 +669,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         if operation == "list":
             if not isinstance(reply.body, list):
                 return _error(502, "The daemon returned invalid pairing requests.")
-            return pairing_view(reply.body, tuple(store.secrets()))
+            return {**pairing_view(reply.body, tuple(store.secrets())), "confirmation_warning": confirmation_warning}
         return pairing_request_view(reply.body, tuple(store.secrets()))
 
     @app.get("/api/manage/catalog")

@@ -93,11 +93,17 @@ def test_the_hub_flags_elevated_scopes_even_when_the_daemon_does_not():
     assert "match_code" not in odd and odd["needs"] == "" and odd["disclosures"] == [] and odd["scopes"] == []
 
 
-def test_confirm_a_native_claim_with_its_code(claimed, fake_daemon):
-    rid = fake_daemon.add_pairing("Claimed slot", ["sessions"], state="claimed", origin="")
+@pytest.mark.parametrize("origin", ["", "https://app.test"])
+def test_confirm_an_app_claim_with_its_code(claimed, fake_daemon, origin):
+    rid = fake_daemon.add_pairing("Claimed slot", ["sessions"], state="claimed", origin=origin)
     pending = fake_daemon.add_pairing("Synthetic notes", ["sessions"])
     code = fake_daemon.pairing_rows[rid]["match_code"]
-    assert post(claimed, rid, "confirm", {"match": "999999" if code != "999999" else "888888"}).status_code == 400
+    assert rows(claimed)[rid]["needs"] == "confirm"
+    for match in ("", "   ", "999999" if code != "999999" else "888888"):
+        refused = post(claimed, rid, "confirm", {"match": match})
+        assert refused.status_code == 400 and code not in refused.text
+        assert rows(claimed)[rid]["state"] == "claimed"
+    assert refused.json()["error"]["code"] == "match_mismatch"
     assert post(claimed, pending, "confirm", {"match": fake_daemon.pairing_rows[pending]["match_code"]}
                 ).status_code == 409
     reply = post(claimed, rid, "confirm", {"match": code})

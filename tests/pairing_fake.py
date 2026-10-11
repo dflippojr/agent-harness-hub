@@ -49,7 +49,7 @@ def register_pairing(app, fake, owner):
         return {"id": row["id"], "kind": row["kind"], "name": row["name"], "scopes": scopes,
                 "catalog_app_id": row["catalog_app_id"], "origin": row["origin"], "browser": bool(row["origin"]),
                 "armed": row["armed"], "state": state,
-                "match_code": row["match_code"] if state in ("pending", "claimed") and row["kind"] != "hub" else "",
+                "match_code": "",
                 "needs": {"pending": "approve", "armed": "claim", "claimed": "confirm",
                           "approved": "redeem"}.get(state, ""),
                 "created_at": row["created_at"], "expires_at": row["expires_at"], "approved_at": row["approved_at"],
@@ -116,7 +116,7 @@ def register_pairing(app, fake, owner):
         if ELEVATED.intersection(row["scopes"]) and body.get("acknowledge_elevated") is not True:
             return refusal(400, "elevated scopes need acknowledge_elevated", "")
         if not same(row, body.get("match")):
-            return refusal(400, "the match code does not match the one the App shows", "")
+            return refusal(400, "the match code does not match the one the App shows", "match_mismatch")
         approved(row)
         return view(row)
 
@@ -131,7 +131,7 @@ def register_pairing(app, fake, owner):
         if failed:
             return failed
         if not same(row, body.get("match")):
-            return refusal(400, "the match code does not match the one the App shows", "")
+            return refusal(400, "the match code does not match the one the App shows", "match_mismatch")
         approved(row)
         return view(row)
 

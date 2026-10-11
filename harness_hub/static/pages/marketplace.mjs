@@ -1,9 +1,10 @@
 // Marketplace (agent-harness #520, #519 flow 4): the owner's local Hub entries, and setting an app up from one by
-// arming a pre-approved slot after a consent screen. Listing grants nothing. Nothing named by an entry is fetched: the
+// arming a slot with scope consent after a consent screen. Listing grants nothing. Nothing named by an entry is fetched: the
 // only image shown is an inline one the server already checked. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
 import { clear, command, h, when } from "../lib/dom.mjs";
+import { pairingRecovery } from "../lib/pairing.mjs";
 
 const POLL_MS = 5000;
 const STATES = { paired: ["Paired", "ok"], not_paired: ["Not paired", "off"], pending: ["Pending", "wait"] };
@@ -29,9 +30,10 @@ export function renderMarketplace(main) {
   clear(main, h("header", { class: "page-head" }, h("h1", {}, "Marketplace"), button("Refresh entries", () => load(true))),
     h("p", { class: "notice warn grants-nothing" }, h("strong", {}, "Being listed here grants nothing.")),
     h("p", { class: "muted" }, "Local entries from the daemon host's entries file. None is verified. Setting one up " +
-      "arms a pre-approved slot that the app you hand it to claims once; the app then gets its token from the daemon, " +
+      "arms a slot with your scope consent. Browser and native apps claim once, then wait for typed-code confirmation " +
+      "before fetching their own token from the daemon, " +
       "and this Hub never sees it."),
-    command("harness hub status"), command("harness hub entries validate"), notice, problem, panel, list);
+    command("harness hub status"), command("harness hub entries validate"), pairingRecovery(), notice, problem, panel, list);
 
   function button(label, action, extra = {}) {
     return h("button", { type: "button", class: "btn", onclick: action, ...extra }, label);
@@ -72,6 +74,7 @@ export function renderMarketplace(main) {
         "There are no last good entries to show.");
     }
     if (!failure && data?.slots_error) lines.push(data.slots_error);
+    if (data?.confirmation_warning) lines.push(data.confirmation_warning);
     problem.textContent = lines.join(" ");
     problem.hidden = !lines.length;
   }
@@ -201,10 +204,11 @@ export function renderMarketplace(main) {
     input.addEventListener("input", update);
     submit.disabled = busy || !input.value.trim();
     return h("div", { class: "pairing-decision" },
-      h("p", {}, `A native app claimed this slot. Confirm it with the code ${name} is showing right now.`),
+      h("p", {}, `An app claimed this slot. Redemption is waiting for confirmation. ` +
+        `Confirm it with the code ${name} is showing right now.`),
       h("div", { class: "setting-field" }, h("label", {}, "Match code the app shows", input),
         h("p", { class: "setting-meta", id: `match-help-${slot.id}` }, "If the app shows no code or an error, " +
-          "withdraw this slot. If your app reported that the slot was already claimed, withdraw this slot.")),
+          "withdraw this slot.")),
       h("div", { class: "settings-actions" }, submit),
       command(`harness pairing-requests confirm ${slot.id} --match <code>`));
   }
@@ -236,7 +240,7 @@ export function renderMarketplace(main) {
     let where;
     if (origins.length === 1) {
       where = h("p", {}, "Browser app: the slot is bound to exactly ", h("code", { "data-field": "origin" }, origin),
-        ". Only a claim from that origin is accepted, so no match code is needed.");
+        ". Claims and redemption must use that exact origin; typed-code confirmation is also required.");
     } else if (origins.length) {
       where = h("fieldset", { class: "origin-choice" }, h("legend", {}, "Browser origin to bind the slot to"),
         origins.map((value) => {
@@ -244,7 +248,8 @@ export function renderMarketplace(main) {
           radio.addEventListener("change", () => { origin = value; update(); });
           return h("label", { class: "pairing-ack" }, radio, h("code", {}, value));
         }),
-        h("p", { class: "setting-meta" }, "Only a claim from the chosen origin is accepted."));
+        h("p", { class: "setting-meta" }, "Claims and redemption must use the chosen exact origin; " +
+          "typed-code confirmation is also required."));
     } else {
       where = h("p", {}, "Native app: when it claims the slot, you confirm it on this entry with the code the app shows.");
     }
@@ -253,7 +258,8 @@ export function renderMarketplace(main) {
     clear(panel, h("section", { class: "card warn market-consent", role: "region", "aria-labelledby": "consent-title" },
       h("h2", { id: "consent-title", tabindex: "-1" }, `Set up ${name} (${entry.catalog_app_id})?`),
       h("p", {}, `${entry.catalog_app_id} · ${entry.publisher.name || "Unknown publisher"} · Local entry, not verified. ` +
-        "Nothing is armed until you approve."),
+        "Arming grants scope consent. Nothing is armed until you approve. Both browser and native claims " +
+        "wait for you to type the code the app shows before it can redeem its token."),
       h("h3", {}, "Scopes it will get"), disclosureList(entry.scopes),
       h("h3", {}, "Where the app runs"), where,
       ack ? h("label", { class: "pairing-ack" }, ack, h("span", {},
@@ -271,8 +277,8 @@ export function renderMarketplace(main) {
       h("p", { class: "muted" }, "Request id"), command(slot.id),
       h("p", { class: "muted" }, "Daemon URL"), command(armed.daemon_url),
       h("p", { class: "muted" }, "No secret exists yet. " + (origin ? `The app must claim it from ${origin}; ` +
-        "the daemon then approves it at once." : "When the app claims it, type the code it shows on this entry " +
-        "to confirm.") +
+        "redemption must use that exact origin too. " : "") +
+        "When the app claims it, type the code it shows on this entry or Pairing requests to confirm before redemption." +
         " An unclaimed slot expires in ", h("span", { "data-expires": slot.expires_at },
         countdown(slot.expires_at - now())), "."),
       h("details", {}, h("summary", {}, "What the daemon says each scope allows"), disclosureList(slot.disclosures)),

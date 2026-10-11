@@ -159,27 +159,61 @@ def test_arm_needs_a_same_origin_write(claimed, fake_daemon, entries):
     assert fake_daemon.armed == []
 
 
-def test_a_native_claim_is_confirmed_with_the_code_the_app_shows_and_a_slot_is_withdrawn(claimed, fake_daemon,
-                                                                                         entries):
-    rid = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]}).json()["request"]["id"]
-    native = by_id(market(claimed))["test.example.native"]
-    assert native["pending_pairing"] is False and native["unverified_origin"]["pending_pairing"] is True
-    assert native["slots"][0]["state"] == "armed"
-    code = fake_daemon.claim_slot(rid)["match_code"]  # shown on the App's own screen, never by the Hub
-    slot = by_id(market(claimed))["test.example.native"]["slots"][0]
+@pytest.mark.parametrize("app_id,origin", [("test.example.native", ""),
+                                         ("test.example.notes", "https://notes.example.test")])
+def test_a_claim_waits_for_typed_confirmation_and_a_slot_is_withdrawn(claimed, fake_daemon, entries, app_id, origin):
+    body = {"catalog_app_id": app_id, "scopes": ["sessions"], **({"origin": origin} if origin else {})}
+    rid = arm(claimed, body).json()["request"]["id"]
+    entry = by_id(market(claimed))[app_id]
+    assert entry["pending_pairing"] is bool(origin)
+    assert entry["unverified_origin"]["pending_pairing"] is not bool(origin)
+    assert entry["slots"][0]["state"] == "armed"
+    code = fake_daemon.claim_slot(rid, origin)["match_code"]  # from the App's screen, never from an owner view
+    slot = by_id(market(claimed))[app_id]["slots"][0]
     assert slot["state"] == "claimed" and slot["needs"] == "confirm" and "match_code" not in slot
     assert code not in claimed.bodies[-1]
     confirmed = claimed._keep(claimed.client.post(f"/api/pairing/{rid}/confirm", json={"match": code},
                                                   headers=ORIGIN))
     assert confirmed.status_code == 200 and confirmed.json()["state"] == "approved", confirmed.text
-    assert by_id(market(claimed))["test.example.native"]["slots"][0]["needs"] == "redeem"
+    assert by_id(market(claimed))[app_id]["slots"][0]["needs"] == "redeem"
 
-    other = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]}).json()["request"]["id"]
+    other = arm(claimed, body).json()["request"]["id"]
     withdrawn = claimed._keep(claimed.client.post(f"/api/pairing/{other}/deny", json={"confirm": True},
                                                   headers=ORIGIN))
     assert withdrawn.status_code == 200 and withdrawn.json()["state"] == "denied"
-    assert [s["id"] for s in by_id(market(claimed))["test.example.native"]["slots"]] == [rid]
+    assert [s["id"] for s in by_id(market(claimed))[app_id]["slots"]] == [rid]
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
+
+
+@pytest.mark.parametrize("state", ["approved", "redeemed"])
+@pytest.mark.parametrize("first_page", ["/api/marketplace", "/api/pairing"])
+def test_browser_claim_skipping_confirmation_warns_on_both_pages(claimed, fake_daemon, entries, state, first_page):
+    rid = arm(claimed, {"catalog_app_id": "test.example.notes", "scopes": ["sessions"],
+                        "origin": "https://notes.example.test"}).json()["request"]["id"]
+    # Simulate the legacy daemon: claim and possibly redeem before the next owner poll, without a confirm.
+    row = fake_daemon.claim_slot(rid, "https://notes.example.test")
+    code = row["match_code"]
+    row.update(state=state, key_id="k-legacy" if state == "redeemed" else "")
+    rejected = claimed._keep(claimed.client.post(f"/api/pairing/{rid}/confirm", json={"match": code}, headers=ORIGIN))
+    assert rejected.status_code == 409  # a refused confirmation must not suppress the warning
+    warning = "This daemon approved the claim without confirmation; update the daemon."
+    for page in (first_page, "/api/marketplace", "/api/pairing", first_page):
+        reply = claimed.get(page)
+        assert reply.status_code == 200 and reply.json()["confirmation_warning"] == warning
+        assert code not in reply.text and "match_code" not in reply.text
+
+
+@pytest.mark.parametrize("origin,app_id", [("", "test.example.native"),
+                                         ("https://notes.example.test", "test.example.notes")])
+def test_successful_confirmation_between_polls_does_not_warn(claimed, fake_daemon, entries, origin, app_id):
+    rid = arm(claimed, {"catalog_app_id": app_id, "scopes": ["sessions"], "origin": origin}).json()["request"]["id"]
+    code = fake_daemon.claim_slot(rid, origin)["match_code"]
+    # Pairing requests can confirm from another tab before Marketplace ever polls the claimed state.
+    confirmed = claimed._keep(claimed.client.post(f"/api/pairing/{rid}/confirm", json={"match": code}, headers=ORIGIN))
+    assert confirmed.status_code == 200
+    fake_daemon.pairing_rows[rid].update(state="redeemed", key_id="k-confirmed")
+    assert market(claimed)["confirmation_warning"] == ""
+    assert claimed.get("/api/pairing").json()["confirmation_warning"] == ""
 
 
 def test_an_invalid_entries_file_shows_the_named_error_with_the_last_good_entries(claimed, fake_daemon, entries):

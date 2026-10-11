@@ -427,7 +427,7 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         assert planner["slots"] == []
 
         # A browser entry: the owner gives the web entry its origin on the host (the Hub never edits the file). The
-        # App claims from that exact origin, is approved at once, redeems, and the entry shows as paired.
+        # App claims from that exact origin, the owner confirms its App-shown code, and it redeems (#606 or later).
         entries_file = daemon["root"] / "config" / "hub.entries.json"
         document = json.loads(entries_file.read_text(encoding="utf-8"))
         web_origin = "https://notes.example.test"
@@ -440,10 +440,30 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
                            json={"catalog_app_id": web_id, "scopes": ["sessions"], "origin": web_origin,
                                  "consent_digest": entry(market(), web_id)["consent_digest"]})
         assert armed.status_code == 201, armed.text
+        assert "match_code" not in armed.json()["request"]
         rid = armed.json()["request"]["id"]
         assert entry(market(), web_id)["pending_pairing"] is True
         shown, verifier = app_claims(rid, web_origin)
-        assert shown["state"] == "approved" and shown["match_code"] == ""
+        assert shown["state"] == "claimed" and shown["match_code"]
+        slot = entry(market(), web_id)["slots"][0]
+        assert slot["state"] == "claimed" and slot["needs"] == "confirm" and "match_code" not in slot
+        for match in ("", "000000" if shown["match_code"] != "000000" else "111111"):
+            refused = first.call("POST", f"/api/pairing/{rid}/confirm", headers=origin, json={"match": match})
+            assert refused.status_code == 400 and shown["match_code"] not in refused.text
+            slot = entry(market(), web_id)["slots"][0]
+            assert slot["state"] == "claimed" and "match_code" not in slot
+            waiting = httpx.post(f"{daemon['url']}/api/v1/pair/requests/{rid}/token", timeout=10,
+                                 headers={"Origin": web_origin}, json={"code_verifier": verifier})
+            assert waiting.status_code == 409 and "token" not in waiting.json()
+        confirmed = first.call("POST", f"/api/pairing/{rid}/confirm", headers=origin,
+                               json={"match": shown["match_code"]})
+        assert confirmed.status_code == 200 and confirmed.json()["needs"] == "redeem", confirmed.text
+        assert "match_code" not in confirmed.json()
+        slot = entry(market(), web_id)["slots"][0]
+        assert slot["state"] == "approved" and "match_code" not in slot
+        wrong_origin = httpx.post(f"{daemon['url']}/api/v1/pair/requests/{rid}/token", timeout=10,
+                                   headers={"Origin": "https://other.example.test"}, json={"code_verifier": verifier})
+        assert wrong_origin.status_code == 403
         redeemed = httpx.post(f"{daemon['url']}/api/v1/pair/requests/{rid}/token", timeout=10,
                               headers={"Origin": web_origin}, json={"code_verifier": verifier})
         assert redeemed.status_code == 201, redeemed.text

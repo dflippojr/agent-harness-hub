@@ -3,6 +3,7 @@
 
 import { api } from "../lib/api.mjs";
 import { clear, command, h, when } from "../lib/dom.mjs";
+import { pairingRecovery } from "../lib/pairing.mjs";
 
 const GROUPS = [
   ["pending", "Waiting for approval"], ["armed", "Armed slots"], ["claimed", "Claimed slots to confirm"],
@@ -20,8 +21,8 @@ function nextStep(row) {
   return {
     approve: "Type the code the app is showing right now. If the app shows no code or an error, deny.",
     claim: "Waiting for the app to claim this slot.",
-    confirm: "A native app claimed this slot. Type the code the app is showing right now. " +
-      "If the app shows no code or an error, deny. If your app reported that the slot was already claimed, withdraw this.",
+    confirm: "An app claimed this slot. Redemption is waiting for confirmation. " +
+      "Type the code the app is showing right now. If the app shows no code or an error, deny.",
     redeem: "Approved: waiting for the app to fetch its own token from the daemon.",
   }[row.needs] || {
     redeemed: "Paired. The app received its token directly from the daemon.",
@@ -47,7 +48,7 @@ export function renderPairing(main) {
   clear(main, h("header", { class: "page-head" }, h("h1", {}, "Pairing requests"), refresh),
     h("p", { class: "muted" }, "Apps asking to pair in the last day. Approving changes the request's state only: " +
       "the app then fetches its own token from the daemon, and this Hub never sees it."),
-    command("harness pairing-requests list"), notice, problem, confirmation, groups);
+    pairingRecovery(), notice, problem, confirmation, groups);
 
   function button(label, action, extra = {}) {
     return h("button", { type: "button", class: "btn", onclick: action, ...extra }, label);
@@ -74,7 +75,7 @@ export function renderPairing(main) {
       if (stopped) return;
       data = result;
       offset = typeof result.now === "number" ? result.now - Date.now() / 1000 : 0;
-      showProblem("");
+      showProblem(result.confirmation_warning || "");
     } catch (error) {
       if (stopped) return;
       showProblem(error.message + (data ? " Showing the last list." : ""));
@@ -166,6 +167,9 @@ export function renderPairing(main) {
         box.append(h("div", { class: "settings-actions" }, button(`${verb} ${name}`, () => confirmDeny(row, verb),
           { "data-action": "deny" })), command(`harness pairing-requests deny ${row.id}`));
       }
+    }
+    if (row.kind === "app" && row.state === "redeemed" && row.key_id) {
+      box.append(command(`harness keys revoke ${row.key_id}`));
     }
     return box;
   }

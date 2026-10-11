@@ -27,7 +27,10 @@ and read-only. Every action includes its daemon CLI equivalent.
 
 ## Install and run
 
-Requires Python 3.12+ and a running Agent Harness daemon on the same machine.
+Requires Python 3.12+ and a running Agent Harness daemon on the same machine, at
+[agent-harness #606](https://github.com/dflippojr/agent-harness/pull/606), merge commit
+`aa5a9047dbe4bcba6b7ec3348d0cd529c00ebe2b` (`aa5a904`), or later. This minimum daemon enforces
+typed-code confirmation for browser claims as well as native claims.
 
 ```bash
 pip install git+https://github.com/dflippojr/agent-harness-hub
@@ -206,8 +209,15 @@ slot, the page explains that you set the origin and catalog id when arming it.
 
 Approve and Confirm need the code the App is showing right now, typed into an empty field; the daemon compares it
 and refuses a wrong code. If the App shows no code or an error, deny. If your App reported that the slot was already
-claimed, withdraw that request. The owner's decision (2026-10-11) to withhold App codes from the owner view departs
-from #519 step 2; the daemon and CLI follow-up will apply the same rule as Hub claims. Elevated scopes (`sessions:all`, `approvals`, `remote_control`,
+claimed, list requests with `harness pairing-requests list`. For a `redeemed` row, revoke its `key_id` with
+`harness keys revoke <key_id>`; for `approved` or `claimed`, deny it with `harness pairing-requests deny <id>`.
+
+If this Hub process observes a browser slot jump from `armed` to `approved` or `redeemed` without handling a
+successful confirmation, Marketplace and Pairing requests warn: "This daemon approved the claim without
+confirmation; update the daemon." This is a bounded, in-memory polling backstop. A host CLI confirmation between
+polls can also trigger it; verify the daemon meets the minimum above. The warning never includes an App match code.
+
+Browser and native claims on armed slots both wait for typed-code confirmation before redemption. Elevated scopes (`sessions:all`, `approvals`, `remote_control`,
 `memory_library`, `homelab`) need a separate acknowledgement: Approve stays disabled until it is ticked, and the
 server refuses an approval without it before calling the daemon. If a name, origin or catalog id is withheld,
 Approve and Confirm are unavailable; review the request with `harness pairing-requests list` on the host. Deny
@@ -256,10 +266,13 @@ The consent heading includes the catalog id beside the name.
 
 After arming, the page shows the request id and the daemon URL as copyable text, with "Give this only to <app>; it
 lets that app claim the slot once." No secret exists then: the app claims the slot with its own PKCE challenge and
-fetches its own token from the daemon. A browser app's claim from the bound origin is approved at once. A native
-app's claim waits on the entry for **Confirm** with the code the app is showing right now, typed into an empty field;
-as on Pairing requests, the Hub never shows an App's code (the owner's 2026-10-11 decision), and the daemon refuses a
-wrong one. If the app shows no code or an error, or reported that the slot was already claimed, withdraw the slot.
+fetches its own token from the daemon. Arming grants scope consent; both browser and native claims then wait for
+**Confirm** with the code the app is showing right now, typed into an empty field. Browser claims and redemption
+also require the bound exact origin, which alone cannot prove the claimant's identity because native clients can
+forge that header. As on Pairing requests, the Hub never shows an App's code, and the daemon refuses a wrong one.
+If the app shows no code or an error, withdraw the slot. If it reports the slot was already claimed, list requests
+with `harness pairing-requests list`; revoke a redeemed row's `key_id` with `harness keys revoke <key_id>`, or deny
+an approved or claimed row with `harness pairing-requests deny <id>`.
 **Withdraw** ends a slot after an in-page confirmation. Every action shows its CLI equivalent
 (`harness hub status`, `harness hub entries init|validate`, `harness pairing-requests arm|confirm|deny`).
 
