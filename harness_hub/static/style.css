@@ -273,3 +273,8 @@ details summary { min-height: var(--tap); display: flex; align-items: center; cu
 .module-facts { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
 .module-facts dt, .grid .card h2 { overflow-wrap: anywhere; }
 .restart-link { display: inline-flex; align-items: center; text-decoration: none; }
+
+/* Apps uses the existing shell, form and touch-target tokens. */
+.apps-detail, .apps-erasures { margin-top: 16px; overflow-wrap: anywhere; }
+.notice.warn { background: var(--warn-bg); color: var(--warn); }
+.apps-list .card h3 { margin-top: 0; overflow-wrap: anywhere; font-size: 1.15rem; color: var(--text); }

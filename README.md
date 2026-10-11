@@ -159,3 +159,25 @@ uv pip compile pyproject.toml requirements-daemon.in --extra dev --universal --p
 ```
 
 Update exact versions in `pyproject.toml` and the daemon commit/requirements snapshot together when needed.
+
+### Apps
+
+Apps shows the daemon inventory's connection state, last seen, scopes, origins,
+catalog identity, token age (warning at 90 days; no automatic expiry), aggregate
+sessions, usage and errors. Installed entries use the inventory's paired ids,
+including its origin checks, rather than matching display names. The complete
+inventory stays in the owner-only cache shared with Modules; a failed refresh
+shows the last good snapshot and disables management until a fresh read succeeds.
+
+Revoke requires an in-page confirmation naming the App and its key id. This Hub
+has no revoke control; release it on the host with `harness hub release --confirm`.
+The erasure queue shows deadlines. Restore stays on the daemon host: run the exact
+`harness apps restore <app_id>` command shown for the revoked App before erasure.
+The CLI returns a replacement credential once; reconnect the App using that
+credential. The Hub never calls the restore route or receives an App token.
+Token-free restore is tracked upstream in agent-harness#597.
+
+The App detail view supports running/queued session caps (blank restores daemon
+defaults) and retention (blank keeps sessions until deleted). Saving retention
+requires confirmation because shortening it can erase older sessions during
+cleanup. All controls show their supported host CLI equivalents.

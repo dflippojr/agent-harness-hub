@@ -17,7 +17,7 @@ export const SECTIONS = [
     cli: ["harness hub status", "harness config set <module>.enabled=<true|false>"],
   },
   {
-    id: "apps", label: "Apps",
+    id: "apps", label: "Apps", ready: true,
     about: "Paired apps with connection state, last use, token age, sessions, usage and errors; revoke and restore.",
     cli: ["harness hub status", "harness keys list", "harness keys revoke <kid>", "harness apps restore <app_id>"],
   },

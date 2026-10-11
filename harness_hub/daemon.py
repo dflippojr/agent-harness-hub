@@ -36,6 +36,15 @@ SETTINGS_ROUTES = {
     "notify": ("POST", "/notify/test"),
 }
 
+APPS_ROUTES = {
+    "revoke": ("DELETE", "/keys/{app_id}"),
+    "erasures": ("GET", "/apps/erasures"),
+    "keys": ("GET", "/keys"),
+    "limits": ("GET", "/apps/{app_id}/limits"),
+    "limits_save": ("PUT", "/apps/{app_id}/limits"),
+    "retention": ("PUT", "/apps/{app_id}/retention"),
+}
+
 
 class DaemonUnreachable(Exception):
     """The daemon did not answer (stopped, restarting, or the URL is wrong)."""
@@ -91,6 +100,10 @@ class DaemonClient:
 
     async def inventory(self, token: str) -> Reply:
         return await self._call("GET", ADMIN + "/hub", token=token)
+
+    async def apps(self, token: str, operation: str, app_id: str = "", body: dict | None = None) -> Reply:
+        method, path = APPS_ROUTES[operation]
+        return await self._call(method, ADMIN + path.format(app_id=app_id), token=token, json=body)
 
     async def settings(self, token: str, operation: str, body: dict | None = None, name: str = "") -> Reply:
         method, path = SETTINGS_ROUTES[operation]

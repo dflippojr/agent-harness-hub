@@ -23,6 +23,7 @@ from harness_hub.auth import create_signin_code
 from harness_hub.config import Settings
 from harness_hub.server import create_app
 
+from .apps_fake import register_apps
 from .modules_fake import register_inventory
 from .settings_fake import register_settings
 
@@ -156,6 +157,7 @@ class FakeDaemon:
                 return JSONResponse({"detail": "requests from this machine need the local owner token"}, 401)
             return {"claimed": self.hub is not None, "hub": self.hub, "requests": []}
 
+        register_apps(app, self, owner)
         register_inventory(app, self, owner)
         register_settings(app, self, owner)
         return app

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 import time
 from typing import Any
 
@@ -261,4 +262,74 @@ def module_view(body: Any) -> list[dict]:
                     fields[key] = value
             shown["status"] = fields
         out.append(shown)
+    return out
+
+
+APP_STATES = {"active", "idle", "stale", "never_used", "revoked", "erasure_pending"}
+SESSION_STATES = ("queued", "running", "waiting_approval", "waiting_target", "waiting_app", "waiting_limit",
+                  "done", "failed", "cancelled")
+
+
+def _finite(value: Any) -> float | None:
+    number = _num(value)
+    return number if number is not None and math.isfinite(number) else None
+
+
+def app_view(row: Any, key_id: str = "") -> dict:
+    row = row if isinstance(row, dict) else {}
+    store = row.get("store") if isinstance(row.get("store"), dict) else {}
+    usage = store.get("usage") if isinstance(store.get("usage"), dict) else {}
+    sessions = store.get("sessions") if isinstance(store.get("sessions"), dict) else {}
+    out = {key: _str(row.get(key), 200) for key in ("id", "name", "kind", "role", "catalog_app_id")}
+    out["id"] = out["id"] if re.fullmatch(r"[A-Za-z0-9_-]{1,80}", out["id"]) else ""
+    out.update({key: _finite(row.get(key)) for key in
+                ("created_at", "last_used_at", "token_age_seconds", "revoked_at", "erase_after", "erased_at",
+                 "retention_days")})
+    out["scopes"] = _str(row.get("scopes"), 2000)
+    out["origins"] = [_str(origin, 2000) for origin in row.get("origins", [])[:32]
+                      if isinstance(origin, str)] if isinstance(row.get("origins"), list) else []
+    state = row.get("state")
+    out["state"] = state if isinstance(state, str) and state in APP_STATES else "unknown"
+    out["errors"] = row.get("errors") is True
+    out["this_hub"] = bool(key_id and row.get("id") == key_id)
+    out["token_age_warning"] = out["token_age_seconds"] is not None and out["token_age_seconds"] >= 90 * 86400
+    out["store"] = {
+        "sessions": {key: _int(sessions[key]) for key in SESSION_STATES if key in sessions},
+        "usage": {key: _finite(usage.get(key)) for key in
+                  ("requests", "prompt_tokens", "completion_tokens", "cost_usd")},
+        "errors": _int(store.get("errors")), "last_error": _str(store.get("last_error"), 200),
+        "last_error_at": _finite(store.get("last_error_at")),
+    }
+    return out
+
+
+def apps_view(body: Any, key_id: str) -> dict:
+    body = body if isinstance(body, dict) else {}
+    entries = []
+    for row in body.get("entries", []):
+        if not isinstance(row, dict):
+            continue
+        manifest = row.get("manifest") if isinstance(row.get("manifest"), dict) else {}
+        app = manifest.get("app") if isinstance(manifest.get("app"), dict) else {}
+        entries.append({"catalog_app_id": _str(row.get("catalog_app_id"), 200),
+                        "name": _str(app.get("display_name"), 200),
+                        "state": _str(row.get("state"), 32), "paired": _names(row.get("paired")),
+                        "verified": row.get("verified") is True})
+    return {"apps": [app_view(row, key_id) for row in body.get("apps", []) if isinstance(row, dict)],
+            "entries": entries}
+
+
+def erasures_view(body: Any) -> list[dict]:
+    return [{**{key: _str(row.get(key), 200) for key in ("id", "name", "kind")},
+             **{key: _finite(row.get(key)) for key in ("revoked_at", "erase_after")}}
+            for row in body if isinstance(row, dict)] if isinstance(body, list) else []
+
+
+def limits_view(body: Any) -> dict:
+    body = body if isinstance(body, dict) else {}
+    out = {"app_id": _str(body.get("app_id"), 200)}
+    for group in ("configured", "effective"):
+        values = body.get(group) if isinstance(body.get(group), dict) else {}
+        out[group] = {key: _int(values.get(key)) for key in ("max_running", "max_queued")}
+    out.update({key: _int(body.get(key)) for key in ("running", "queued", "parked")})
     return out

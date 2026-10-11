@@ -4,6 +4,8 @@ from copy import deepcopy
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from .apps_fake import inventory_apps
+
 
 def register_inventory(app, fake, owner):
     fake.inventory_error = ""
@@ -28,6 +30,6 @@ def register_inventory(app, fake, owner):
             {"name": "search", "state": "present" if fake.values["search.enabled"] else "switched_off"},
             {"name": "sample", "state": "present", "status": {"state": "error"}},
             {"name": "missing", "state": "absent"},
-        ], "apps": [{"id": "synthetic-app", "prefix": fake.hub_token[:12]}],
-            "entries": [{"catalog_app_id": "synthetic-entry", "verified": False}],
+        ], "apps": inventory_apps(fake),
+            "entries": deepcopy(fake.app_entries),
             "credential": "provider-secret-sentinel"}

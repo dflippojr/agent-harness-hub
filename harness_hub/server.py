@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import re
 import time
 from importlib import resources
@@ -30,9 +31,13 @@ from .guard import ResponseGuard, leaks
 from .inventory import InventoryCache, valid_inventory
 from .state import SERVER_FILE, StateStore, write_private
 from .views import (
+    app_view,
+    apps_view,
     claim_view,
     control_view,
+    erasures_view,
     health_view,
+    limits_view,
     module_view,
     overview,
     ownership_view,
@@ -233,11 +238,12 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         result["restarting"] = restart["active"]
         return result
 
+    @app.get("/api/apps")
     @app.get("/api/modules")
-    async def get_modules():
+    async def get_modules(request: Request):
         key = claims.key()
         if key is None:
-            return _error(409, "Claim this Hub on Overview before reading Modules.")
+            return _error(409, "Claim this Hub on Overview before reading inventory.")
         good = inventory.get(key["key_id"])
         state, error = "ready", ""
         try:
@@ -250,7 +256,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if reply.ok:
                 if not valid_inventory(reply.body):
                     state, error = "error", "The daemon returned an invalid inventory."
-                elif leaks(json.dumps(module_view(reply.body)).encode(), store.secrets()):
+                elif leaks(json.dumps([module_view(reply.body), apps_view(reply.body, key["key_id"])]).encode(),
+                           store.secrets()):
                     state, error = "error", "Inventory withheld: it contained a credential-like string."
                 else:
                     good = inventory.save(reply.body, key["key_id"])
@@ -264,9 +271,84 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             state, error = "error", "The daemon did not answer."
         except (OSError, ValueError):
             state, error = "error", "The inventory could not be saved in the private state directory."
+        shown = apps_view(good["inventory"], key["key_id"]) if good and request.url.path == "/api/apps" else (
+            {"apps": None, "entries": []} if request.url.path == "/api/apps" else
+            {"modules": module_view(good["inventory"]) if good else None})
         return {"state": state, "error": error, "stale": state != "ready" and good is not None,
-                "fetched_at": good["fetched_at"] if good else None,
-                "modules": module_view(good["inventory"]) if good else None}
+                "fetched_at": good["fetched_at"] if good else None, **shown}
+
+    @app.api_route("/api/apps/{resource:path}", methods=["GET", "PUT", "DELETE", "POST"])
+    async def apps_action(resource: str, request: Request):
+        operation, app_id = None, ""
+        if resource == "erasures" and request.method == "GET":
+            operation = "erasures"
+        else:
+            match = re.fullmatch(r"([A-Za-z0-9_-]{1,80})/(revoke|limits|retention)", resource)
+            if match:
+                app_id, action = match.groups()
+                operation = {("DELETE", "revoke"): "revoke", ("GET", "limits"): "limits",
+                             ("PUT", "limits"): "limits_save", ("PUT", "retention"): "retention"}.get(
+                                 (request.method, action))
+        if operation is None:
+            return _error(404, "Unknown Apps operation. Restore is available only on the daemon host CLI.")
+        key = claims.key()
+        if key is None:
+            return _error(409, "Claim this Hub on Overview before administering Apps.")
+        body = None
+        if request.method != "GET":
+            if not request.headers.get("origin"):
+                return _error(403, "Apps writes require a same-origin Origin")
+            data = bytearray()
+            async for chunk in request.stream():
+                if len(data) + len(chunk) > 1024:
+                    return _error(413, "Apps body is too large")
+                data.extend(chunk)
+            try:
+                body = json.loads(data or b"{}")
+            except ValueError:
+                return _error(400, "Apps body must be JSON")
+            fields = {"revoke": {"confirm"}, "limits_save": {"max_running", "max_queued"},
+                      "retention": {"retention_days", "confirm"}}
+            if not isinstance(body, dict) or not body or set(body) - fields[operation]:
+                return _error(400, "Unexpected Apps fields")
+            if operation in ("revoke", "retention") and body.pop("confirm", None) is not True:
+                return _error(400, "Confirm this action in the page first")
+            if operation == "limits_save" and any(value is not None and (
+                    type(value) is not int or not 1 <= value <= (100 if name == "max_running" else 1000))
+                    for name, value in body.items()):
+                return _error(400, "Session caps must be integers in range, or null for the daemon default")
+            if operation == "retention":
+                days = body.get("retention_days")
+                if "retention_days" not in body or days is not None and (
+                        type(days) not in (int, float) or not math.isfinite(days) or not 0 < days <= 36500):
+                    return _error(400, "Retention must be 0 < days <= 36500, or null to keep until deleted")
+            if operation == "revoke" and app_id == key["key_id"]:
+                return _error(409, "This Hub is released only on the daemon host: harness hub release --confirm",
+                              release_command="harness hub release --confirm")
+        try:
+            reply = await daemon.apps(key["token"], operation, app_id, body)
+            if reply.status == 401:
+                confirmation = await daemon.admin(key["token"])
+                if confirmation.status == 401:
+                    claims.released()
+                return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
+            if not reply.ok:
+                return JSONResponse(settings_error(reply.body, reply.status), status_code=reply.status)
+            if operation == "revoke":
+                return Response(status_code=204)
+            if operation == "erasures":
+                return erasures_view(reply.body)
+            if operation in ("limits", "limits_save"):
+                # /hub does not carry retention; read only the token-free key list for this detail.
+                keys = await daemon.apps(key["token"], "keys")
+                if not keys.ok:
+                    return _error(keys.status, f"App detail could not be read (HTTP {keys.status}).")
+                row = next((row for row in keys.body if isinstance(row, dict) and row.get("id") == app_id), {}) if (
+                    isinstance(keys.body, list)) else {}
+                return {**limits_view(reply.body), "retention_days": app_view(row)["retention_days"]}
+            return {"id": app_view(reply.body)["id"], "retention_days": app_view(reply.body)["retention_days"]}
+        except DaemonUnreachable:
+            return _error(503, "The daemon did not answer. Refresh the state before repeating a write.")
 
     @app.get("/api/settings/health")
     async def settings_health():

@@ -250,6 +250,33 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
             entries.unlink()
         assert first.call("GET", "/api/modules").json()["state"] == "ready"
 
+        # Apps are created and restored on the host; the Hub only sees token-free metadata.
+        created = json.loads(host_cli(daemon, "keys", "create", "Synthetic App", "--kind", "app").stdout)
+        app_id, app_token = created["id"], created["key"]
+        apps = first.call("GET", "/api/apps").json()
+        app_row = next(app for app in apps["apps"] if app["id"] == app_id)
+        assert app_row["state"] == "never_used" and not app_row["token_age_warning"]
+        assert next(app for app in apps["apps"] if app["this_hub"])["role"] == "hub"
+        caps = first.call("PUT", f"/api/apps/{app_id}/limits", headers=origin,
+                          json={"max_running": 3, "max_queued": None})
+        assert caps.status_code == 200 and caps.json()["effective"]["max_running"] == 3
+        retention = first.call("PUT", f"/api/apps/{app_id}/retention", headers=origin,
+                               json={"retention_days": 7.5, "confirm": True})
+        assert retention.status_code == 200 and retention.json()["retention_days"] == 7.5
+        assert first.call("GET", f"/api/apps/{app_id}/limits").json()["retention_days"] == 7.5
+        assert first.call("DELETE", f"/api/apps/{app_id}/revoke", headers=origin,
+                          json={"confirm": True}).status_code == 204
+        revoked = next(app for app in first.call("GET", "/api/apps").json()["apps"] if app["id"] == app_id)
+        assert revoked["state"] == "erasure_pending" and revoked["erase_after"] is not None
+        assert app_id in {app["id"] for app in first.call("GET", "/api/apps/erasures").json()}
+        assert first.call("POST", f"/api/apps/{app_id}/restore", headers=origin,
+                          json={"confirm": True}).status_code == 404
+        restored_app = json.loads(host_cli(daemon, "apps", "restore", app_id).stdout)
+        assert restored_app["id"] == app_id and restored_app["key"] != app_token
+        refreshed = next(app for app in first.call("GET", "/api/apps").json()["apps"] if app["id"] == app_id)
+        assert refreshed["revoked_at"] is None and refreshed["erase_after"] is None
+        assert_no_secrets(first.bodies, app_token, restored_app["key"], token)
+
         # Read every moved control; disabled modules return their actual error or
         # disabled state without ever exposing provider credentials.
         for resource in ("smart-approvals", "backends", "memory", "github", "google"):
