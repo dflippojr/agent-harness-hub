@@ -14,3 +14,4 @@ htmlcov/
 
 # Disposable validation checkouts.
 .validation/
+.playwright-cli/

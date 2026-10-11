@@ -10,9 +10,21 @@ Installing the Hub is optional. Every Hub action is also a `harness` CLI command
 
 ## Status
 
-This is the bootstrap: the server, the first-run claim, sign-in, the **Overview** section and the console's layout.
-The other sections (Settings, Modules, Apps, Pairing requests, Marketplace, and Accounts, skills, maintenance and
+The Hub includes the server, first-run claim, sign-in, **Overview**, **Settings**, and the console's layout.
+The other sections (Modules, Apps, Pairing requests, Marketplace, and Accounts, skills, maintenance and
 runners) each have an issue in this repository; until they ship, their pages list the equivalent CLI commands.
+
+Settings renders the daemon's complete registry, grouped by category, with types, defaults, allowed values,
+read-only guidance, current and pending revisions, and restart requirements. Validate shows field errors without
+saving. Save sends the revision; a concurrent change is refused and the page reloads the current settings. Rollback
+and restart each require an in-page confirmation. Settings and Overview poll health during a restart and report
+last-good recovery or quarantined settings. Restart requires a daemon supervisor; an unsupervised daemon returns
+its manual restart instructions.
+
+Settings also manages smart approvals, backend model/effort defaults, the memory agent profile (saving commits
+and pushes to its library), member GitHub access, read-only Google sign-in status, and test notifications. Secret
+references remain file paths: the Hub never opens or resolves those files. Installer-only secrets remain hidden
+and read-only. Every action includes its daemon CLI equivalent.
 
 ## Install and run
 

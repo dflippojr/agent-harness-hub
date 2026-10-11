@@ -23,6 +23,8 @@ from harness_hub.auth import create_signin_code
 from harness_hub.config import Settings
 from harness_hub.server import create_app
 
+from .settings_fake import register_settings
+
 HUB_HOST = "127.0.0.1:8120"
 TOKEN_SHAPE = re.compile(r"(?<![A-Za-z0-9])(?:ha|ho|hp)-[A-Za-z0-9_\-]{4,}")
 
@@ -69,12 +71,22 @@ class FakeDaemon:
 
         @app.get("/health")
         async def health():
+            if self.restart_polls:
+                self.restart_polls -= 1
+                return JSONResponse({"detail": "restarting"}, status_code=503)
+            if self.restart_requested:
+                self.values.update(self.pending)
+                self.pending = {}
+                self.revision = self.pending_revision or self.revision
+                self.pending_revision = None
+                self.restart_requested = False
             return {"ok": True, "profile": "service", "release": "0.9.0", "build_id": "2026.09.17.1",
                     "protocols": {"app": {"min": 1, "max": 2}, "admin": {"min": 1, "max": 2}},
                     "capabilities": {"profile": "service", "required": {"sessions": True, "storage": True},
                                      "modules": {"web": False, "hub": True}, "hosted_backends": ["claude"],
                                      "config_registry": True},
-                    "config": {"revision": 3, "confirmed": True, "supervised_restart": False, "recovery": None}}
+                    "config": {"revision": self.revision, "confirmed": True, "supervised_restart": True,
+                               "recovery": self.recovery}}
 
         @app.post("/api/v1/pair/requests", status_code=201)
         async def create(request: Request):
@@ -143,6 +155,7 @@ class FakeDaemon:
                 return JSONResponse({"detail": "requests from this machine need the local owner token"}, 401)
             return {"claimed": self.hub is not None, "hub": self.hub, "requests": []}
 
+        register_settings(app, self, owner)
         return app
 
     def transport(self) -> httpx.AsyncBaseTransport:

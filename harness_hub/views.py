@@ -34,6 +34,10 @@ def _num(value: Any) -> float | None:
     return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
 
 
+def _int(value: Any) -> int | None:
+    return value if type(value) is int else None
+
+
 def _flags(value: Any) -> dict[str, bool]:
     if not isinstance(value, dict):
         return {}
@@ -83,7 +87,7 @@ def health_view(body: Any) -> dict:
             "config_revision": config.get("revision") if isinstance(config.get("revision"), int) else None,
             "config_confirmed": _bool(config.get("confirmed")),
             "supervised_restart": _bool(config.get("supervised_restart")),
-            "recovery": bool(config.get("recovery")),
+            "recovery": recovery_view(config.get("recovery")),
         },
         "capabilities": {
             "profile": _str(caps.get("profile"), 32),
@@ -123,3 +127,114 @@ def overview(claims: ClaimManager, daemon_url: str, health: dict | None, ownersh
         "ownership": ownership,
         "fetched_at": time.time(),
     }
+
+
+# Settings values are scalars or lists of strings in the daemon registry. No
+# arbitrary nested objects (credentials, diagnostics, or provider state) survive.
+def setting_value(value: Any) -> Any:
+    if value is None or isinstance(value, bool | int | float | str):
+        return value
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return list(value)
+    return None
+
+
+def field_errors(value: Any) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    return {key: {"code": _str(row.get("code"), 64), "message": _str(row.get("message"), 2000)}
+            for key, row in value.items() if isinstance(key, str) and isinstance(row, dict)}
+
+
+def settings_error(body: Any, status: int) -> dict:
+    body = body if isinstance(body, dict) else {}
+    error = body.get("error") if isinstance(body.get("error"), dict) else {}
+    details = error.get("details") if isinstance(error.get("details"), dict) else {}
+    return {"detail": _str(body.get("detail"), 2000) or f"The daemon answered HTTP {status}",
+            "error": {"code": _str(error.get("code"), 64), "keys": field_errors(error.get("keys")),
+                      "details": {"expected_revision": _num(details.get("expected_revision")),
+                                  "current_revision": _num(details.get("current_revision")),
+                                  "manual": _str(details.get("manual"), 1000)}}}
+
+
+def registry_entry(body: Any) -> dict:
+    body = body if isinstance(body, dict) else {}
+    out = {key: _str(body.get(key), 4000) for key in
+           ("key", "label", "help", "category", "type", "scope", "apply", "sensitivity", "guidance", "source")}
+    out.update({key: _bool(body.get(key)) for key in ("readable", "writable", "available", "file_only")})
+    out.update({key: _num(body.get(key)) for key in ("minimum", "maximum")})
+    out["enum"] = setting_value(body.get("enum"))
+    hidden = body.get("sensitivity") in ("hidden", "redact") or body.get("readable") is False
+    for key in ("default", "configured", "effective", "inherited", "pending"):
+        out[key] = None if hidden else setting_value(body.get(key))
+    return out
+
+
+def registry_view(body: Any) -> dict:
+    body = body if isinstance(body, dict) else {}
+    rows = body.get("settings") if isinstance(body.get("settings"), list) else []
+    changes = body.get("changes") if isinstance(body.get("changes"), list) else []
+    return {
+        **{key: _int(body.get(key)) for key in
+           ("schema_version", "revision", "pending_revision", "target_revision")},
+        **{key: _bool(body.get(key)) for key in
+           ("confirmed", "supervised_restart", "restart_required", "accepted")},
+        "status": _str(body.get("status"), 64),
+        "recovery": recovery_view(body.get("recovery")),
+        "warning": _str(body.get("warning"), 2000),
+        "settings": [registry_entry(row) for row in rows],
+        "changes": [{"key": _str(row.get("key"), 200), "from": setting_value(row.get("from")),
+                     "to": setting_value(row.get("to")), "apply": _str(row.get("apply"), 32),
+                     "action": _str(row.get("action"), 32)} for row in changes if isinstance(row, dict)],
+        "errors": field_errors(body.get("errors")),
+    }
+
+
+def recovery_view(value: Any) -> dict | None:
+    if not isinstance(value, dict):
+        return {"recovery": _str(value, 64)} if isinstance(value, str) and value else None
+    return {"recovery": _str(value.get("recovery"), 64), "reason": _str(value.get("reason"), 2000),
+            "warning": _str(value.get("warning"), 2000), "at": _num(value.get("at"))}
+
+
+def preflight_view(value: Any) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    return {"ok": _bool(value.get("ok")), "problems": _names(value.get("problems")),
+            "checked_at": _num(value.get("checked_at"))}
+
+
+def backend_view(value: Any) -> dict:
+    value = value if isinstance(value, dict) else {}
+    models = value.get("popular_models") if isinstance(value.get("popular_models"), list) else []
+    return {"name": _str(value.get("name"), 80), "model": _str(value.get("model"), 200),
+            "effort": _str(value.get("effort"), 32), "available": _bool(value.get("available")),
+            "popular_models": [{"id": _str(row.get("id"), 200), "label": _str(row.get("label"), 200)}
+                               for row in models if isinstance(row, dict)]}
+
+
+def control_view(operation: str, body: Any) -> Any:
+    if operation == "backends":
+        return [backend_view(row) for row in body] if isinstance(body, list) else []
+    if operation == "backend_save":
+        return backend_view(body)
+    body = body if isinstance(body, dict) else {}
+    if operation in ("smart", "smart_save"):
+        return {"mode": _str(body.get("mode"), 32), "enabled": _bool(body.get("enabled")),
+                "configured": _bool(body.get("configured")), "secret_ref": _str(body.get("secret_ref"), 4000)}
+    if operation in ("memory", "memory_save"):
+        commit = body.get("last_commit") if isinstance(body.get("last_commit"), dict) else {}
+        return {"enabled": _bool(body.get("enabled")),
+                "profile": body.get("profile") if isinstance(body.get("profile"), str) else "",
+                "profile_max_chars": _num(body.get("profile_max_chars")),
+                "last_commit": {"head": _str(commit.get("head"), 64), "path": _str(commit.get("path"), 4000),
+                                "summary": _str(commit.get("summary"), 200), "at": _num(commit.get("at")),
+                                "pushed": _bool(commit.get("pushed"))},
+                "refresh_error": _str(body.get("refresh_error"), 2000)}
+    if operation in ("github", "github_save"):
+        return {"enabled": _bool(body.get("enabled")), "configured": _bool(body.get("configured")),
+                "preflight": preflight_view(body.get("preflight"))}
+    if operation == "google":
+        return {"enabled": _bool(body.get("enabled")), "ready": _bool(body.get("ready")),
+                "preflight": preflight_view(body.get("preflight"))}
+    return {"sent": _bool(body.get("sent"))}
