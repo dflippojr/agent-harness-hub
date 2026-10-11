@@ -10,6 +10,8 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import re
+import time
 from importlib import resources
 from typing import Any
 
@@ -26,7 +28,7 @@ from .config import Settings
 from .daemon import DaemonClient, DaemonUnreachable
 from .guard import ResponseGuard
 from .state import SERVER_FILE, StateStore, write_private
-from .views import claim_view, health_view, overview, ownership_view
+from .views import claim_view, control_view, health_view, overview, ownership_view, registry_view, settings_error
 
 log = logging.getLogger("harness_hub")
 
@@ -114,6 +116,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     app.state.claims = claims
     app.state.store = store
     app.state.sessions = sessions
+    restart = {"active": False, "target": None, "not_before": 0.0}
 
     @app.middleware("http")
     async def require_owner(request: Request, call_next):
@@ -214,7 +217,89 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     error = f"the owner API answered HTTP {discovery.status if not discovery.ok else record.status}"
         except DaemonUnreachable:
             error = f"the daemon at {settings.daemon_url} did not answer"
-        return overview(claims, settings.daemon_url, health, ownership, error)
+        result = overview(claims, settings.daemon_url, health, ownership, error)
+        result["restarting"] = restart["active"]
+        return result
+
+    @app.get("/api/settings/health")
+    async def settings_health():
+        try:
+            reply = await daemon.health()
+        except DaemonUnreachable:
+            return {"reachable": False, "restarting": restart["active"], "health": None}
+        shown = health_view(reply.body)["health"] if reply.ok else None
+        if time.monotonic() >= restart["not_before"] and shown and shown["ok"] and shown["config_confirmed"] and (
+                restart["target"] is None or shown["config_revision"] == restart["target"] or shown["recovery"]):
+            restart["active"] = False
+        return {"reachable": reply.ok, "restarting": restart["active"], "health": shown}
+
+    @app.api_route("/api/settings/{resource:path}", methods=["GET", "POST", "PUT", "PATCH"])
+    async def settings_action(resource: str, request: Request):
+        operations = {
+            ("GET", "schema"): "schema", ("GET", "config"): "config",
+            ("POST", "validate"): "validate", ("PATCH", "config"): "save",
+            ("POST", "rollback"): "rollback", ("POST", "restart"): "restart",
+            ("GET", "smart-approvals"): "smart", ("PUT", "smart-approvals"): "smart_save",
+            ("GET", "backends"): "backends", ("PUT", "backend"): "backend_save",
+            ("GET", "memory"): "memory", ("PUT", "memory"): "memory_save",
+            ("GET", "github"): "github", ("PUT", "github"): "github_save",
+            ("GET", "google"): "google", ("POST", "notify"): "notify",
+        }
+        operation = operations.get((request.method, resource))
+        if operation is None:
+            return _error(404, "unknown Settings operation")
+        key = claims.key()
+        if key is None:
+            return _error(409, "Claim this Hub on Overview before administering Settings.")
+        body, name = None, ""
+        if request.method != "GET":
+            if not request.headers.get("origin"):
+                return _error(403, "Settings writes require a same-origin Origin")
+            data = bytearray()
+            async for chunk in request.stream():
+                if len(data) + len(chunk) > 262144:
+                    return _error(413, "Settings body is too large")
+                data.extend(chunk)
+            try:
+                body = json.loads(data or b"{}")
+            except ValueError:
+                return _error(400, "Settings body must be JSON")
+            fields = {"validate": {"revision", "changes"}, "save": {"revision", "changes"},
+                      "rollback": {"revision", "confirm"}, "restart": {"revision", "confirm"},
+                      "smart_save": {"mode"}, "backend_save": {"name", "model", "effort"},
+                      "memory_save": {"content", "summary"}, "github_save": {"enabled"}, "notify": set()}
+            if not isinstance(body, dict) or set(body) - fields[operation]:
+                return _error(400, "unexpected Settings fields")
+            if operation in ("validate", "save", "rollback", "restart") and (
+                    type(body.get("revision")) is not int or body["revision"] < 0):
+                return _error(400, "a non-negative settings revision is required")
+            if operation in ("validate", "save") and not isinstance(body.get("changes"), dict):
+                return _error(400, "changes must be an object")
+            if operation in ("rollback", "restart") and body.get("confirm") is not True:
+                return _error(400, "confirm this action in the page first")
+            if operation == "backend_save":
+                name = body.pop("name", "")
+                if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", name):
+                    return _error(400, "invalid backend name")
+            if operation == "github_save" and type(body.get("enabled")) is not bool:
+                return _error(400, "enabled must be a boolean")
+        try:
+            reply = await daemon.settings(key["token"], operation, body, name)
+            if reply.status == 401:
+                confirmation = await daemon.admin(key["token"])
+                if confirmation.status == 401:
+                    claims.released()
+                return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
+        except DaemonUnreachable:
+            return _error(503, "The daemon did not answer. Check its health before repeating a write.")
+        if not reply.ok:
+            return JSONResponse(settings_error(reply.body, reply.status), status_code=reply.status)
+        if operation == "restart" and isinstance(reply.body, dict) and reply.body.get("accepted") is True:
+            restart.update(active=True, target=reply.body.get("target_revision"),
+                           not_before=time.monotonic() + 1)
+        shown = registry_view(reply.body) if operation in (
+            "schema", "config", "validate", "save", "rollback", "restart") else control_view(operation, reply.body)
+        return JSONResponse(shown, status_code=reply.status)
 
     @app.get("/api/claim")
     async def get_claim():

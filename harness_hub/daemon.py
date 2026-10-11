@@ -16,6 +16,26 @@ ADMIN = "/api/admin/v1"
 CLAIM_REQUESTS = "/api/v1/pair/requests"
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 
+# Closed operation table: browser input never supplies a daemon URL or arbitrary route.
+SETTINGS_ROUTES = {
+    "schema": ("GET", "/config/schema"),
+    "config": ("GET", "/config"),
+    "validate": ("POST", "/config/validate"),
+    "save": ("PATCH", "/config"),
+    "rollback": ("POST", "/config/rollback"),
+    "restart": ("POST", "/config/restart"),
+    "smart": ("GET", "/smart-approvals"),
+    "smart_save": ("PUT", "/smart-approvals"),
+    "backends": ("GET", "/backends"),
+    "backend_save": ("PUT", "/backends/{name}"),
+    "memory": ("GET", "/memory"),
+    "memory_save": ("PUT", "/memory/profile"),
+    "github": ("GET", "/github-member-auth"),
+    "github_save": ("PUT", "/github-member-auth"),
+    "google": ("GET", "/google-signin"),
+    "notify": ("POST", "/notify/test"),
+}
+
 
 class DaemonUnreachable(Exception):
     """The daemon did not answer (stopped, restarting, or the URL is wrong)."""
@@ -68,6 +88,13 @@ class DaemonClient:
 
     async def health(self) -> Reply:
         return await self._call("GET", "/health")
+
+    async def settings(self, token: str, operation: str, body: dict | None = None, name: str = "") -> Reply:
+        method, path = SETTINGS_ROUTES[operation]
+        if operation == "backend_save":
+            # The server validates this single path segment before dispatch.
+            path = path.format(name=name)
+        return await self._call(method, ADMIN + path, token=token, json=body)
 
     async def start_hub_claim(self, name: str, challenge: str) -> Reply:
         return await self._call("POST", CLAIM_REQUESTS, json={

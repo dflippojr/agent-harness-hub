@@ -26,7 +26,8 @@ export function renderOverview(main) {
       if (data.reachable) lastGood = data;
       draw(data);
       const waiting = data.claim.state === "pending";
-      timer = setTimeout(load, waiting ? CLAIM_POLL_MS : REFRESH_MS);
+      if (data.restarting) await api("settings/health").catch(() => {});
+      timer = setTimeout(load, waiting || data.restarting ? CLAIM_POLL_MS : REFRESH_MS);
     } catch (error) {
       if (stopped) return;
       clear(body, h("section", { class: "card bad", role: "alert" }, h("h2", {}, "Could not load the overview"), h("p", {}, error.message)));
@@ -38,6 +39,8 @@ export function renderOverview(main) {
     clear(claimBox, claimCard(data, load));
     const shown = data.reachable ? data : lastGood;
     clear(body,
+      data.restarting ? h("section", { class: "card wait span", role: "status" }, h("h2", {}, "Daemon restarting"),
+        h("p", {}, "Polling health until the daemon answers with confirmed settings.")) : null,
       data.error ? h("section", { class: "card bad span", role: "alert" },
         h("h2", {}, "The daemon did not answer"),
         h("p", {}, data.error),
@@ -145,7 +148,9 @@ function daemonCard(data) {
       fact("Settings revision", health.config_revision),
       fact("Settings confirmed", yesNo(health.config_confirmed)),
       fact("Supervised restart", yesNo(health.supervised_restart)),
-      health.recovery ? fact("Recovery", "The daemon started from its last good settings") : null,
+      health.recovery ? fact("Recovery", health.recovery.recovery === "overlay_quarantined"
+        ? "Managed settings quarantined; the daemon started on file defaults"
+        : "The daemon started from its last good settings") : null,
       fact("Hub version", data.hub.version)));
 }
 

@@ -6,7 +6,7 @@ import { clear, command, h } from "../lib/dom.mjs";
 export const SECTIONS = [
   { id: "overview", label: "Overview", ready: true },
   {
-    id: "settings", label: "Settings",
+    id: "settings", label: "Settings", ready: true,
     about: "The daemon settings registry: view, validate, save, roll back and restart.",
     cli: ["harness config schema", "harness config show", "harness config validate <key>=<value>",
       "harness config set <key>=<value>", "harness config rollback --confirm", "harness config restart --confirm"],

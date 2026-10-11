@@ -15,6 +15,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -68,24 +69,46 @@ def daemon(tmp_path_factory):
         "notify:\n  enabled: false\n", encoding="utf-8")
     (config / "profile.yaml").write_text("profile: service\nmodules:\n  hub: true\n", encoding="utf-8")
     log = (root / "daemon.log").open("w")
-    proc = subprocess.Popen([DAEMON_PYTHON, "-m", "harness", "--config-dir", str(config)], cwd=src,
-                            stdout=log, stderr=subprocess.STDOUT)
+    def launch():
+        return subprocess.Popen([DAEMON_PYTHON, "-m", "harness", "--config-dir", str(config)], cwd=src,
+                                env=dict(os.environ, HARNESS_SUPERVISED="1"),
+                                stdout=log, stderr=subprocess.STDOUT)
+
+    processes = [launch()]
+    proc = processes[0]
+    stopping = threading.Event()
+
+    def supervise():
+        # A test-only supervisor exercises the daemon's supported restart contract.
+        while not stopping.is_set():
+            processes[-1].wait()
+            if not stopping.is_set():
+                processes.append(launch())
+
+    supervisor = threading.Thread(target=supervise, daemon=True)
+    supervisor.start()
     url = f"http://127.0.0.1:{port}"
     try:
         wait(lambda: httpx.get(url + "/health", timeout=2).status_code == 200, 90, "the daemon to start")
     except AssertionError:
-        proc.kill()
+        stopping.set()
+        processes[-1].kill()
+        supervisor.join(15)
         log.close()
         raise AssertionError((root / "daemon.log").read_text(encoding="utf-8")[-4000:]) from None
     env = dict(os.environ, HARNESS_CONFIG_DIR=str(config), HARNESS_URL=url)
     env.pop("HARNESS_TOKEN", None)
     env.pop("HARNESS_LOCAL_TOKEN", None)
-    yield {"url": url, "src": src, "env": env, "root": root}
+    yield {"url": url, "src": src, "env": env, "root": root, "processes": processes}
+    stopping.set()
+    proc = processes[-1]
     proc.terminate()
     try:
         proc.wait(15)
     except subprocess.TimeoutExpired:
         proc.kill()
+        proc.wait(15)
+    supervisor.join(15)
     log.close()
 
 
@@ -167,6 +190,45 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         assert overview["capabilities"]["modules"]["hub"] is True
         assert overview["daemon"]["release"]
         first.call("GET", "/")
+
+        # Settings are edited through the Hub with optimistic concurrency, then
+        # the real daemon exits and the test supervisor starts its saved generation.
+        schema = first.call("GET", "/api/settings/schema")
+        assert schema.status_code == 200 and schema.json()["settings"]
+        config = first.call("GET", "/api/settings/config").json()
+        row = next(s for s in config["settings"] if s["key"] == "sessions.max_turns")
+        payload = {"revision": config["revision"], "changes": {"sessions.max_turns": row["effective"] + 1}}
+        origin = {"Origin": first.url}
+        validated = first.call("POST", "/api/settings/validate", json=payload, headers=origin)
+        assert validated.status_code == 200, validated.text
+        saved = first.call("PATCH", "/api/settings/config", json=payload, headers=origin)
+        assert saved.status_code == 200, saved.text
+        revision = saved.json()["revision"]
+        assert revision > config["revision"]
+        stale = first.call("PATCH", "/api/settings/config", json=payload, headers=origin)
+        assert stale.status_code == 409 and stale.json()["error"]["code"] == "revision_conflict"
+        old_process = daemon["processes"][-1]
+        started = first.call("POST", "/api/settings/restart", headers=origin,
+                             json={"revision": revision, "confirm": True})
+        assert started.status_code == 202, started.text
+        assert first.call("GET", "/api/settings/health").json()["restarting"] is True
+        wait(lambda: old_process.poll() is not None and len(daemon["processes"]) > 1,
+             30, "the daemon process to restart")
+        restored = wait(lambda: (data if (data := first.call("GET", "/api/settings/health").json())
+                                ["reachable"] and not data["restarting"] else None),
+                        90, "the new daemon's confirmed health")
+        assert restored["health"]["config_revision"] == revision
+        after = first.call("GET", "/api/settings/config").json()
+        assert after["revision"] == revision
+        changed = next(s for s in after["settings"] if s["key"] == "sessions.max_turns")
+        assert changed["effective"] == row["effective"] + 1
+        assert first.call("GET", "/api/overview").json()["restarting"] is False
+
+        # Read every moved control; disabled modules return their actual error or
+        # disabled state without ever exposing provider credentials.
+        for resource in ("smart-approvals", "backends", "memory", "github", "google"):
+            response = first.call("GET", "/api/settings/" + resource)
+            assert response.status_code in (200, 404), response.text
 
         # 4. A second Hub is refused with 409 and the release instruction.
         second = Hub(daemon, tmp_path / "hub-b")
