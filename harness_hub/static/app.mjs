@@ -9,8 +9,17 @@ import { renderApps } from "./pages/apps.mjs";
 import { renderMarketplace } from "./pages/marketplace.mjs";
 import { renderModules } from "./pages/modules.mjs";
 import { renderPairing } from "./pages/pairing.mjs";
-import { renderSection, SECTIONS } from "./pages/section.mjs";
 import { renderSignin, signinCodeFromHash } from "./pages/signin.mjs";
+
+const SECTIONS = [
+  { id: "overview", label: "Overview", render: renderOverview },
+  { id: "settings", label: "Settings", render: renderSettings },
+  { id: "modules", label: "Modules", render: renderModules },
+  { id: "apps", label: "Apps", render: renderApps },
+  { id: "pairing", label: "Pairing requests", render: renderPairing },
+  { id: "marketplace", label: "Marketplace", render: renderMarketplace },
+  { id: "admin", label: "Accounts and maintenance", render: renderAdmin },
+];
 
 const main = document.getElementById("main");
 const nav = document.getElementById("nav");
@@ -20,7 +29,7 @@ let stopPage = null;
 
 function current() {
   const id = location.hash.replace(/^#\/?/, "") || "overview";
-  return SECTIONS.find((s) => s.id === id) ? id : "overview";
+  return SECTIONS.find((s) => s.id === id) || SECTIONS[0];
 }
 
 function setMenu(open) {
@@ -31,8 +40,7 @@ function setMenu(open) {
 function buildNav() {
   clear(nav, h("ul", {}, SECTIONS.map((s) => h("li", {},
     h("a", { href: `#/${s.id}`, "data-section": s.id, class: "nav-link" },
-      h("span", { class: "nav-label" }, s.label),
-      s.ready ? null : h("span", { class: "nav-note" }, "CLI")),
+      h("span", { class: "nav-label" }, s.label)),
   ))));
   nav.addEventListener("click", (event) => {
     if (event.target.closest("a")) setMenu(false);
@@ -49,13 +57,10 @@ function markCurrent(id) {
 async function route() {
   if (stopPage) stopPage();
   stopPage = null;
-  const id = current();
-  markCurrent(id);
-  const section = SECTIONS.find((s) => s.id === id);
+  const section = current();
+  markCurrent(section.id);
   document.title = `${section.label} · Hub`;
-  stopPage = id === "overview" ? renderOverview(main) : id === "settings" ? renderSettings(main) :
-    id === "modules" ? renderModules(main) : id === "apps" ? renderApps(main) : id === "pairing" ? renderPairing(main) :
-      id === "marketplace" ? renderMarketplace(main) : id === "admin" ? renderAdmin(main) : renderSection(main, section);
+  stopPage = section.render(main);
   main.focus({ preventScroll: true });
 }
 
