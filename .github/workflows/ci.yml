@@ -1,0 +1,114 @@
+name: CI
+
+# All jobs run on GitHub-hosted runners (public repository: never self-hosted).
+#   lint     - ruff, and a syntax check of every browser ES module
+#   test     - the unit suite on Linux and Windows (the Hub runs on the daemon host, which can be either)
+#   e2e      - a real Agent Harness daemon from dflippojr/agent-harness main, claimed and read by the Hub
+#   package  - the wheel (with the static UI) and the Docker image build
+# SonarCloud is not wired in yet: it needs the SonarCloud project and the SONAR_TOKEN secret first.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Ruff
+        run: ruff check .
+      - name: Browser modules parse
+        run: |
+          for f in $(find harness_hub/static -name '*.mjs'); do node --check "$f"; done
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Unit tests
+        run: python -m pytest -q --cov=harness_hub --cov-report=xml:coverage.xml --cov-report=term
+      - name: Upload coverage
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage
+          path: coverage.xml
+          retention-days: 3
+
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check out the daemon
+        uses: actions/checkout@v7
+        with:
+          repository: dflippojr/agent-harness
+          ref: main
+          path: daemon
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            daemon/requirements.txt
+      - name: Install the daemon and the Hub
+        run: python -m pip install -r daemon/requirements.txt -e ".[dev]"
+      - name: Claim a real daemon and read the Overview
+        env:
+          HUB_E2E_DAEMON_SRC: daemon
+        run: python -m pytest -m e2e -v -p no:cacheprovider
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Build the wheel
+        run: |
+          python -m pip install build
+          python -m build
+      - name: The wheel installs and carries the UI
+        run: |
+          python -m venv /tmp/wheel
+          /tmp/wheel/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/wheel/bin/python -m harness_hub --version
+          /tmp/wheel/bin/python -c "from importlib import resources; s = resources.files('harness_hub') / 'static'; assert (s / 'index.html').is_file() and (s / 'pages' / 'overview.mjs').is_file()"
+      - name: Build the Docker image
+        run: |
+          docker build -t agent-harness-hub:ci .
+          docker run --rm agent-harness-hub:ci --version
