@@ -278,3 +278,10 @@ details summary { min-height: var(--tap); display: flex; align-items: center; cu
 .apps-detail, .apps-erasures { margin-top: 16px; overflow-wrap: anywhere; }
 .notice.warn { background: var(--warn-bg); color: var(--warn); }
 .apps-list .card h3 { margin-top: 0; overflow-wrap: anywhere; font-size: 1.15rem; color: var(--text); }
+
+/* Owner administration reuses the shell and form tokens. */
+.admin-workspace, .admin-output, .admin-row { margin: 16px 0; overflow-wrap: anywhere; }
+.admin-text { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; font: .9rem/1.5 var(--mono); }
+.admin-row h3 { color: var(--text); margin-top: 0; }
+.admin-form { max-width: 760px; }
+.admin-form > .btn { margin-top: 16px; }

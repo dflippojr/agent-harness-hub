@@ -66,7 +66,7 @@ def daemon(tmp_path_factory):
     port = free_port()
     (config / "harness.local.yaml").write_text(
         f"listen:\n  port: {port}\ndata_dir: {data.as_posix()}\nrepos_dir: {repos.as_posix()}\n"
-        "notify:\n  enabled: false\n", encoding="utf-8")
+        "notify:\n  enabled: false\nallowed_logins: [owner@example.test]\n", encoding="utf-8")
     (config / "profile.yaml").write_text("profile: service\nmodules:\n  hub: true\n", encoding="utf-8")
     log = (root / "daemon.log").open("w")
     def launch():
@@ -282,6 +282,23 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         for resource in ("smart-approvals", "backends", "memory", "github", "google"):
             response = first.call("GET", "/api/settings/" + resource)
             assert response.status_code in (200, 404), response.text
+
+        # Owner administration: only aggregate household metadata is visible.
+        member = first.call("POST", "/api/manage/account_add", headers=origin,
+                            json={"login": "member@example.test", "display_name": "Synthetic member"})
+        assert member.status_code == 201, member.text
+        member_id = member.json()["user_id"]
+        members = first.call("GET", "/api/manage/accounts").json()
+        assert any(row["user_id"] == member_id and row["enabled"] for row in members)
+        disabled = first.call("PATCH", "/api/manage/account_save", headers=origin,
+                              params={"user_id": member_id}, json={"enabled": False, "confirm": True})
+        assert disabled.status_code == 200 and disabled.json()["enabled"] is False, disabled.text
+        detail = first.call("GET", "/api/manage/account", params={"user_id": member_id})
+        assert detail.status_code == 200 and detail.json()["enabled"] is False
+        maintenance = first.call("GET", "/api/manage/maintenance")
+        assert maintenance.status_code == 200, maintenance.text
+        assert maintenance.json()["free_gb"] >= 0
+        assert_no_secrets(first.bodies, token)
 
         # 4. A second Hub is refused with 409 and the release instruction.
         second = Hub(daemon, tmp_path / "hub-b")

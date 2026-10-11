@@ -34,7 +34,7 @@ export const SECTIONS = [
       "harness pairing-requests arm <catalog_app_id> --scopes <scope>"],
   },
   {
-    id: "admin", label: "Accounts and maintenance",
+    id: "admin", label: "Accounts and maintenance", ready: true,
     about: "Household accounts, skills, maintenance and runners.",
     cli: ["harness accounts list", "harness skills list", "harness maintenance status", "harness runner list"],
   },

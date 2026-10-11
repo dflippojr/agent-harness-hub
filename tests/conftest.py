@@ -23,6 +23,7 @@ from harness_hub.auth import create_signin_code
 from harness_hub.config import Settings
 from harness_hub.server import create_app
 
+from .admin_fake import register_administration
 from .apps_fake import register_apps
 from .modules_fake import register_inventory
 from .settings_fake import register_settings
@@ -159,6 +160,7 @@ class FakeDaemon:
 
         register_apps(app, self, owner)
         register_inventory(app, self, owner)
+        register_administration(app, self, owner)
         register_settings(app, self, owner)
         return app
 
