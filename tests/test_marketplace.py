@@ -185,6 +185,37 @@ def test_a_claim_waits_for_typed_confirmation_and_a_slot_is_withdrawn(claimed, f
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 
 
+@pytest.mark.parametrize("state", ["approved", "redeemed"])
+@pytest.mark.parametrize("first_page", ["/api/marketplace", "/api/pairing"])
+def test_browser_claim_skipping_confirmation_warns_on_both_pages(claimed, fake_daemon, entries, state, first_page):
+    rid = arm(claimed, {"catalog_app_id": "test.example.notes", "scopes": ["sessions"],
+                        "origin": "https://notes.example.test"}).json()["request"]["id"]
+    # Simulate the legacy daemon: claim and possibly redeem before the next owner poll, without a confirm.
+    row = fake_daemon.claim_slot(rid, "https://notes.example.test")
+    code = row["match_code"]
+    row.update(state=state, key_id="k-legacy" if state == "redeemed" else "")
+    rejected = claimed._keep(claimed.client.post(f"/api/pairing/{rid}/confirm", json={"match": code}, headers=ORIGIN))
+    assert rejected.status_code == 409  # a refused confirmation must not suppress the warning
+    warning = "This daemon approved the claim without confirmation; update the daemon."
+    for page in (first_page, "/api/marketplace", "/api/pairing", first_page):
+        reply = claimed.get(page)
+        assert reply.status_code == 200 and reply.json()["confirmation_warning"] == warning
+        assert code not in reply.text and "match_code" not in reply.text
+
+
+@pytest.mark.parametrize("origin,app_id", [("", "test.example.native"),
+                                         ("https://notes.example.test", "test.example.notes")])
+def test_successful_confirmation_between_polls_does_not_warn(claimed, fake_daemon, entries, origin, app_id):
+    rid = arm(claimed, {"catalog_app_id": app_id, "scopes": ["sessions"], "origin": origin}).json()["request"]["id"]
+    code = fake_daemon.claim_slot(rid, origin)["match_code"]
+    # Pairing requests can confirm from another tab before Marketplace ever polls the claimed state.
+    confirmed = claimed._keep(claimed.client.post(f"/api/pairing/{rid}/confirm", json={"match": code}, headers=ORIGIN))
+    assert confirmed.status_code == 200
+    fake_daemon.pairing_rows[rid].update(state="redeemed", key_id="k-confirmed")
+    assert market(claimed)["confirmation_warning"] == ""
+    assert claimed.get("/api/pairing").json()["confirmation_warning"] == ""
+
+
 def test_an_invalid_entries_file_shows_the_named_error_with_the_last_good_entries(claimed, fake_daemon, entries):
     good = market(claimed)
     fake_daemon.inventory_error = "hub.entries: invalid JSON"

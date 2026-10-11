@@ -75,7 +75,7 @@ export function renderPairing(main) {
       if (stopped) return;
       data = result;
       offset = typeof result.now === "number" ? result.now - Date.now() / 1000 : 0;
-      showProblem("");
+      showProblem(result.confirmation_warning || "");
     } catch (error) {
       if (stopped) return;
       showProblem(error.message + (data ? " Showing the last list." : ""));

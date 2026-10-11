@@ -1,5 +1,5 @@
 // Marketplace (agent-harness #520, #519 flow 4): the owner's local Hub entries, and setting an app up from one by
-// arming a pre-approved slot after a consent screen. Listing grants nothing. Nothing named by an entry is fetched: the
+// arming a slot with scope consent after a consent screen. Listing grants nothing. Nothing named by an entry is fetched: the
 // only image shown is an inline one the server already checked. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
@@ -74,6 +74,7 @@ export function renderMarketplace(main) {
         "There are no last good entries to show.");
     }
     if (!failure && data?.slots_error) lines.push(data.slots_error);
+    if (data?.confirmation_warning) lines.push(data.confirmation_warning);
     problem.textContent = lines.join(" ");
     problem.hidden = !lines.length;
   }

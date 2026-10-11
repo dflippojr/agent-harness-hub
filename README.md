@@ -27,7 +27,10 @@ and read-only. Every action includes its daemon CLI equivalent.
 
 ## Install and run
 
-Requires Python 3.12+ and a running Agent Harness daemon on the same machine.
+Requires Python 3.12+ and a running Agent Harness daemon on the same machine, at
+[agent-harness #606](https://github.com/dflippojr/agent-harness/pull/606), merge commit
+`aa5a9047dbe4bcba6b7ec3348d0cd529c00ebe2b` (`aa5a904`), or later. This minimum daemon enforces
+typed-code confirmation for browser claims as well as native claims.
 
 ```bash
 pip install git+https://github.com/dflippojr/agent-harness-hub
@@ -208,6 +211,12 @@ Approve and Confirm need the code the App is showing right now, typed into an em
 and refuses a wrong code. If the App shows no code or an error, deny. If your App reported that the slot was already
 claimed, list requests with `harness pairing-requests list`. For a `redeemed` row, revoke its `key_id` with
 `harness keys revoke <key_id>`; for `approved` or `claimed`, deny it with `harness pairing-requests deny <id>`.
+
+If this Hub process observes a browser slot jump from `armed` to `approved` or `redeemed` without handling a
+successful confirmation, Marketplace and Pairing requests warn: "This daemon approved the claim without
+confirmation; update the daemon." This is a bounded, in-memory polling backstop. A host CLI confirmation between
+polls can also trigger it; verify the daemon meets the minimum above. The warning never includes an App match code.
+
 Browser and native claims on armed slots both wait for typed-code confirmation before redemption. Elevated scopes (`sessions:all`, `approvals`, `remote_control`,
 `memory_library`, `homelab`) need a separate acknowledgement: Approve stays disabled until it is ticked, and the
 server refuses an approval without it before calling the daemon. If a name, origin or catalog id is withheld,

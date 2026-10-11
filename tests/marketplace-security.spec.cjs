@@ -331,3 +331,22 @@ test("blank add-on copy names the Hub and requires a separate acknowledgement", 
   expect(writes).toEqual([]);
   expect(errors).toEqual([]);
 });
+
+for (const state of ["approved", "redeemed"]) {
+  test(`a browser claim that skips confirmation warns even when already ${state}`, async ({ page }) => {
+    await page.clock.install({ time: NOW * 1000 });
+    const browser = slot("pr-legacy", { browser: true, origin: "https://web.example.test" });
+    const { writes, errors } = await mount(page, view([entry("test.example.web", { slots: [browser] })]));
+    const warning = "This daemon approved the claim without confirmation; update the daemon.";
+    await page.route("http://hub.test/api/marketplace", route => route.fulfill({ json: view([
+      entry("test.example.web", { slots: state === "redeemed" ? [] : [{ ...browser, state, needs: "redeem" }] })
+    ], { confirmation_warning: warning }) }));
+    await page.clock.runFor(5500);
+    await expect(page.getByRole("alert")).toHaveText(warning);
+    await page.getByRole("button", { name: "Refresh entries" }).click();
+    await expect(page.getByRole("alert")).toHaveText(warning);
+    expect(await page.locator("main").evaluate(el => el.outerHTML.includes("482913"))).toBe(false);
+    expect(writes).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+}

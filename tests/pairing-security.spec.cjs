@@ -267,3 +267,19 @@ for (const field of ["name", "origin", "catalog_app_id"]) {
     });
   }
 }
+
+test("a daemon confirmation warning appears on Pairing requests after a poll", async ({ page }) => {
+  await page.clock.install({ time: NOW * 1000 });
+  const browser = request("pr-legacy", { state: "armed", armed: true, needs: "claim" });
+  const { writes, errors } = await mount(page, [browser]);
+  const warning = "This daemon approved the claim without confirmation; update the daemon.";
+  await page.route("http://hub.test/api/pairing", route => route.fulfill({ json: {
+    requests: [{ ...browser, state: "redeemed", needs: "", key_id: "k-legacy" }], now: NOW,
+    confirmation_warning: warning,
+  } }));
+  await page.clock.runFor(5500);
+  await expect(page.getByRole("alert")).toHaveText(warning);
+  expect(await page.locator("main").evaluate(el => el.outerHTML.includes("482913"))).toBe(false);
+  expect(writes).toEqual([]);
+  expect(errors).toEqual([]);
+});
