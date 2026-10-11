@@ -89,6 +89,9 @@ class DaemonClient:
     async def health(self) -> Reply:
         return await self._call("GET", "/health")
 
+    async def inventory(self, token: str) -> Reply:
+        return await self._call("GET", ADMIN + "/hub", token=token)
+
     async def settings(self, token: str, operation: str, body: dict | None = None, name: str = "") -> Reply:
         method, path = SETTINGS_ROUTES[operation]
         if operation == "backend_save":

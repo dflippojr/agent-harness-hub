@@ -12,6 +12,8 @@ def register_settings(app, fake, owner):
         ("queue.limit", "int", 2, "live", None),
         ("listen.idle", "float", 1.5, "daemon_restart", None),
         ("notify.enabled", "bool", False, "live", None),
+        ("hub.enabled", "bool", True, "live", None),
+        ("search.enabled", "bool", False, "daemon_restart", None),
         ("smart_approvals.mode", "enum", "off", "live", ["off", "shadow", "auto"]),
         ("discovery.roots", "discovery_root_list", ["/synthetic/repos"], "live", None),
         ("labels.names", "string_list", ["sample"], "live", None),
@@ -27,6 +29,9 @@ def register_settings(app, fake, owner):
                     "minimum": 0 if type_ in ("int", "float") else None, "maximum": None}
                    for key, type_, default, apply, enum in rows]
     fake.values = {key: default for key, _, default, _, _ in rows}
+    for spec in fake.schema:
+        spec["modules"] = {"notify.enabled": ["notifications"], "hub.enabled": ["hub"],
+                           "search.enabled": ["search"]}.get(spec["key"], [])
     fake.revision = 3
     fake.pending_revision = None
     fake.pending = {}

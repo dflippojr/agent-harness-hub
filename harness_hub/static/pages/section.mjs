@@ -12,7 +12,7 @@ export const SECTIONS = [
       "harness config set <key>=<value>", "harness config rollback --confirm", "harness config restart --confirm"],
   },
   {
-    id: "modules", label: "Modules",
+    id: "modules", label: "Modules", ready: true,
     about: "Every daemon module with its presence, switch state and status.",
     cli: ["harness hub status", "harness config set <module>.enabled=<true|false>"],
   },
