@@ -6,6 +6,8 @@ import time
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from harness_hub.views import SCOPE_DISCLOSURES
+
 from .pairing_fake import ELEVATED, refusal
 
 SCOPES = {"sessions", "sessions:all", "approvals", "images", "inference", "remote_control", "models:warm",
@@ -51,6 +53,7 @@ def with_pairing_state(fake, entries):
 
 def register_marketplace(app, fake, owner):
     fake.armed = []
+    fake.arm_disclosures = dict(SCOPE_DISCLOSURES)
 
     @app.post("/api/admin/v1/pairing-requests")
     async def arm(request: Request):
@@ -62,12 +65,13 @@ def register_marketplace(app, fake, owner):
         scopes = body.get("scopes") or ["sessions"]
         if not body.get("catalog_app_id"):
             return refusal(400, "catalog_app_id is required", "invalid_request")
-        if "admin" in scopes or any(scope not in SCOPES for scope in scopes):
+        if "admin" in scopes or any(scope not in fake.arm_disclosures for scope in scopes):
             return refusal(400, "unknown or empty scopes", "invalid_request")
         if ELEVATED.intersection(scopes) and body.get("acknowledge_elevated") is not True:
-            return refusal(400, "elevated scopes need acknowledge_elevated", "invalid_request")
+            return refusal(400, "elevated scopes need acknowledge_elevated", "acknowledgement_required")
         rid = fake.add_pairing(body.get("name") or body["catalog_app_id"], scopes, state="armed",
-                               origin=body.get("origin", ""), catalog_app_id=body["catalog_app_id"])
+                               origin=body.get("origin", ""), catalog_app_id=body["catalog_app_id"],
+                               text=fake.arm_disclosures)
         row = fake.pairing_rows[rid]
         row["approved_at"] = row["created_at"]
         return JSONResponse(fake.pairing_view(row), status_code=201)

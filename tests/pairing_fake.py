@@ -3,6 +3,7 @@ import re
 import secrets
 import time
 
+import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
@@ -25,6 +26,7 @@ def register_pairing(app, fake, owner):
     fake.pairing_calls = []
     fake.pairing_rows = {}
     fake.pairing_list_error = None
+    fake.pairing_deny_error = None
 
     def add(name, scopes, state="pending", origin="https://app.test", catalog_app_id="", text=None):
         """A request as the App made it (or as the owner armed it). Returns its id; the code is on the row."""
@@ -134,6 +136,10 @@ def register_pairing(app, fake, owner):
 
     @app.post("/api/admin/v1/pairing-requests/{rid}/deny")
     async def deny(rid: str, request: Request):
+        if fake.pairing_deny_error == "refused":
+            return refusal(500, "withdrawal failed")
+        if fake.pairing_deny_error == "unreachable":
+            raise httpx.ConnectError("synthetic withdrawal outage")
         failed = guard(request)
         if failed:
             return failed

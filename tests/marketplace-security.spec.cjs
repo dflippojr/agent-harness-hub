@@ -267,3 +267,48 @@ for (const [label, width] of [["phone", 390], ["desktop", 1280]]) {
     expect(errors).toEqual([]);
   });
 }
+
+
+test("disclosure drift reopens daemon consent and sends its digest only after a new approval", async ({ page }) => {
+  const original = entry("test.example.ops", { browser_origins: ["https://ops.example.test"] });
+  const daemon = entry("test.example.ops", { ...original, consent_digest: "b".repeat(64),
+    scopes: [{ ...SESSIONS, tier: "elevated", text: "New daemon description for all project files." }],
+    elevated: ["sessions"] });
+  let attempts = 0;
+  const { writes, errors } = await mount(page, view([original]), { answer: () => ++attempts === 1 ? {
+    status: 409, json: { detail: "The daemon describes these scopes differently from what you saw. Review the consent screen again.",
+      consent_entry: daemon }, view: view([daemon]) } : { status: 201,
+    json: { request: slot("pr-new"), name: "Synthetic ops", daemon_url: "https://daemon.test" } } });
+  await card(page, original.catalog_app_id).getByRole("button", { name: /^Set up/ }).click();
+  await page.locator(".market-consent").getByRole("button", { name: "Approve" }).click();
+  const consent = page.locator(".market-consent");
+  await expect(consent.locator(".disclosure-text")).toHaveText(daemon.scopes[0].text);
+  await expect(consent.getByRole("heading", { level: 2 })).toContainText(original.catalog_app_id);
+  await expect(page.locator(".market-handoff")).toHaveCount(0);
+  await expect(consent.getByRole("checkbox")).not.toBeChecked();
+  await expect(consent.getByRole("button", { name: "Approve" })).toBeDisabled();
+  expect(writes).toHaveLength(1);
+  expect(writes[0].body.consent_digest).toBe(original.consent_digest);
+  await consent.getByRole("checkbox").check();
+  await consent.getByRole("button", { name: "Approve" }).click();
+  await expect(page.locator(".market-handoff")).toBeVisible();
+  expect(writes).toHaveLength(2);
+  expect(writes[1].body).toMatchObject({ consent_digest: daemon.consent_digest, acknowledge_elevated: true });
+  expect(errors).toEqual([]);
+});
+
+
+test("blank add-on copy names the Hub and requires a separate acknowledgement", async ({ page }) => {
+  const addon = entry("test.example.files", { scopes: [{ scope: "files:write", tier: "standard", text: "",
+    justification: "Publisher's reason" }] });
+  const { writes, errors } = await mount(page, view([addon]));
+  await card(page, addon.catalog_app_id).getByRole("button", { name: /^Set up/ }).click();
+  const consent = page.locator(".market-consent");
+  await expect(consent.locator(".disclosure-text")).toHaveText(
+    "The Hub has no description for this scope. The daemon's description appears once the slot is armed.");
+  await expect(consent.getByRole("button", { name: "Approve" })).toBeDisabled();
+  await consent.getByRole("checkbox").check();
+  await expect(consent.getByRole("button", { name: "Approve" })).toBeEnabled();
+  expect(writes).toEqual([]);
+  expect(errors).toEqual([]);
+});

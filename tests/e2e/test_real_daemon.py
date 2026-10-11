@@ -27,6 +27,7 @@ import httpx
 import pytest
 
 from harness_hub.state import STATE_FILE
+from harness_hub.views import ELEVATED_SCOPES, SCOPE_DISCLOSURES
 
 from ..conftest import assert_no_secrets
 
@@ -451,8 +452,11 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         assert web["state"] == "paired" and web["paired"] == [web_key] and not web["pending_pairing"]
 
         # An unclaimed slot is withdrawn.
-        spare = first.call("POST", "/api/marketplace/arm", headers=origin,
-                           json={"catalog_app_id": planner_id, "scopes": ["sessions"]}).json()["request"]["id"]
+        spare_reply = first.call("POST", "/api/marketplace/arm", headers=origin,
+                                 json={"catalog_app_id": planner_id, "scopes": ["sessions"],
+                                       "consent_digest": entry(market(), planner_id)["consent_digest"]})
+        assert spare_reply.status_code == 201, spare_reply.text
+        spare = spare_reply.json()["request"]["id"]
         withdrawn = first.call("POST", f"/api/pairing/{spare}/deny", headers=origin, json={"confirm": True})
         assert withdrawn.status_code == 200 and withdrawn.json()["state"] == "denied", withdrawn.text
         assert entry(market(), planner_id)["slots"] == []
@@ -498,3 +502,17 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         first.stop()
         if second:
             second.stop()
+
+
+def test_all_scope_disclosures_and_elevated_tiers_match_pinned_daemon():
+    if not SRC:
+        pytest.skip("set HUB_E2E_DAEMON_SRC to an agent-harness checkout")
+    # Import from precisely the CI fixture checkout, in its interpreter, without starting a daemon.
+    result = subprocess.run([DAEMON_PYTHON, "-c",
+                             "import json; from harness.pairing_requests import DISCLOSURES, ELEVATED; "
+                             "print(json.dumps({'disclosures': DISCLOSURES, 'elevated': sorted(ELEVATED)}))"],
+                            cwd=Path(SRC).resolve(), capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    tables = json.loads(result.stdout)
+    assert {k: v for k, v in tables["disclosures"].items() if k != "admin"} == SCOPE_DISCLOSURES
+    assert set(tables["elevated"]) == ELEVATED_SCOPES

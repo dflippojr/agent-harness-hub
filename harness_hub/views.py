@@ -545,7 +545,8 @@ def pairing_view(body: Any, secrets: tuple[str, ...] = ()) -> dict:
 # are copied; the manifest's URLs, e-mail addresses and digests never reach the browser, and nothing from an entry is
 # ever fetched. Until a slot is armed the owner reads each scope's disclosure from this copy of the daemon's own copy
 # (agent-harness harness/pairing_requests.py DISCLOSURES, docs/marketplace-design.md section 5.2); once armed, the
-# daemon's `disclosures` on the request are shown instead. tests/e2e compares the two.
+# daemon's `disclosures` on the request are checked before hand-off. Drift withdraws the slot and replaces the
+# consent copy with daemon text. tests/e2e compares the entire built-in tables.
 SCOPE_DISCLOSURES = {
     "sessions": "This app can start agent tasks on your harness and read the tasks it created. It cannot see other "
                 "apps' or your Control Center sessions.",
@@ -605,6 +606,23 @@ def entry_digest(entry: dict) -> str:
     shown = {key: value for key, value in entry.items() if key not in {"slots", "consent_digest"}}
     canonical = json.dumps(shown, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     return hashlib.sha256(canonical).hexdigest()
+
+
+def scope_disclosures(value: Any, scopes: list[str], secrets: tuple[str, ...] = ()) -> list[dict] | None:
+    """Only complete, lossless daemon disclosure rows may become the next consent screen."""
+    if not isinstance(value, list) or len(value) != len(scopes):
+        return None
+    by_scope = {}
+    for item in value:
+        if not isinstance(item, dict) or not isinstance(item.get("scope"), str) or item.get("scope") not in scopes or (
+                item.get("tier") not in ("standard", "elevated")) or not isinstance(item.get("text"), str):
+            return None
+        text = item["text"]
+        if (not text.strip() or _app_text(text, 4000, secrets) != text or item["scope"] in by_scope
+                or any(secret and secret in text for secret in secrets)):
+            return None
+        by_scope[item["scope"]] = {key: item[key] for key in ("scope", "tier", "text")}
+    return [by_scope[scope] for scope in scopes] if set(by_scope) == set(scopes) else None
 
 
 def entry_view(row: Any, secrets: tuple[str, ...] = ()) -> dict | None:

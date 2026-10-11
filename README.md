@@ -226,8 +226,9 @@ Run the isolated browser regressions with Playwright installed locally:
 Marketplace lists the owner's local Hub entries ([agent-harness #520](https://github.com/dflippojr/agent-harness/issues/520))
 from the daemon's `GET /hub`, under the line **Being listed here grants nothing.** Each entry shows the manifest's app
 name, publisher, summary and version, its declared scopes and browser origins, "Local entry, not verified", and its
-state: **Paired** (with the matching key ids), **Not paired** or **Pending**. Native keys and requests that match only
-the catalog id are listed separately under "Native keys and requests (origin not verified)", as the daemon reports
+state: **Paired** (with the matching key ids) or **Not paired**, with **Pending** beside it when applicable.
+A pending request without an armed slot names a requester-chosen catalog id and is explicitly unverified.
+Native keys and requests that match only the catalog id are listed separately under "Native keys and requests (origin not verified)", as the daemon reports
 them under `unverified_origin`. Only display fields reach the browser: the manifest's URLs, e-mail addresses and
 review evidence do not, and nothing named by an entry is ever fetched. An icon is shown only when it is an inline
 `data:` PNG, JPEG, GIF or WebP image; anything else becomes a letter.
@@ -235,11 +236,21 @@ review evidence do not, and nothing named by an entry is ever fetched. An icon i
 **Set up** opens a consent screen before anything is armed: the scopes the app will get, each with its `standard` or
 `elevated` badge, the daemon's disclosure text and the publisher's stated reason; the exact origin a browser app's
 slot is bound to (chosen from the entry's origins when it lists several); and a separate acknowledgement for elevated
-scopes. Until a slot exists the disclosure text is the Hub's copy of the daemon's own copy (agent-harness
-`harness/pairing_requests.py`); once armed, the daemon's `disclosures` on the request are shown, and the real-daemon
-e2e checks the two are identical. Only **Approve** calls the daemon's `POST /pairing-requests`. The server re-reads
-the entries first and arms only a listed entry, with exactly its declared scopes and one of its declared origins, so a
-stale page or a crafted request cannot widen what the owner approved.
+scopes and any scope without Hub disclosure text. Initially the disclosure text is the Hub's copy of the daemon's
+(agent-harness `harness/pairing_requests.py`). Every successful arm reply is checked for identical scope, tier and
+text. A difference, including a blank Hub description for an add-on scope, immediately withdraws the new slot and
+returns 409 without its id. The consent screen reopens with the daemon's text and a new digest; the owner must
+approve again. A newer daemon's acknowledgement requirement also reopens consent with a separate checkbox.
+Unsafe or incomplete disclosures never become a consent screen, and a failed withdrawal reports an error instead
+of a hand-off. CI compares the daemon's entire DISCLOSURES and ELEVATED tables with the Hub's.
+The owner-API disclosure preview follow-up is [agent-harness #604](https://github.com/dflippojr/agent-harness/issues/604);
+once it exists the Hub will drop SCOPE_DISCLOSURES and show the daemon's preview before arming.
+
+Only **Approve** calls the daemon's `POST /pairing-requests`. The server re-reads the entries first, compares a
+SHA-256 digest of the displayed entry (excluding live slots), and validates scopes and normalized origins against
+the raw daemon entry. An entry whose binding fields would be truncated or redacted is withheld entirely. Publisher
+text has Unicode control and format characters removed before display caps and before the name reaches the daemon.
+The consent heading includes the catalog id beside the name.
 
 After arming, the page shows the request id and the daemon URL as copyable text, with "Give this only to <app>; it
 lets that app claim the slot once." No secret exists then: the app claims the slot with its own PKCE challenge and

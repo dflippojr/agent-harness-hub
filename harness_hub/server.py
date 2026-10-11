@@ -52,6 +52,7 @@ from .views import (
     pairing_request_view,
     pairing_view,
     registry_view,
+    scope_disclosures,
     settings_error,
     valid_limits,
 )
@@ -306,6 +307,32 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         return {"state": state, "error": error, "stale": state != "ready" and good is not None,
                 "fetched_at": good["fetched_at"] if good else None, **shown}
 
+    # Bound to the Hub key and the entry's displayed identity, with a bounded ten-minute lifetime.
+    consent_copies: dict[tuple[str, str], tuple[str, float, list[dict], bool]] = {}
+
+    def consent_identity(entry: dict) -> str:
+        return entry_digest({k: v for k, v in entry.items() if k not in {
+            "state", "paired", "pending_pairing", "unverified_origin", "consent_digest", "slots",
+            "acknowledgement_required"}})
+
+    def consent_entry(entry: dict, key_id: str) -> dict:
+        copied = consent_copies.get((key_id, entry["catalog_app_id"]))
+        if copied and copied[0] == consent_identity(entry) and copied[1] > time.monotonic():
+            entry["scopes"] = [{**item, **disclosure} for item, disclosure in zip(
+                entry["scopes"], copied[2], strict=True)]
+            entry["elevated"] = sorted(set(entry["elevated"]) | {
+                item["scope"] for item in copied[2] if item["tier"] == "elevated"})
+            if copied[3]:
+                entry["acknowledgement_required"] = True
+        entry["consent_digest"] = entry_digest(entry)
+        return entry
+
+    def remember_consent(entry: dict, key_id: str, disclosures: list[dict], *, acknowledge: bool = False):
+        if len(consent_copies) >= 256:
+            consent_copies.pop(next(iter(consent_copies)))
+        consent_copies[(key_id, entry["catalog_app_id"])] = (
+            consent_identity(entry), time.monotonic() + 600, disclosures, acknowledge)
+
     @app.get("/api/marketplace")
     async def get_marketplace():
         """Local entries (#520) with their armed slots. Listing grants nothing; nothing from an entry is fetched."""
@@ -331,6 +358,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         except DaemonUnreachable:
             slots_error = "Armed slots could not be read: the daemon did not answer."
         for entry in entries or []:
+            consent_entry(entry, key["key_id"])
             entry["slots"] = slots.get(entry["catalog_app_id"], [])
         return {"state": state, "error": error, "stale": state != "ready" and good is not None,
                 "fetched_at": good["fetched_at"] if good else None, "entries": entries, "withheld": withheld,
@@ -379,6 +407,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             entry = entry_view(raw_entry)
             if entry is None:
                 return _error(404, "No local entry has that catalog app id. Refresh the Marketplace.")
+            baseline = {**entry, "scopes": [dict(item) for item in entry["scopes"]]}
+            consent_entry(entry, key["key_id"])
             raw_app = raw_entry["manifest"]["app"]
             declared = [item["scope"] for item in raw_app["scopes"]]
             if sorted(scopes) != sorted(declared):
@@ -395,14 +425,16 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return _error(400, "This entry declares no browser origin: it is set up as a native app.")
             if body.get("consent_digest") != entry_digest(entry):
                 return _error(409, "The entry changed since the consent screen was shown. Review it again.")
-            if entry["elevated"] and not acknowledged:
-                return _error(400, "Elevated scopes need the separate acknowledgement before setup.",
+            if (entry["elevated"] or entry.get("acknowledgement_required") or any(
+                    not item["text"] for item in entry["scopes"])) and not acknowledged:
+                return _error(400, "Elevated scopes or scopes without a Hub description need the separate "
+                              "acknowledgement before setup.",
                               error={"code": "acknowledgement_required"})
             arm = {"catalog_app_id": catalog_app_id, "scopes": declared,
                    "name": entry_text(raw_app["display_name"], 80).strip()[:60]}
             if bound_origin:
                 arm["origin"] = bound_origin
-            if entry["elevated"]:
+            if acknowledged:
                 arm["acknowledge_elevated"] = True
             reply = await daemon.pairing(key["token"], "arm", body=arm)
             if reply.status == 401:
@@ -410,7 +442,37 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         except DaemonUnreachable:
             return _error(503, "The daemon did not answer. Refresh the Marketplace before setting up again.")
         if not reply.ok:
-            return JSONResponse(settings_error(reply.body, reply.status), status_code=reply.status)
+            error = settings_error(reply.body, reply.status)
+            if error["error"]["code"] == "acknowledgement_required":
+                # A newer daemon may elevate a scope our pinned table does not yet know. It armed nothing.
+                shown = [{k: item[k] for k in ("scope", "tier", "text")} for item in entry["scopes"]]
+                remember_consent(baseline, key["key_id"], shown, acknowledge=True)
+                return _error(409, "The daemon requires a separate acknowledgement for these scopes. "
+                              "Review the consent screen again.", consent_entry=consent_entry(baseline, key["key_id"]))
+            return JSONResponse(error, status_code=reply.status)
+        actual = scope_disclosures(reply.body.get("disclosures") if isinstance(reply.body, dict) else None,
+                                   declared, tuple(store.secrets()))
+        shown = [{k: item[k] for k in ("scope", "tier", "text")} for item in entry["scopes"]]
+        if actual != shown or any(not item["text"].strip() for item in shown):
+            # The id stays inside this server until it has been withdrawn: no hand-off on drift, including add-ons.
+            unsafe = pairing_request_view(reply.body)
+            if not unsafe["id"]:
+                return _error(502, "The daemon returned an invalid armed slot. Review Pairing requests on the host.")
+            try:
+                denied = await daemon.pairing(key["token"], "deny", rid=unsafe["id"])
+            except DaemonUnreachable:
+                return _error(503, "Disclosure review failed and the slot could not be withdrawn. "
+                              "Withdraw it on Pairing requests before trying again.")
+            if not denied.ok or pairing_request_view(denied.body)["state"] != "denied":
+                return _error(502, "Disclosure review failed and the daemon refused to withdraw the slot. "
+                              "Withdraw it on Pairing requests before trying again.")
+            if actual is not None:
+                remember_consent(baseline, key["key_id"], actual)
+                reviewed = consent_entry(baseline, key["key_id"])
+                return _error(409, "The daemon describes these scopes differently from what you saw. "
+                              "Review the consent screen again.", consent_entry=reviewed)
+            return _error(409, "The daemon's scope disclosures could not be displayed safely. "
+                          "The slot was withdrawn. Review Pairing requests on the host.")
         slot = pairing_request_view(reply.body, tuple(store.secrets()))
         if not slot["id"] or slot["state"] != "armed":
             return _error(502, "The daemon returned an invalid armed slot. Refresh the Marketplace.")

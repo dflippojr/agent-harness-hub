@@ -325,3 +325,118 @@ def test_publisher_controls_are_stripped_before_display_cap_and_daemon_name(clai
     reply = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]})
     assert reply.status_code == 201, reply.text
     assert fake_daemon.armed[0]["name"] == "Visible name"
+
+
+@pytest.mark.parametrize("scope", list(SCOPE_DISCLOSURES))
+def test_any_changed_disclosure_is_denied_and_requires_fresh_consent(claimed, fake_daemon, entries, scope):
+    entries[1] = manifest_entry("test.example.native", "Synthetic native", scopes=(scope,))
+    original = by_id(market(claimed))["test.example.native"]
+    body = {"catalog_app_id": original["catalog_app_id"], "scopes": [scope],
+            "consent_digest": original["consent_digest"], "acknowledge_elevated": True}
+    fake_daemon.arm_disclosures[scope] += " More daemon disclosure."
+    reply = arm(claimed, body)
+    assert reply.status_code == 409, reply.text
+    assert "describes these scopes differently" in reply.json()["detail"]
+    assert "request" not in reply.json() and "pr-" not in reply.text
+    rid = next(iter(fake_daemon.pairing_rows))
+    assert fake_daemon.pairing_rows[rid]["state"] == "denied"
+    assert fake_daemon.pairing_bodies == [("deny", rid, None)]
+    reviewed = reply.json()["consent_entry"]
+    assert reviewed["scopes"][0]["text"] == fake_daemon.arm_disclosures[scope]
+    assert reviewed["consent_digest"] != original["consent_digest"]
+    assert by_id(market(claimed))[original["catalog_app_id"]]["scopes"] == reviewed["scopes"]
+    # A stale or client-forged digest cannot approve the newly discovered daemon wording.
+    assert arm(claimed, body).status_code == 409
+    assert len(fake_daemon.armed) == 1
+    fresh = by_id(market(claimed))[original["catalog_app_id"]]
+    body["consent_digest"] = fresh["consent_digest"]
+    success = arm(claimed, body)
+    assert success.status_code == 201, success.text
+    assert success.json()["request"]["disclosures"][0]["text"] == fake_daemon.arm_disclosures[scope]
+
+
+def test_addon_scope_requires_ack_and_never_arms_against_blank_hub_text(claimed, fake_daemon, entries):
+    entries[1] = manifest_entry("test.example.native", "Synthetic native", scopes=("files:write",))
+    fake_daemon.arm_disclosures["files:write"] = "Read and write any file in your projects."
+    original = by_id(market(claimed))["test.example.native"]
+    assert original["scopes"][0]["text"] == ""
+    body = {"catalog_app_id": original["catalog_app_id"], "scopes": ["files:write"],
+            "consent_digest": original["consent_digest"]}
+    assert arm(claimed, body).status_code == 400 and fake_daemon.armed == []
+    reply = arm(claimed, {**body, "acknowledge_elevated": True})
+    assert reply.status_code == 409 and "pr-" not in reply.text
+    assert all(row["state"] == "denied" for row in fake_daemon.pairing_rows.values())
+    reviewed = by_id(market(claimed))[original["catalog_app_id"]]
+    assert reviewed["scopes"][0]["text"] == fake_daemon.arm_disclosures["files:write"]
+    success = arm(claimed, {**body, "consent_digest": reviewed["consent_digest"]})
+    assert success.status_code == 201, success.text
+
+
+@pytest.mark.parametrize("malformed", [None, [], [{"scope": "sessions", "tier": "standard", "text": ""}],
+    [{"scope": "sessions", "tier": "unknown", "text": "Different"}],
+    [{"scope": "approvals", "tier": "elevated", "text": "Different"}],
+    [{"scope": "sessions", "tier": "standard", "text": "ha-" + "x" * 20}],
+    [{"scope": "sessions", "tier": "standard", "text": "x" * 4001}],
+    [{"scope": ["sessions"], "tier": "standard", "text": "Different"}],
+    [{"scope": "sessions", "tier": "standard", "text": "Different"}] * 2])
+def test_unsafe_disclosures_are_denied_and_never_offered_for_consent(claimed, fake_daemon, entries, malformed):
+    original_view = fake_daemon.pairing_view
+    fake_daemon.pairing_view = lambda row: {**original_view(row), "disclosures": malformed}
+    reply = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]})
+    assert reply.status_code == 409 and "consent_entry" not in reply.json(), reply.text
+    assert all(row["state"] == "denied" for row in fake_daemon.pairing_rows.values())
+    assert "pr-" not in reply.text
+    assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
+
+
+def test_runtime_compares_raw_tier_and_does_not_mask_daemon_tier_drift(claimed, fake_daemon, entries):
+    original_view = fake_daemon.pairing_view
+    def changed_tier(row):
+        result = original_view(row)
+        result["disclosures"][0]["tier"] = "elevated"
+        return result
+    fake_daemon.pairing_view = changed_tier
+    reply = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]})
+    assert reply.status_code == 409, reply.text
+    reviewed = reply.json()["consent_entry"]
+    assert reviewed["scopes"][0]["tier"] == "elevated" and reviewed["elevated"] == ["sessions"]
+    assert arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]}).status_code == 400
+    assert arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"],
+                         "acknowledge_elevated": True}).status_code == 201
+
+
+def test_daemon_disclosure_copy_is_discarded_when_the_entry_identity_changes(claimed, fake_daemon, entries):
+    fake_daemon.arm_disclosures["sessions"] += " More daemon disclosure."
+    reply = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]})
+    assert reply.status_code == 409 and "consent_entry" in reply.json()
+    entries[1]["manifest"]["app"]["publisher"]["name"] = "New publisher"
+    shown = by_id(market(claimed))["test.example.native"]
+    assert shown["scopes"][0]["text"] == SCOPE_DISCLOSURES["sessions"]
+    assert arm(claimed, {"catalog_app_id": shown["catalog_app_id"], "scopes": ["sessions"]}).status_code == 409
+
+
+@pytest.mark.parametrize("failed", ["refused", "unreachable"])
+def test_failed_withdrawal_never_returns_a_slot_or_replacement_consent(claimed, fake_daemon, entries, failed):
+    fake_daemon.arm_disclosures["sessions"] += " Changed."
+    fake_daemon.pairing_deny_error = failed
+    reply = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]})
+    assert reply.status_code == (502 if failed == "refused" else 503), reply.text
+    assert "consent_entry" not in reply.json() and "request" not in reply.json() and "pr-" not in reply.text
+
+
+def test_new_daemon_elevated_scope_can_be_reviewed_instead_of_leaving_owner_stuck(
+        claimed, fake_daemon, entries, monkeypatch):
+    from . import marketplace_fake, pairing_fake
+    monkeypatch.setattr(marketplace_fake, "ELEVATED", marketplace_fake.ELEVATED | {"sessions"})
+    monkeypatch.setattr(pairing_fake, "ELEVATED", pairing_fake.ELEVATED | {"sessions"})
+    reply = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]})
+    assert reply.status_code == 409, reply.text
+    assert reply.json()["consent_entry"]["acknowledgement_required"] is True
+    assert fake_daemon.pairing_rows == {}
+    reply = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"],
+                          "acknowledge_elevated": True})
+    assert reply.status_code == 409 and reply.json()["consent_entry"]["elevated"] == ["sessions"]
+    assert all(row["state"] == "denied" for row in fake_daemon.pairing_rows.values())
+    success = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"],
+                            "acknowledge_elevated": True})
+    assert success.status_code == 201, success.text

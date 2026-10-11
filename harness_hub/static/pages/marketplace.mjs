@@ -153,7 +153,8 @@ export function renderMarketplace(main) {
     return h("ul", { class: "disclosures" }, items.map((item) => h("li", { "data-scope": item.scope },
       h("p", { class: "disclosure-head" }, h("span", { class: "pill " + (item.tier === "elevated" ? "bad" : "off") },
         item.tier), " ", h("code", {}, item.scope)),
-      h("p", { class: "disclosure-text" }, item.text || "The daemon supplied no description for this scope."),
+      h("p", { class: "disclosure-text" }, item.text || "The Hub has no description for this scope. " +
+        "The daemon's description appears once the slot is armed."),
       item.justification ? h("p", { class: "setting-meta" }, "Publisher's reason (not verified): " +
         item.justification) : null)));
   }
@@ -214,7 +215,9 @@ export function renderMarketplace(main) {
     const origins = entry.browser_origins;
     let origin = origins.length === 1 ? origins[0] : "";
     const cli = h("div");
-    const ack = entry.elevated.length ? h("input", { type: "checkbox", "data-field": "ack" }) : null;
+    const needsAck = entry.scopes.filter((s) => entry.acknowledgement_required || s.tier === "elevated" || !s.text)
+      .map((s) => s.scope);
+    const ack = needsAck.length ? h("input", { type: "checkbox", "data-field": "ack" }) : null;
     const approve = button("Approve", () => {
       if (approve.disabled) return;
       const body = { catalog_app_id: entry.catalog_app_id, scopes: entry.scopes.map((s) => s.scope),
@@ -254,7 +257,8 @@ export function renderMarketplace(main) {
       h("h3", {}, "Scopes it will get"), disclosureList(entry.scopes),
       h("h3", {}, "Where the app runs"), where,
       ack ? h("label", { class: "pairing-ack" }, ack, h("span", {},
-        `I understand the elevated scopes above (${entry.elevated.join(", ")}) and still want to set up ${name}.`)) : null,
+        `I understand the scopes above requiring a separate acknowledgement (${needsAck.join(", ")}) ` +
+        `and still want to set up ${name}.`)) : null,
       h("div", { class: "settings-actions" }, approve, cancel), cli));
     update();
     panel.querySelector("h2").focus();
@@ -297,11 +301,16 @@ export function renderMarketplace(main) {
     for (const control of main.querySelectorAll(".market-list button:not(.copy), .market-list input, " +
       ".market-consent button, .pairing-confirm button")) control.disabled = true;
     if (!keepPanel) clear(panel);
+    let reviewed = null, reviewMessage = "";
     try {
       await action();
     } catch (error) {
       if (stopped) return;
       clear(panel);
+      if (error.status === 409 && error.body.consent_entry) {
+        reviewed = error.body.consent_entry;
+        reviewMessage = error.message;
+      }
       if (error.status === 409) message(error.message + " The entries were refreshed; check them again.", true);
       else if (error.status === 404) message(error.message + " The entries were refreshed.", true);
       else message(error.message, true);
@@ -309,6 +318,13 @@ export function renderMarketplace(main) {
     if (stopped) return;
     busy = false;
     await load(true);
+    if (reviewed) {
+      const current = data?.entries?.find((entry) => entry.catalog_app_id === reviewed.catalog_app_id);
+      const sameCopy = current && JSON.stringify(current.scopes) === JSON.stringify(reviewed.scopes) &&
+        Boolean(current.acknowledgement_required) === Boolean(reviewed.acknowledgement_required);
+      consent(sameCopy ? current : reviewed);
+      message(reviewMessage, true);
+    }
   }
   ticker = setInterval(tick, 1000);
   load(true);
