@@ -159,26 +159,29 @@ def test_arm_needs_a_same_origin_write(claimed, fake_daemon, entries):
     assert fake_daemon.armed == []
 
 
-def test_a_native_claim_is_confirmed_with_the_code_the_app_shows_and_a_slot_is_withdrawn(claimed, fake_daemon,
-                                                                                         entries):
-    rid = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]}).json()["request"]["id"]
-    native = by_id(market(claimed))["test.example.native"]
-    assert native["pending_pairing"] is False and native["unverified_origin"]["pending_pairing"] is True
-    assert native["slots"][0]["state"] == "armed"
-    code = fake_daemon.claim_slot(rid)["match_code"]  # shown on the App's own screen, never by the Hub
-    slot = by_id(market(claimed))["test.example.native"]["slots"][0]
+@pytest.mark.parametrize("app_id,origin", [("test.example.native", ""),
+                                         ("test.example.notes", "https://notes.example.test")])
+def test_a_claim_waits_for_typed_confirmation_and_a_slot_is_withdrawn(claimed, fake_daemon, entries, app_id, origin):
+    body = {"catalog_app_id": app_id, "scopes": ["sessions"], **({"origin": origin} if origin else {})}
+    rid = arm(claimed, body).json()["request"]["id"]
+    entry = by_id(market(claimed))[app_id]
+    assert entry["pending_pairing"] is bool(origin)
+    assert entry["unverified_origin"]["pending_pairing"] is not bool(origin)
+    assert entry["slots"][0]["state"] == "armed"
+    code = fake_daemon.claim_slot(rid, origin)["match_code"]  # from the App's screen, never from an owner view
+    slot = by_id(market(claimed))[app_id]["slots"][0]
     assert slot["state"] == "claimed" and slot["needs"] == "confirm" and "match_code" not in slot
     assert code not in claimed.bodies[-1]
     confirmed = claimed._keep(claimed.client.post(f"/api/pairing/{rid}/confirm", json={"match": code},
                                                   headers=ORIGIN))
     assert confirmed.status_code == 200 and confirmed.json()["state"] == "approved", confirmed.text
-    assert by_id(market(claimed))["test.example.native"]["slots"][0]["needs"] == "redeem"
+    assert by_id(market(claimed))[app_id]["slots"][0]["needs"] == "redeem"
 
-    other = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]}).json()["request"]["id"]
+    other = arm(claimed, body).json()["request"]["id"]
     withdrawn = claimed._keep(claimed.client.post(f"/api/pairing/{other}/deny", json={"confirm": True},
                                                   headers=ORIGIN))
     assert withdrawn.status_code == 200 and withdrawn.json()["state"] == "denied"
-    assert [s["id"] for s in by_id(market(claimed))["test.example.native"]["slots"]] == [rid]
+    assert [s["id"] for s in by_id(market(claimed))[app_id]["slots"]] == [rid]
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 
 

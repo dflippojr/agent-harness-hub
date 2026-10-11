@@ -49,6 +49,48 @@ async function mount(page, initial, { answer } = {}) {
 }
 const card = (page, id) => page.locator('[data-request-id="' + id + '"]');
 
+for (const [kind, origin] of [["browser", "https://app.test"], ["native", ""]]) {
+  test(`${kind} claimed slots wait for the typed code and refuse wrong codes`, async ({ page }) => {
+    const row = request("pr-confirm", { state: "claimed", needs: "confirm", armed: true,
+      origin, browser: Boolean(origin), match_code: "" });
+    const { writes, errors } = await mount(page, [row], { answer: (id, action, body) =>
+      body.match === "000000" ? { status: 400, json: { detail: "the match code does not match the one the App shows",
+        error: { code: "match_mismatch" } } } : null });
+    const box = card(page, row.id), input = box.getByLabel("Match code the app shows");
+    const confirm = box.getByRole("button", { name: /^Confirm/ });
+    await expect(box).toContainText("Redemption is waiting for confirmation.");
+    await expect(box).not.toContainText("A native app claimed");
+    await expect(input).toHaveValue("");
+    await expect(confirm).toBeDisabled();
+    await input.fill("   ");
+    await expect(confirm).toBeDisabled();
+    expect(writes).toEqual([]);
+    await input.fill("000000");
+    await confirm.click();
+    await expect(page.getByText("the match code does not match the one the App shows")).toBeVisible();
+    await expect(box).toContainText("Redemption is waiting for confirmation.");
+    await expect(box).not.toContainText("482913");
+    await input.fill(" 482913 ");
+    await confirm.click();
+    await expect(page.locator('[data-state="approved"] [data-request-id="pr-confirm"]')).toBeVisible();
+    expect(writes.map(w => w.body)).toEqual([{ match: "000000" }, { match: "482913" }]);
+    expect(writes.every(w => w.path === "/api/pairing/pr-confirm/confirm")).toBe(true);
+    await expect(box.getByLabel("Match code the app shows")).toHaveCount(0);
+    await expect(box).toContainText("waiting for the app to fetch its own token");
+    expect(errors).toEqual([]);
+  });
+}
+
+test("already-claimed recovery distinguishes redeemed keys from unredeemed claims", async ({ page }) => {
+  await mount(page, [request("pr-redeemed", { state: "redeemed", needs: "", key_id: "k-recovery", match_code: "" })]);
+  const recovery = page.locator(".pairing-recovery");
+  await expect(recovery).toContainText("For a redeemed row, revoke its key_id. For an approved or claimed row, deny it.");
+  for (const cli of ["harness pairing-requests list", "harness keys revoke <key_id>", "harness pairing-requests deny <id>"]) {
+    await expect(recovery.getByText(cli, { exact: true })).toBeVisible();
+  }
+  await expect(card(page, "pr-redeemed").getByText("harness keys revoke k-recovery", { exact: true })).toBeVisible();
+});
+
 test("approve needs the typed code; it is never pre-filled and a wrong code shows the daemon's 400", async ({ page }) => {
   const { writes, errors } = await mount(page, [request("pr-a")], { answer: (id, action, body) =>
     body.match === "000000" ? { status: 400, json: { detail: "the match code does not match the one the App shows" } } : null });
@@ -186,7 +228,7 @@ for (const [state, needs] of [["pending", "approve"], ["claimed", "confirm"]]) {
     await expect(box.getByLabel("Match code the app shows")).toHaveValue("");
     await expect(box).toContainText("If the app shows no code or an error, deny.");
     if (state === "claimed") {
-      await expect(box).toContainText("If your app reported that the slot was already claimed, withdraw this.");
+      await expect(box).toContainText("Redemption is waiting for confirmation.");
     }
     expect(errors).toEqual([]);
   });

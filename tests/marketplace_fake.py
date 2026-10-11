@@ -81,10 +81,7 @@ def register_marketplace(app, fake, owner):
         row = fake.pairing_rows[rid]
         assert row["state"] == "armed" and row["origin"] == origin
         now = time.time()
-        if origin:
-            row.update(state="approved", approved_at=now, expires_at=now + 300)
-        else:
-            row.update(state="claimed", match_code=f"{secrets.randbelow(10**6):06d}", expires_at=now + 600)
+        row.update(state="claimed", match_code=f"{secrets.randbelow(10**6):06d}", expires_at=now + 600)
         return row
 
     fake.claim_slot = claim_slot
