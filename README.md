@@ -99,6 +99,17 @@ When the daemon already has a Hub, the claim is refused (409) and the Hub shows 
 `harness hub release --confirm`. An expired or denied claim shows that, with a button to start a new one. If the Hub
 is released later, the Hub notices that its key no longer works, forgets it and offers a new claim.
 
+Stopping a waiting claim is ordered with redemption: if an in-flight redemption succeeds, the Hub keeps its key
+and reports **Claimed**. If stopping returns **Unclaimed**, that request cannot later change the Hub's claim state.
+
+If the daemon issues the one-time Hub key but the private state write fails, Overview shows **Waiting to save key**.
+The Hub keeps that credential privately in memory and retries saving it without redeeming again. It offers no
+claim replacement or cancellation while saving is pending, and enables owner operations only after the save
+succeeds. Keep the Hub process running and repair free space, write permissions, or the state directory's storage.
+Shutdown waits for an in-flight redemption and makes a final save attempt. If persistence still fails before the
+process exits (or the process crashes), the credential in memory is lost: on the daemon host run
+`harness hub release --confirm`, repair the Hub's state storage, restart the Hub, and start and approve a new claim.
+
 ## Modules
 
 Modules shows each daemon module's running presence, saved switch and scalar status detail, including status errors.

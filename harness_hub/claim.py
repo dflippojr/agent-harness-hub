@@ -34,13 +34,14 @@ RELEASE_COMMAND = "harness hub release --confirm"
 
 # What the UI is told for each state; the server adds the commands.
 UNCLAIMED, PENDING, CLAIMED = "unclaimed", "pending", "claimed"
+PERSISTING = "persisting"
 REFUSED, EXPIRED, DENIED, RELEASED, RATE_LIMITED, FAILED = (
     "refused", "expired", "denied", "released", "rate_limited", "failed")
 OUTCOMES = (REFUSED, EXPIRED, DENIED, RELEASED, RATE_LIMITED, FAILED)
 
 
 class ClaimError(Exception):
-    """A claim could not start; `state` is one of OUTCOMES and is also recorded."""
+    """A claim could not start; `state` describes the refusal or the existing claim."""
 
     def __init__(self, state: str, message: str):
         super().__init__(message)
@@ -65,6 +66,9 @@ class ClaimManager:
         self.clock = clock
         self._lock = asyncio.Lock()
         self._poller: asyncio.Task | None = None
+        self._redeemed_key: dict | None = None
+        self._stopping = asyncio.Event()
+        self._wake = asyncio.Event()
 
     # -- state ------------------------------------------------------------------------------------------------
 
@@ -85,6 +89,8 @@ class ClaimManager:
         return None
 
     def state(self) -> str:
+        if self._redeemed_key is not None:
+            return PERSISTING
         if self.key():
             return CLAIMED
         if self.pending():
@@ -93,6 +99,13 @@ class ClaimManager:
         if outcome and outcome.get("state") in OUTCOMES:
             return outcome["state"]
         return UNCLAIMED
+
+    def secrets(self) -> list[str]:
+        """Include the private candidate in the response guard until it is durable."""
+        values = self.store.secrets()
+        if self._redeemed_key is not None:
+            values.append(self._redeemed_key["token"])
+        return values
 
     def _finish(self, state: str) -> None:
         self.store.update(claim=None, outcome={"state": state, "at": self.clock()})
@@ -103,6 +116,9 @@ class ClaimManager:
     async def start(self) -> dict:
         """Start a claim, or return the one already waiting. Raises ClaimError when the daemon refuses."""
         async with self._lock:
+            if self._redeemed_key is not None:
+                self.ensure_polling()
+                raise ClaimError(PERSISTING, "the redeemed Hub key is waiting for private state storage to recover")
             if self.key():
                 raise ClaimError(CLAIMED, "this Hub already holds the daemon's Hub key")
             pending = self.pending()
@@ -137,10 +153,17 @@ class ClaimManager:
             self.ensure_polling()
             return claim
 
-    def forget(self) -> None:
-        """Stop waiting for a claim on this Hub. The daemon expires the request on its own."""
-        self.store.update(claim=None, outcome=None)
-        self._remove_claim_file()
+    async def forget(self) -> None:
+        """Order cancellation after an in-flight redemption, preserving any minted key."""
+        async with self._lock:
+            if self._redeemed_key is not None:
+                self.ensure_polling()
+                return
+            if self.key():
+                return
+            self.store.update(claim=None, outcome=None)
+            self._remove_claim_file()
+            self._wake.set()
 
     def released(self) -> None:
         """The daemon no longer accepts this Hub's key (`harness hub release` on the host)."""
@@ -149,17 +172,27 @@ class ClaimManager:
     # -- redeem -----------------------------------------------------------------------------------------------
 
     def ensure_polling(self) -> None:
-        if self._poller is None or self._poller.done():
-            self._poller = asyncio.get_running_loop().create_task(self._poll())
+        if not self._stopping.is_set():
+            if self._poller is None or self._poller.done():
+                self._poller = asyncio.get_running_loop().create_task(self._poll())
+            else:
+                self._wake.set()
 
     async def stop(self) -> None:
+        # Do not cancel a request that may already have minted a one-time credential.
+        # DaemonClient bounds the network wait; wake idle pollers immediately.
+        self._stopping.set()
+        self._wake.set()
         if self._poller is not None:
-            self._poller.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._poller
+            await self._poller
+        async with self._lock:
+            if self._redeemed_key is not None and not self._persist_key():
+                log.error("Hub key could not be saved before shutdown; release the Hub on the daemon host "
+                          "and claim again after repairing private state storage")
 
     async def _poll(self) -> None:
-        while True:
+        while not self._stopping.is_set():
+            self._wake.clear()
             try:
                 done = await self.poll_once()
             except Exception:  # never let the poller die silently
@@ -167,10 +200,18 @@ class ClaimManager:
                 done = False
             if done:
                 return
-            await asyncio.sleep(self.poll_seconds)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._wake.wait(), timeout=self.poll_seconds)
 
     async def poll_once(self) -> bool:
         """One redeem attempt. True when the claim is finished (key stored, or refused, expired or denied)."""
+        async with self._lock:
+            if self._redeemed_key is not None:
+                return self._persist_key()
+            return await self._redeem()
+
+    async def _redeem(self) -> bool:
+        """Hold the claim lock across the request and every response transition."""
         claim = self.pending()
         if claim is None:
             return True
@@ -211,11 +252,23 @@ class ClaimManager:
             log.error("Hub claim %s redeemed something that is not a Hub key; discarded", claim["request_id"])
             self._finish(FAILED)
             return True
-        self.store.update(key={"token": token, "key_id": app["id"], "daemon_url": self.daemon.base_url,
-                               "claimed_at": self.clock(), "request_id": claim["request_id"]},
-                          claim=None, outcome=None)
+        self._redeemed_key = {"token": token, "key_id": app["id"], "daemon_url": self.daemon.base_url,
+                              "claimed_at": self.clock(), "request_id": claim["request_id"]}
+        return self._persist_key()
+
+    def _persist_key(self) -> bool:
+        """Retry only the local write: the daemon returns this credential exactly once."""
+        key = self._redeemed_key
+        try:
+            self.store.update(key=key, claim=None, outcome=None)
+        except OSError:
+            # Exception text can contain secrets supplied by storage or the daemon.
+            log.error("Redeemed Hub key is waiting for private state storage; saving will be retried. "
+                      "Repair storage before stopping the Hub")
+            return False
+        self._redeemed_key = None
         self._remove_claim_file()
-        log.info("Hub claim %s redeemed: this Hub is the daemon's Hub (key %s)", claim["request_id"], app["id"])
+        log.info("Hub claim saved: this Hub is the daemon's Hub")
         return True
 
     # -- installer claim file ---------------------------------------------------------------------------------

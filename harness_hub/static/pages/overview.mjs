@@ -25,7 +25,7 @@ export function renderOverview(main) {
       if (stopped) return;
       if (data.reachable) lastGood = data;
       draw(data);
-      const waiting = data.claim.state === "pending";
+      const waiting = ["pending", "persisting"].includes(data.claim.state);
       if (data.restarting) await api("settings/health").catch(() => {});
       timer = setTimeout(load, waiting || data.restarting ? CLAIM_POLL_MS : REFRESH_MS);
     } catch (error) {
@@ -78,6 +78,11 @@ function claimCard(data, reload) {
   const card = (cls, ...children) => h("section", { class: `card claim ${cls}`, "aria-labelledby": "claim-title" }, title, ...children);
 
   switch (claim.state) {
+    case "persisting":
+      return card("warn",
+        h("p", { class: "lead", role: "alert" }, h("span", { class: "pill wait" }, "Waiting to save key"),
+          " ", claim.message),
+        command(claim.release_command));
     case "claimed": {
       const own = data.ownership;
       return card("ok",

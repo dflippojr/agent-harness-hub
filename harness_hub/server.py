@@ -837,14 +837,13 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         try:
             await claims.start()
         except ClaimError as exc:
-            status = {"refused": 409, "rate_limited": 429, "claimed": 409}.get(exc.state, 502)
+            status = {"refused": 409, "rate_limited": 429, "claimed": 409, "persisting": 503}.get(exc.state, 502)
             return JSONResponse({"detail": str(exc), "claim": claim_view(claims)}, status_code=status)
         return JSONResponse(claim_view(claims), status_code=201)
 
     @app.delete("/api/claim")
     async def forget_claim():
-        if claims.state() != CLAIMED:
-            claims.forget()
+        await claims.forget()
         return claim_view(claims)
 
     @app.get("/", include_in_schema=False)
@@ -853,6 +852,6 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
-    served = HostCheck(ResponseGuard(app, store.secrets), settings.allowed_hosts())
+    served = HostCheck(ResponseGuard(app, claims.secrets), settings.allowed_hosts())
     served.fastapi = app
     return served

@@ -115,12 +115,14 @@ class StateStore:
 
     def update(self, **values: dict | None) -> None:
         with self._lock:
+            candidate = dict(self._data)
             for name, value in values.items():
                 if value is None:
-                    self._data.pop(name, None)
+                    candidate.pop(name, None)
                 else:
-                    self._data[name] = value
-            write_private(self.path, json.dumps(self._data, indent=2) + "\n")
+                    candidate[name] = dict(value)
+            write_private(self.path, json.dumps(candidate, indent=2) + "\n")
+            self._data = candidate
 
     def secrets(self) -> list[str]:
         """Every secret this store holds, for the response guard."""
