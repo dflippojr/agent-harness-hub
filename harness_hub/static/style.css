@@ -300,3 +300,22 @@ details summary { min-height: var(--tap); display: flex; align-items: center; cu
 .pairing-ack { display: flex; align-items: flex-start; gap: 10px; min-height: var(--tap); margin: 12px 0; cursor: pointer; }
 .pairing-ack input { flex: none; width: var(--tap); height: var(--tap); margin: 0; accent-color: var(--accent); }
 .pairing-ack span { padding-top: 10px; }
+
+/* Marketplace reuses the card, pill, disclosure and touch-target tokens. */
+.grants-nothing { font-size: 1.05rem; }
+.market-entry h2, .market-entry h3 { overflow-wrap: anywhere; }
+.market-entry h3 { color: var(--text); }
+.entry-head { display: flex; align-items: center; gap: 12px; }
+.entry-head h2 { margin: 0; }
+.entry-by { margin: 0; overflow-wrap: anywhere; }
+.entry-icon {
+  flex: none; display: inline-grid; place-items: center; width: 48px; height: 48px; border-radius: var(--radius);
+  background: var(--panel-2); color: var(--muted); font-weight: 700; font-size: 1.3rem; text-transform: uppercase;
+  object-fit: cover;
+}
+.entry-native, .market-slot { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 4px; }
+.market-consent, .market-handoff { margin-top: 16px; overflow-wrap: anywhere; }
+.market-consent h3, .market-handoff h3 { color: var(--text); }
+.origin-choice { border: 1px solid var(--line); border-radius: var(--radius); margin: 8px 0; padding: 4px 12px 8px; }
+.origin-choice legend { font-weight: 600; padding: 0 4px; }
+.origin-choice .pairing-ack { align-items: center; margin: 4px 0; }

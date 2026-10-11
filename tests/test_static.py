@@ -71,12 +71,12 @@ def test_the_hub_never_claims_or_redeems_an_app_request():
     claim = text(PACKAGE / "claim.py")
     assert claim.count("redeem_hub_claim(") == 1 and 'claim["request_id"]' in claim
     assert 'app.get("role") != "hub"' in claim
-    # The owner API's App pairing routes are owner decisions only, never the App-side claim or token.
+    # The owner API's App pairing routes are owner decisions and arming a slot, never the App-side claim or token.
     routes = next(node for node in tree.body if isinstance(node, ast.Assign)
                   and getattr(node.targets[0], "id", "") == "PAIRING_ROUTES")
     paths = [value.elts[1].value for value in routes.value.values]
-    assert paths == ["/pairing-requests", "/pairing-requests/{rid}/approve", "/pairing-requests/{rid}/confirm",
-                     "/pairing-requests/{rid}/deny"]
+    assert paths == ["/pairing-requests", "/pairing-requests", "/pairing-requests/{rid}/approve",
+                     "/pairing-requests/{rid}/confirm", "/pairing-requests/{rid}/deny"]
     assert "CLAIM_REQUESTS" not in ast.unparse(next(node for node in ast.walk(tree)
                                                     if isinstance(node, ast.AsyncFunctionDef)
                                                     and node.name == "pairing"))

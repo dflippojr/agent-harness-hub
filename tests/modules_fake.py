@@ -5,6 +5,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from .apps_fake import inventory_apps
+from .marketplace_fake import with_pairing_state
 
 
 def register_inventory(app, fake, owner):
@@ -31,5 +32,5 @@ def register_inventory(app, fake, owner):
             {"name": "sample", "state": "present", "status": {"state": "error"}},
             {"name": "missing", "state": "absent"},
         ], "apps": inventory_apps(fake),
-            "entries": deepcopy(fake.app_entries),
+            "entries": with_pairing_state(fake, deepcopy(fake.app_entries)),
             "credential": "provider-secret-sentinel"}

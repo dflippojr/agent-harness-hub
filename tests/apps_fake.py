@@ -5,6 +5,8 @@ from copy import deepcopy
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
+from .marketplace_fake import manifest_entry
+
 
 def register_apps(app, fake, owner):
     now = time.time()
@@ -30,10 +32,8 @@ def register_apps(app, fake, owner):
         fake.apps_rows.append(row)
         fake.app_limits[row["id"]] = {"max_running": None, "max_queued": 10}
     fake.app_entries = [
-        {"catalog_app_id": "catalog-web", "manifest": {"app": {"display_name": "Web client"}},
-         "paired": ["k-minute"], "state": "paired", "verified": False},
-        {"catalog_app_id": "catalog-financial", "manifest": {"app": {"display_name": "financial-planner"}},
-         "paired": [], "state": "not_paired", "verified": False}]
+        manifest_entry("catalog-web", "Web client", origins=["https://app.test"], state="paired", paired=["k-minute"]),
+        manifest_entry("catalog-financial", "financial-planner")]
 
     def rows():
         result = deepcopy(fake.apps_rows)

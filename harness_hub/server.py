@@ -7,6 +7,7 @@ daemon.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -37,15 +38,22 @@ from .views import (
     apps_view,
     claim_view,
     control_view,
+    entries_view,
+    entry_digest,
+    entry_text,
+    entry_view,
     erasures_view,
     health_view,
     limits_view,
+    marketplace_slots,
     module_view,
+    normalize_origin,
     overview,
     ownership_view,
     pairing_request_view,
     pairing_view,
     registry_view,
+    scope_disclosures,
     settings_error,
     valid_limits,
 )
@@ -243,27 +251,27 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         result["restarting"] = restart["active"]
         return result
 
-    @app.get("/api/apps")
-    @app.get("/api/modules")
-    async def get_modules(request: Request):
-        key = claims.key()
-        if key is None:
-            return _error(409, "Claim this Hub on Overview before reading inventory.")
+    async def refused(token: str) -> JSONResponse:
+        """The daemon answered 401: drop the key only if a second read confirms it, then point to Overview."""
+        confirmation = await daemon.admin(token)
+        if confirmation.status == 401:
+            claims.released()
+        return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
+
+    async def read_inventory(key: dict, shown) -> tuple[dict | None, str, str] | JSONResponse:
+        """The last good inventory (refreshed when the daemon answers with a valid one), its state and any error.
+
+        `shown` projects an inventory into its browser view, so a snapshot whose view would leak is never cached."""
         good = inventory.get(key["key_id"])
         state, error = "ready", ""
         try:
             reply = await daemon.inventory(key["token"])
             if reply.status == 401:
-                confirmation = await daemon.admin(key["token"])
-                if confirmation.status == 401:
-                    claims.released()
-                return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
+                return await refused(key["token"])
             if reply.ok:
                 if not valid_inventory(reply.body):
                     state, error = "error", "The daemon returned an invalid inventory."
-                elif leaks(json.dumps(apps_view(reply.body, key["key_id"], tuple(store.secrets()))
-                                      if request.url.path == "/api/apps" else module_view(reply.body)).encode(),
-                           store.secrets()):
+                elif leaks(json.dumps(shown(reply.body)).encode(), store.secrets()):
                     state, error = "error", "Inventory withheld: it contained a credential-like string."
                 else:
                     good = inventory.save(reply.body, key["key_id"])
@@ -272,18 +280,213 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             elif reply.status == 400 and "disabled" in reply.detail.lower():
                 state, error = "disabled", "Hub inventory is disabled. Switch it on below."
             else:
+                # A stale or unreadable entries file is a named 400 (`hub.entries: invalid JSON`, `entries[0]...`).
                 state, error = "error", settings_error(reply.body, reply.status)["detail"]
         except DaemonUnreachable:
             state, error = "error", "The daemon did not answer."
         except (OSError, ValueError):
             state, error = "error", "The inventory could not be saved in the private state directory."
-        if request.url.path == "/api/apps":
+        return good, state, error
+
+    @app.get("/api/apps")
+    @app.get("/api/modules")
+    async def get_modules(request: Request):
+        key = claims.key()
+        if key is None:
+            return _error(409, "Claim this Hub on Overview before reading inventory.")
+        apps_page = request.url.path == "/api/apps"
+        result = await read_inventory(key, (lambda body: apps_view(body, key["key_id"], tuple(store.secrets())))
+                                      if apps_page else module_view)
+        if isinstance(result, JSONResponse):
+            return result
+        good, state, error = result
+        if apps_page:
             shown = apps_view(good["inventory"], key["key_id"], tuple(store.secrets())) if good else {
                 "apps": None, "entries": []}
         else:
             shown = {"modules": module_view(good["inventory"]) if good else None}
         return {"state": state, "error": error, "stale": state != "ready" and good is not None,
                 "fetched_at": good["fetched_at"] if good else None, **shown}
+
+    # Listings must not publish a new slot while its disclosures are being checked or it is being withdrawn.
+    pairing_consent_lock = asyncio.Lock()
+
+    # Bound to the Hub key and the entry's displayed identity, with a bounded ten-minute lifetime.
+    consent_copies: dict[tuple[str, str], tuple[str, float, list[dict], bool]] = {}
+
+    def consent_identity(entry: dict) -> str:
+        return entry_digest({k: v for k, v in entry.items() if k not in {
+            "state", "paired", "pending_pairing", "unverified_origin", "consent_digest", "slots",
+            "acknowledgement_required"}})
+
+    def consent_entry(entry: dict, key_id: str) -> dict:
+        copied = consent_copies.get((key_id, entry["catalog_app_id"]))
+        if copied and copied[0] == consent_identity(entry) and copied[1] > time.monotonic():
+            entry["scopes"] = [{**item, **disclosure} for item, disclosure in zip(
+                entry["scopes"], copied[2], strict=True)]
+            entry["elevated"] = sorted(set(entry["elevated"]) | {
+                item["scope"] for item in copied[2] if item["tier"] == "elevated"})
+            if copied[3]:
+                entry["acknowledgement_required"] = True
+        entry["consent_digest"] = entry_digest(entry)
+        return entry
+
+    def remember_consent(entry: dict, key_id: str, disclosures: list[dict], *, acknowledge: bool = False):
+        if len(consent_copies) >= 256:
+            consent_copies.pop(next(iter(consent_copies)))
+        consent_copies[(key_id, entry["catalog_app_id"])] = (
+            consent_identity(entry), time.monotonic() + 600, disclosures, acknowledge)
+
+    @app.get("/api/marketplace")
+    async def get_marketplace():
+        """Local entries (#520) with their armed slots. Listing grants nothing; nothing from an entry is fetched."""
+        key = claims.key()
+        if key is None:
+            return _error(409, "Claim this Hub on Overview before reading the Marketplace.")
+        secrets = tuple(store.secrets())
+        result = await read_inventory(key, lambda body: entries_view(body, secrets))
+        if isinstance(result, JSONResponse):
+            return result
+        good, state, error = result
+        # Only the daemon's validated answer, or the last one: never entries the daemon did not validate.
+        entries, withheld = entries_view(good["inventory"], secrets) if good else (None, 0)
+        slots, slots_error = {}, ""
+        try:
+            async with pairing_consent_lock:
+                reply = await daemon.pairing(key["token"], "list")
+            if reply.status == 401:
+                return await refused(key["token"])
+            if reply.ok and isinstance(reply.body, list):
+                slots = marketplace_slots(reply.body, secrets)
+            else:
+                slots_error = f"Armed slots could not be read (HTTP {reply.status})."
+        except DaemonUnreachable:
+            slots_error = "Armed slots could not be read: the daemon did not answer."
+        for entry in entries or []:
+            consent_entry(entry, key["key_id"])
+            entry["slots"] = slots.get(entry["catalog_app_id"], [])
+        return {"state": state, "error": error, "stale": state != "ready" and good is not None,
+                "fetched_at": good["fetched_at"] if good else None, "entries": entries, "withheld": withheld,
+                "slots_error": slots_error, "daemon_url": settings.daemon_url, "now": time.time()}
+
+    @app.post("/api/marketplace/arm")
+    async def arm_slot(request: Request):
+        async with pairing_consent_lock:
+            return await checked_arm_slot(request)
+
+    async def checked_arm_slot(request: Request):
+        """Arm a pre-approved slot for one entry once the owner approved its consent screen (#519, flow 4).
+
+        The scopes and origin must be exactly what the entry declares as the daemon validates it now, so a stale page
+        or a crafted body can neither widen what the owner saw nor arm a slot for an id that is not listed."""
+        key = claims.key()
+        if key is None:
+            return _error(409, "Claim this Hub on Overview before setting up an app.")
+        if not request.headers.get("origin"):
+            return _error(403, "Setting up an app requires a same-origin Origin")
+        data = bytearray()
+        async for chunk in request.stream():
+            if len(data) + len(chunk) > 4096:
+                return _error(413, "Set-up body is too large")
+            data.extend(chunk)
+        try:
+            body = json.loads(data or b"{}")
+        except ValueError:
+            return _error(400, "Set-up body must be JSON")
+        if not isinstance(body, dict) or set(body) - {"catalog_app_id", "scopes", "origin", "acknowledge_elevated",
+                                                               "consent_digest"}:
+            return _error(400, "Unexpected set-up fields")
+        catalog_app_id, scopes = body.get("catalog_app_id"), body.get("scopes")
+        origin, acknowledged = body.get("origin", ""), body.get("acknowledge_elevated", False)
+        if not isinstance(catalog_app_id, str) or not isinstance(scopes, list) or not all(
+                isinstance(scope, str) for scope in scopes) or not isinstance(origin, str) or (
+                type(acknowledged) is not bool):
+            return _error(400, "catalog_app_id, scopes, origin or acknowledge_elevated has the wrong type")
+        try:
+            reply = await daemon.inventory(key["token"])
+            if reply.status == 401:
+                return await refused(key["token"])
+            if not reply.ok:
+                detail = settings_error(reply.body, reply.status)["detail"]
+                return _error(409, f"The entries could not be read ({detail}). Fix them before setting up an app.")
+            if not valid_inventory(reply.body):
+                return _error(502, "The daemon returned an invalid inventory.")
+            raw_entry = next((row for row in reply.body.get("entries", [])
+                              if isinstance(row, dict) and row.get("catalog_app_id") == catalog_app_id), None)
+            entry = entry_view(raw_entry)
+            if entry is None:
+                return _error(404, "No local entry has that catalog app id. Refresh the Marketplace.")
+            baseline = {**entry, "scopes": [dict(item) for item in entry["scopes"]]}
+            consent_entry(entry, key["key_id"])
+            raw_app = raw_entry["manifest"]["app"]
+            declared = [item["scope"] for item in raw_app["scopes"]]
+            if sorted(scopes) != sorted(declared):
+                return _error(409, "The entry's scopes changed since the consent screen was shown. Review it again.")
+            declared_origins = raw_app.get("browser_origins") or []
+            try:
+                bound_origin = normalize_origin(origin) if origin else ""
+                allowed = {normalize_origin(value) for value in declared_origins}
+            except ValueError:
+                return _error(400, "Choose one of the entry's browser origins.")
+            if allowed and bound_origin not in allowed:
+                return _error(400, "Choose one of the entry's browser origins.")
+            if not allowed and origin:
+                return _error(400, "This entry declares no browser origin: it is set up as a native app.")
+            if body.get("consent_digest") != entry_digest(entry):
+                return _error(409, "The entry changed since the consent screen was shown. Review it again.")
+            if (entry["elevated"] or entry.get("acknowledgement_required") or any(
+                    not item["text"] for item in entry["scopes"])) and not acknowledged:
+                return _error(400, "Elevated scopes or scopes without a Hub description need the separate "
+                              "acknowledgement before setup.",
+                              error={"code": "acknowledgement_required"})
+            arm = {"catalog_app_id": catalog_app_id, "scopes": declared,
+                   "name": entry_text(raw_app["display_name"], 80).strip()[:60]}
+            if bound_origin:
+                arm["origin"] = bound_origin
+            if acknowledged:
+                arm["acknowledge_elevated"] = True
+            reply = await daemon.pairing(key["token"], "arm", body=arm)
+            if reply.status == 401:
+                return await refused(key["token"])
+        except DaemonUnreachable:
+            return _error(503, "The daemon did not answer. Refresh the Marketplace before setting up again.")
+        if not reply.ok:
+            error = settings_error(reply.body, reply.status)
+            if error["error"]["code"] == "acknowledgement_required":
+                # A newer daemon may elevate a scope our pinned table does not yet know. It armed nothing.
+                shown = [{k: item[k] for k in ("scope", "tier", "text")} for item in entry["scopes"]]
+                remember_consent(baseline, key["key_id"], shown, acknowledge=True)
+                return _error(409, "The daemon requires a separate acknowledgement for these scopes. "
+                              "Review the consent screen again.", consent_entry=consent_entry(baseline, key["key_id"]))
+            return JSONResponse(error, status_code=reply.status)
+        actual = scope_disclosures(reply.body.get("disclosures") if isinstance(reply.body, dict) else None,
+                                   declared, tuple(store.secrets()))
+        shown = [{k: item[k] for k in ("scope", "tier", "text")} for item in entry["scopes"]]
+        if actual != shown or any(not item["text"].strip() for item in shown):
+            # The id stays inside this server until it has been withdrawn: no hand-off on drift, including add-ons.
+            unsafe = pairing_request_view(reply.body)
+            if not unsafe["id"]:
+                return _error(502, "The daemon returned an invalid armed slot. Review Pairing requests on the host.")
+            try:
+                denied = await daemon.pairing(key["token"], "deny", rid=unsafe["id"])
+            except DaemonUnreachable:
+                return _error(503, "Disclosure review failed and the slot could not be withdrawn. "
+                              "Withdraw it on Pairing requests before trying again.")
+            if not denied.ok or pairing_request_view(denied.body)["state"] != "denied":
+                return _error(502, "Disclosure review failed and the daemon refused to withdraw the slot. "
+                              "Withdraw it on Pairing requests before trying again.")
+            if actual is not None:
+                remember_consent(baseline, key["key_id"], actual)
+                reviewed = consent_entry(baseline, key["key_id"])
+                return _error(409, "The daemon describes these scopes differently from what you saw. "
+                              "Review the consent screen again.", consent_entry=reviewed)
+            return _error(409, "The daemon's scope disclosures could not be displayed safely. "
+                          "The slot was withdrawn. Review Pairing requests on the host.")
+        slot = pairing_request_view(reply.body, tuple(store.secrets()))
+        if not slot["id"] or slot["state"] != "armed":
+            return _error(502, "The daemon returned an invalid armed slot. Refresh the Marketplace.")
+        return JSONResponse({"request": slot, "daemon_url": settings.daemon_url, "name": entry["name"]},
+                            status_code=201)
 
     @app.api_route("/api/apps/{resource:path}", methods=["GET", "PUT", "DELETE", "POST"])
     async def apps_action(resource: str, request: Request):
@@ -432,7 +635,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                                       error={"code": "acknowledgement_required"})
                     reply = None
             if reply is None:
-                reply = await daemon.pairing(key["token"], operation, rid, body)
+                async with pairing_consent_lock:
+                    reply = await daemon.pairing(key["token"], operation, rid, body)
             if reply.status == 401:
                 confirmation = await daemon.admin(key["token"])
                 if confirmation.status == 401:
