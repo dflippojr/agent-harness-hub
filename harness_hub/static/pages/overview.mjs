@@ -1,0 +1,172 @@
+// Overview: this Hub's claim on the daemon, the daemon's version, health and capabilities.
+
+import { api, ApiError } from "../lib/api.mjs";
+import { clear, command, h, when } from "../lib/dom.mjs";
+
+const REFRESH_MS = 30000;
+const CLAIM_POLL_MS = 2000;
+let lastGood = null; // the last overview that reached the daemon, shown with an error when a refresh fails
+
+export function renderOverview(main) {
+  let stopped = false;
+  let timer = null;
+  const claimBox = h("div", { id: "claim" });
+  const body = h("div", { class: "grid" });
+  const status = h("p", { class: "muted refreshed", "aria-live": "polite" });
+  const refresh = h("button", { type: "button", class: "btn ghost" }, "Refresh");
+  clear(main,
+    h("header", { class: "page-head" }, h("h1", {}, "Overview"), refresh),
+    claimBox, body, status);
+
+  async function load() {
+    clearTimeout(timer);
+    try {
+      const data = await api("overview");
+      if (stopped) return;
+      if (data.reachable) lastGood = data;
+      draw(data);
+      const waiting = data.claim.state === "pending";
+      timer = setTimeout(load, waiting ? CLAIM_POLL_MS : REFRESH_MS);
+    } catch (error) {
+      if (stopped) return;
+      clear(body, h("section", { class: "card bad", role: "alert" }, h("h2", {}, "Could not load the overview"), h("p", {}, error.message)));
+      timer = setTimeout(load, REFRESH_MS);
+    }
+  }
+
+  function draw(data) {
+    clear(claimBox, claimCard(data, load));
+    const shown = data.reachable ? data : lastGood;
+    clear(body,
+      data.error ? h("section", { class: "card bad span", role: "alert" },
+        h("h2", {}, "The daemon did not answer"),
+        h("p", {}, data.error),
+        shown ? h("p", { class: "muted" }, `Showing what the Hub last saw, at ${when(shown.fetched_at)}.`) : null) : null,
+      shown ? daemonCard(shown) : null,
+      shown ? capabilitiesCard(shown) : null);
+    status.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  }
+
+  refresh.addEventListener("click", load);
+  load();
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+  };
+}
+
+function claimCard(data, reload) {
+  const claim = data.claim;
+  const start = async (button) => {
+    button.disabled = true;
+    try {
+      await api("claim", { method: "POST" });
+    } catch (error) {
+      if (!(error instanceof ApiError)) throw error;
+    }
+    reload();
+  };
+  const startButton = (label = "Start claim") => {
+    const button = h("button", { type: "button", class: "btn primary" }, label);
+    button.addEventListener("click", () => start(button));
+    return button;
+  };
+  const title = h("h2", { id: "claim-title" }, "This Hub");
+  const card = (cls, ...children) => h("section", { class: `card claim ${cls}`, "aria-labelledby": "claim-title" }, title, ...children);
+
+  switch (claim.state) {
+    case "claimed": {
+      const own = data.ownership;
+      return card("ok",
+        h("p", { class: "lead" }, h("span", { class: "pill ok" }, "Claimed"), " ", claim.message),
+        h("dl", { class: "facts" },
+          fact("Hub key", claim.key_id),
+          fact("Claimed", when(claim.claimed_at)),
+          own ? fact("Daemon records this Hub", own.this_hub ? "Yes" : "No") : null,
+          own && own.record ? fact("Recorded name", own.record.name) : null),
+        own && !own.this_hub ? h("p", { class: "notice bad" }, "The daemon records a different Hub. Release it on the daemon host, then claim again.") : null);
+    }
+    case "pending": {
+      const left = Math.max(0, Math.round(claim.expires_at - Date.now() / 1000));
+      return card("wait",
+        h("p", { class: "lead" }, h("span", { class: "pill wait" }, "Waiting for approval"), " ", claim.message),
+        h("p", {}, "Match code"),
+        h("p", { class: "match", "aria-label": `Match code ${claim.match_code.split("").join(" ")}` }, claim.match_code),
+        h("p", {}, "On the daemon host, check that the code matches, then run:"),
+        command(claim.approve_command),
+        h("p", { class: "muted" }, left > 0 ? `This claim expires in about ${Math.ceil(left / 60)} min.` : "This claim is about to expire."),
+        forgetButton(reload));
+    }
+    case "refused":
+      return card("bad",
+        h("p", { class: "lead" }, h("span", { class: "pill bad" }, "Already claimed"), " ", claim.message),
+        h("p", {}, "To replace that Hub with this one, on the daemon host run:"),
+        command(claim.release_command),
+        h("p", { class: "muted" }, "Then start a new claim here."),
+        startButton("Start a new claim"));
+    default:
+      return card(claim.state === "unclaimed" ? "" : "warn",
+        h("p", { class: "lead" }, claim.message),
+        claim.state === "unclaimed"
+          ? h("p", { class: "muted" }, "Claiming makes this Hub the daemon's one admin console. You approve it on the daemon host with harness hub approve; the Hub shows the command and its match code.")
+          : null,
+        startButton(claim.state === "unclaimed" ? "Start claim" : "Start a new claim"));
+  }
+}
+
+function forgetButton(reload) {
+  const button = h("button", { type: "button", class: "btn ghost" }, "Stop waiting");
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    await api("claim", { method: "DELETE" }).catch(() => {});
+    reload();
+  });
+  return button;
+}
+
+function fact(label, value) {
+  return [h("dt", {}, label), h("dd", {}, value === undefined || value === null || value === "" ? "—" : value)];
+}
+
+function daemonCard(data) {
+  const d = data.daemon || {};
+  const health = data.health || {};
+  const protocols = Object.entries(d.protocols || {}).map(([name, span]) => `${name} ${span.min}–${span.max}`).join(", ");
+  return h("section", { class: "card", "aria-labelledby": "daemon-title" },
+    h("h2", { id: "daemon-title" }, "Daemon"),
+    h("p", { class: "lead" }, health.ok ? h("span", { class: "pill ok" }, "Healthy") : h("span", { class: "pill bad" }, "Not healthy")),
+    h("dl", { class: "facts" },
+      fact("Address", data.hub.daemon_url),
+      fact("Release", d.release),
+      fact("Build", d.build_id),
+      fact("Owner API", data.ownership ? data.ownership.api_version : null),
+      fact("Profile", d.profile),
+      fact("Protocols", protocols),
+      fact("Settings revision", health.config_revision),
+      fact("Settings confirmed", yesNo(health.config_confirmed)),
+      fact("Supervised restart", yesNo(health.supervised_restart)),
+      health.recovery ? fact("Recovery", "The daemon started from its last good settings") : null,
+      fact("Hub version", data.hub.version)));
+}
+
+function capabilitiesCard(data) {
+  const caps = data.capabilities || {};
+  const required = Object.entries(caps.required || {});
+  const modules = Object.entries(caps.modules || {});
+  return h("section", { class: "card", "aria-labelledby": "caps-title" },
+    h("h2", { id: "caps-title" }, "Capabilities"),
+    h("h3", {}, "Modules"),
+    modules.length
+      ? h("ul", { class: "chips" }, modules.map(([name, on]) => h("li", { class: `pill ${on ? "ok" : "off"}` }, `${name}: ${on ? "on" : "off"}`)))
+      : h("p", { class: "muted" }, "No optional modules reported."),
+    h("h3", {}, "Core"),
+    h("ul", { class: "chips" }, required.map(([name, on]) => h("li", { class: `pill ${on ? "ok" : "bad"}` }, name.replaceAll("_", " ")))),
+    h("h3", {}, "Hosted backends"),
+    (caps.hosted_backends || []).length
+      ? h("ul", { class: "chips" }, caps.hosted_backends.map((name) => h("li", { class: "pill" }, name)))
+      : h("p", { class: "muted" }, "None."));
+}
+
+function yesNo(value) {
+  return value === true ? "Yes" : value === false ? "No" : null;
+}
