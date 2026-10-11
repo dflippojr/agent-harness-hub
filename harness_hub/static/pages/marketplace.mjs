@@ -21,6 +21,7 @@ function armCommand(entry, origin) {
 
 export function renderMarketplace(main) {
   let stopped = false, busy = false, timer, ticker, data = null, offset = 0, signature = "";
+  const drafts = new Map();
   const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true });
   const problem = h("p", { class: "notice bad", role: "alert", hidden: true });
   const panel = h("div");
@@ -83,6 +84,10 @@ export function renderMarketplace(main) {
     const next = JSON.stringify([data?.entries ?? null, data?.withheld ?? 0]);
     if (!force && next === signature) return;
     signature = next;
+    // Keep the owner's typing and focus across a poll that changed the list.
+    const active = document.activeElement;
+    const focused = active?.dataset?.field === "match" ? [active.closest("[data-slot]")?.dataset.slot,
+      active.selectionStart] : null;
     clear(list);
     const entries = data?.entries || [];
     list.append(...entries.map(card));
@@ -93,6 +98,13 @@ export function renderMarketplace(main) {
     if (!entries.length) {
       list.append(h("p", { class: "muted span" }, data?.entries ? "The entries file lists no apps. Create it on the " +
         "daemon host with harness hub entries init." : "No entries to show."));
+    }
+    if (focused) {
+      const target = list.querySelector(`[data-slot="${CSS.escape(focused[0] || "")}"] [data-field="match"]`);
+      if (target) {
+        target.focus();
+        if (typeof focused[1] === "number") target.setSelectionRange(focused[1], focused[1]);
+      }
     }
     tick();
   }
@@ -151,14 +163,8 @@ export function renderMarketplace(main) {
         ["Expires", h("span", { "data-expires": slot.expires_at }, countdown(slot.expires_at - now()))]]));
     if (slot.state === "armed") {
       box.append(h("p", {}, "Armed: waiting for the app to claim it."));
-    } else if (slot.state === "claimed" && slot.match_code) {
-      box.append(h("p", {}, `A native app claimed this slot. Confirm only if ${name} shows this code:`),
-        h("p", { class: "match" }, slot.match_code),
-        h("div", { class: "settings-actions" }, button(`Codes match: confirm ${name}`, () => perform(async () => {
-          await api(`pairing/${slot.id}/confirm`, { method: "POST", body: { match: slot.match_code } });
-          message(`Confirmed ${name}. The app now fetches its own token from the daemon.`);
-        }), { class: "btn primary", "data-action": "confirm" })),
-        command(`harness pairing-requests confirm ${slot.id} --match ${slot.match_code}`));
+    } else if (slot.state === "claimed") {
+      box.append(confirmation(slot, name));
     } else if (slot.state === "approved") {
       box.append(h("p", {}, "Approved: waiting for the app to fetch its own token from the daemon."));
     }
@@ -170,6 +176,34 @@ export function renderMarketplace(main) {
       () => confirmWithdraw(entry, slot), { "data-action": "withdraw" })),
     command(`harness pairing-requests deny ${slot.id}`));
     return box;
+  }
+  function confirmation(slot, name) {
+    // The Hub never shows the code (owner decision, 2026-10-11): the owner types what the app is showing right now.
+    const input = h("input", { type: "text", inputmode: "numeric", autocomplete: "off", spellcheck: "false",
+      maxlength: "32", "data-field": "match", "aria-describedby": `match-help-${slot.id}` });
+    input.value = drafts.get(slot.id) || "";
+    const submit = button(`Confirm ${name}`, () => {
+      if (submit.disabled) return;
+      const match = input.value.trim();
+      perform(async () => {
+        await api(`pairing/${slot.id}/confirm`, { method: "POST", body: { match } });
+        drafts.delete(slot.id);
+        message(`Confirmed ${name}. The app now fetches its own token from the daemon.`);
+      });
+    }, { class: "btn primary", "data-action": "confirm" });
+    const update = () => {
+      drafts.set(slot.id, input.value);
+      submit.disabled = busy || !input.value.trim();
+    };
+    input.addEventListener("input", update);
+    submit.disabled = busy || !input.value.trim();
+    return h("div", { class: "pairing-decision" },
+      h("p", {}, `A native app claimed this slot. Confirm it with the code ${name} is showing right now.`),
+      h("div", { class: "setting-field" }, h("label", {}, "Match code the app shows", input),
+        h("p", { class: "setting-meta", id: `match-help-${slot.id}` }, "If the app shows no code or an error, " +
+          "withdraw this slot. If your app reported that the slot was already claimed, withdraw this slot.")),
+      h("div", { class: "settings-actions" }, submit),
+      command(`harness pairing-requests confirm ${slot.id} --match <code>`));
   }
   function consent(entry) {
     if (busy) return;
@@ -206,7 +240,7 @@ export function renderMarketplace(main) {
         }),
         h("p", { class: "setting-meta" }, "Only a claim from the chosen origin is accepted."));
     } else {
-      where = h("p", {}, "Native app: when it claims the slot, its match code appears on this entry for you to confirm.");
+      where = h("p", {}, "Native app: when it claims the slot, you confirm it on this entry with the code the app shows.");
     }
     ack?.addEventListener("change", update);
     const cancel = button("Cancel", () => clear(panel));
@@ -230,7 +264,8 @@ export function renderMarketplace(main) {
       h("p", { class: "muted" }, "Request id"), command(slot.id),
       h("p", { class: "muted" }, "Daemon URL"), command(armed.daemon_url),
       h("p", { class: "muted" }, "No secret exists yet. " + (origin ? `The app must claim it from ${origin}; ` +
-        "the daemon then approves it at once." : "When the app claims it, confirm its match code on this entry.") +
+        "the daemon then approves it at once." : "When the app claims it, type the code it shows on this entry " +
+        "to confirm.") +
         " An unclaimed slot expires in ", h("span", { "data-expires": slot.expires_at },
         countdown(slot.expires_at - now())), "."),
       h("details", {}, h("summary", {}, "What the daemon says each scope allows"), disclosureList(slot.disclosures)),
@@ -256,8 +291,8 @@ export function renderMarketplace(main) {
     if (busy || stopped) return;
     busy = true;
     clearTimeout(timer);
-    for (const control of main.querySelectorAll(".market-list button:not(.copy), .market-consent button, " +
-      ".pairing-confirm button")) control.disabled = true;
+    for (const control of main.querySelectorAll(".market-list button:not(.copy), .market-list input, " +
+      ".market-consent button, .pairing-confirm button")) control.disabled = true;
     if (!keepPanel) clear(panel);
     try {
       await action();

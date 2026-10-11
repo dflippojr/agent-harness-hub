@@ -388,8 +388,9 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
             assert row["slots"] == [] and row["icon"] == ""
         assert "example.invalid" not in first.bodies[-1]
 
-        # A native entry: arm, the App claims with its own challenge, the owner confirms the code it shows from the
-        # Hub, and the App redeems. Its key has no origin, so it is listed under unverified_origin, not as paired.
+        # A native entry: arm, the App claims with its own challenge, the owner types the code the App shows into the
+        # Hub (which never shows it), and the App redeems. Its key has no origin, so it is listed under
+        # unverified_origin, not as paired.
         def app_claims(rid, origin=""):
             verifier = secrets.token_urlsafe(48)
             challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -411,7 +412,7 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         assert planner["unverified_origin"]["pending_pairing"] is True and planner["slots"][0]["id"] == slot["id"]
         shown, verifier = app_claims(slot["id"])
         planner = entry(market(), planner_id)
-        assert planner["slots"][0]["state"] == "claimed" and planner["slots"][0]["match_code"] == shown["match_code"]
+        assert planner["slots"][0]["state"] == "claimed" and "match_code" not in planner["slots"][0]
         assert app_redeems(slot["id"], verifier).status_code == 409
         confirmed = first.call("POST", f"/api/pairing/{slot['id']}/confirm", headers=origin,
                                json={"match": shown["match_code"]})

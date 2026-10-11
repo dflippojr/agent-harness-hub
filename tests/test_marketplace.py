@@ -95,7 +95,7 @@ def test_nothing_is_armed_until_approve_and_the_arm_body_is_built_from_the_entry
     assert data["daemon_url"] == "https://daemon.test" and data["name"] == "Synthetic notes"
     slot = data["request"]
     assert slot["state"] == "armed" and slot["needs"] == "claim" and slot["armed"] is True
-    assert slot["origin"] == "https://notes.example.test" and slot["match_code"] == ""
+    assert slot["origin"] == "https://notes.example.test" and "match_code" not in slot
     assert slot["disclosures"][0]["scope"] == "sessions"
     assert fake_daemon.armed == [{"catalog_app_id": "test.example.notes", "scopes": ["sessions"],
                                   "name": "Synthetic notes", "origin": "https://notes.example.test"}]
@@ -149,14 +149,16 @@ def test_arm_needs_a_same_origin_write(claimed, fake_daemon, entries):
     assert fake_daemon.armed == []
 
 
-def test_a_native_claim_is_confirmed_with_its_match_code_and_a_slot_is_withdrawn(claimed, fake_daemon, entries):
+def test_a_native_claim_is_confirmed_with_the_code_the_app_shows_and_a_slot_is_withdrawn(claimed, fake_daemon,
+                                                                                         entries):
     rid = arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]}).json()["request"]["id"]
     native = by_id(market(claimed))["test.example.native"]
     assert native["pending_pairing"] is False and native["unverified_origin"]["pending_pairing"] is True
-    assert native["slots"][0]["state"] == "armed" and native["slots"][0]["match_code"] == ""
-    code = fake_daemon.claim_slot(rid)["match_code"]
+    assert native["slots"][0]["state"] == "armed"
+    code = fake_daemon.claim_slot(rid)["match_code"]  # shown on the App's own screen, never by the Hub
     slot = by_id(market(claimed))["test.example.native"]["slots"][0]
-    assert slot["state"] == "claimed" and slot["needs"] == "confirm" and slot["match_code"] == code
+    assert slot["state"] == "claimed" and slot["needs"] == "confirm" and "match_code" not in slot
+    assert code not in claimed.bodies[-1]
     confirmed = claimed._keep(claimed.client.post(f"/api/pairing/{rid}/confirm", json={"match": code},
                                                   headers=ORIGIN))
     assert confirmed.status_code == 200 and confirmed.json()["state"] == "approved", confirmed.text

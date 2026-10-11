@@ -19,7 +19,7 @@ const entry = (id, extra = {}) => ({
 const slot = (id, extra = {}) => ({
   id, kind: "app", state: "armed", needs: "claim", name: "Synthetic", catalog_app_id: "test.example.native", origin: "",
   browser: false, armed: true, scopes: ["sessions"], elevated: [],
-  disclosures: [{ scope: "sessions", tier: "standard", text: "Daemon copy for sessions." }], match_code: "",
+  disclosures: [{ scope: "sessions", tier: "standard", text: "Daemon copy for sessions." }],
   key_id: "", created_at: NOW - 60, expires_at: NOW + 540, approved_at: NOW - 60, finished_at: null, ...extra,
 });
 const view = (entries, extra = {}) => ({ state: "ready", error: "", stale: false, fetched_at: NOW, entries, withheld: 0,
@@ -152,31 +152,57 @@ test("elevated scopes need the acknowledgement and a browser app needs its exact
   expect(errors).toEqual([]);
 });
 
-test("a native claim is confirmed with its match code in one click; a slot is withdrawn after confirmation", async ({ page }) => {
+test("a native claim is confirmed with the code typed from the app; a slot is withdrawn after confirmation", async ({ page }) => {
   const claimed = slot("pr-claimed", { state: "claimed", needs: "confirm", match_code: "482913" });
   const armed = slot("pr-armed");
   const { writes, errors } = await mount(page, view([entry("test.example.native", { slots: [claimed, armed],
-    unverified_origin: { paired: [], pending_pairing: true } })]));
+    unverified_origin: { paired: [], pending_pairing: true } })]), { answer: (pathname, body) =>
+    body.match === "000000" ? { status: 400, json: { detail: "the match code does not match the one the App shows" } } : null });
   const box = card(page, "test.example.native").locator('[data-slot="pr-claimed"]');
-  await expect(box.locator(".match")).toHaveText("482913");
-  await expect(box.getByText("harness pairing-requests confirm pr-claimed --match 482913", { exact: true })).toBeVisible();
-  await box.getByRole("button", { name: "Codes match: confirm Synthetic native" }).click();
-  await expect.poll(() => writes.length).toBe(1);
-  expect(writes[0]).toMatchObject({ path: "/api/pairing/pr-claimed/confirm", body: { match: "482913" } });
+  // Even if a daemon answer carried a code, the page never shows it: the owner types what the app shows.
+  expect(await box.evaluate(el => el.outerHTML.includes("482913"))).toBe(false);
+  await expect(box.getByText("harness pairing-requests confirm pr-claimed --match <code>", { exact: true })).toBeVisible();
+  const input = box.getByLabel("Match code the app shows");
+  await expect(input).toHaveValue("");
+  const confirm = box.getByRole("button", { name: "Confirm Synthetic native" });
+  await expect(confirm).toBeDisabled();
+  await input.fill("000000");
+  await confirm.click();
+  await expect(page.getByText("the match code does not match the one the App shows")).toBeVisible();
+  expect(writes[0]).toMatchObject({ path: "/api/pairing/pr-claimed/confirm", body: { match: "000000" } });
+  await card(page, "test.example.native").locator('[data-slot="pr-claimed"]').getByLabel("Match code the app shows").fill(" 482913 ");
+  await card(page, "test.example.native").locator('[data-slot="pr-claimed"]').getByRole("button", { name: "Confirm Synthetic native" }).click();
+  await expect.poll(() => writes.length).toBe(2);
+  expect(writes[1]).toMatchObject({ path: "/api/pairing/pr-claimed/confirm", body: { match: "482913" } });
   await expect(page.getByText(/Confirmed Synthetic native/)).toBeVisible();
 
   const other = card(page, "test.example.native").locator('[data-slot="pr-armed"]');
-  await expect(other.locator(".match")).toHaveCount(0);
+  await expect(other.getByLabel("Match code the app shows")).toHaveCount(0);
   await other.getByRole("button", { name: "Withdraw slot for Synthetic native" }).click();
   await expect(page.getByRole("heading", { name: "Withdraw the slot for Synthetic native?" })).toBeVisible();
-  expect(writes).toHaveLength(1);
+  expect(writes).toHaveLength(2);
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
-  expect(writes).toHaveLength(1);
+  expect(writes).toHaveLength(2);
   await other.getByRole("button", { name: "Withdraw slot for Synthetic native" }).click();
   await page.getByRole("button", { name: "Confirm withdraw", exact: true }).click();
-  await expect.poll(() => writes.length).toBe(2);
-  expect(writes[1]).toMatchObject({ path: "/api/pairing/pr-armed/deny", body: { confirm: true } });
+  await expect.poll(() => writes.length).toBe(3);
+  expect(writes[2]).toMatchObject({ path: "/api/pairing/pr-armed/deny", body: { confirm: true } });
   expect(errors).toEqual([]);
+});
+
+test("a typed code survives a poll that changes the list", async ({ page }) => {
+  await page.clock.install({ time: NOW * 1000 });
+  const claimed = slot("pr-claimed", { state: "claimed", needs: "confirm" });
+  const first = view([entry("test.example.native", { slots: [claimed] })]);
+  await mount(page, first);
+  const input = () => card(page, "test.example.native").getByLabel("Match code the app shows");
+  await input().fill("4829");
+  await page.route("http://hub.test/api/marketplace", route => route.fulfill({ json: view([
+    entry("test.example.native", { slots: [claimed] }), entry("test.example.new")]) }));
+  await page.clock.runFor(5500);
+  await expect(card(page, "test.example.new")).toBeVisible();
+  await expect(input()).toHaveValue("4829");
+  await expect(input()).toBeFocused();
 });
 
 test("a named entries error keeps the last good entries; with none, no entries are shown", async ({ page }) => {
@@ -227,7 +253,7 @@ for (const [label, width] of [["phone", 390], ["desktop", 1280]]) {
     const { errors } = await mount(page, view([
       entry("test.example.ops", { scopes: [SESSIONS, { ...HOMELAB, text: "A long disclosure ".repeat(20) }],
         elevated: ["homelab"], browser_origins: [long, long + ":8443"], icon: ICON }),
-      entry("test.example.native", { slots: [slot("pr-c", { state: "claimed", needs: "confirm", match_code: "111222" })],
+      entry("test.example.native", { slots: [slot("pr-c", { state: "claimed", needs: "confirm" })],
         unverified_origin: { paired: ["k-native"], pending_pairing: true } })]));
     await card(page, "test.example.ops").getByRole("button", { name: /^Set up/ }).click();
     for (const target of await page.locator("main button, main input, main summary").all()) {

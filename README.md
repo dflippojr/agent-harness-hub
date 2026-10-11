@@ -244,8 +244,10 @@ stale page or a crafted request cannot widen what the owner approved.
 After arming, the page shows the request id and the daemon URL as copyable text, with "Give this only to <app>; it
 lets that app claim the slot once." No secret exists then: the app claims the slot with its own PKCE challenge and
 fetches its own token from the daemon. A browser app's claim from the bound origin is approved at once. A native
-app's claim shows its match code on the entry with a one-click **Codes match: confirm**; confirm only when the app
-shows the same code. **Withdraw** ends a slot after an in-page confirmation. Every action shows its CLI equivalent
+app's claim waits on the entry for **Confirm** with the code the app is showing right now, typed into an empty field;
+as on Pairing requests, the Hub never shows an App's code (the owner's 2026-10-11 decision), and the daemon refuses a
+wrong one. If the app shows no code or an error, or reported that the slot was already claimed, withdraw the slot.
+**Withdraw** ends a slot after an in-page confirmation. Every action shows its CLI equivalent
 (`harness hub status`, `harness hub entries init|validate`, `harness pairing-requests arm|confirm|deny`).
 
 A stale or unreadable entries file makes `GET /hub` answer 400 with a named error (`hub.entries: invalid JSON`,
