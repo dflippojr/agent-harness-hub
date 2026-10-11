@@ -163,7 +163,6 @@ body.menu-open::after {
 }
 .nav-link:hover { background: var(--panel-2); }
 .nav-link[aria-current="page"] { background: var(--panel-2); color: var(--accent); font-weight: 700; }
-.nav-note { font-size: .75rem; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; }
 
 .main {
   max-width: 1100px;
