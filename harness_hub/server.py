@@ -383,7 +383,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     {"label": "Mac runner pairing codes", "reason": "A Hub key cannot mint owner keys "
                                "(daemon refuses with hub_key).",
                      "cli": "harness runner-pairing-codes create"},
-                    {"label": "Creating owner keys", "reason": "A Hub key cannot mint owner keys (daemon refuses with hub_key).",
+                    {"label": "Creating owner keys",
+                     "reason": "A Hub key cannot mint owner keys (daemon refuses with hub_key).",
                      "cli": "harness keys create"}]}
 
     @app.api_route("/api/manage/{operation}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])

@@ -10,9 +10,9 @@ Installing the Hub is optional. Every Hub action is also a `harness` CLI command
 
 ## Status
 
-The Hub includes the server, first-run claim, sign-in, **Overview**, **Settings**, and the console's layout.
-The other sections (Modules, Apps, Pairing requests, Marketplace, and Accounts, skills, maintenance and
-runners) each have an issue in this repository; until they ship, their pages list the equivalent CLI commands.
+The Hub includes the server, first-run claim, sign-in, **Overview**, **Settings**, **Modules**, **Apps**,
+and **Accounts and maintenance**.
+Pairing requests and Marketplace have their own issues; until they ship, their pages list equivalent CLI commands.
 
 Settings renders the daemon's complete registry, grouped by category, with types, defaults, allowed values,
 read-only guidance, current and pending revisions, and restart requirements. Validate shows field errors without
@@ -194,3 +194,23 @@ editable default caps.
 With Playwright installed locally, run the isolated Apps security regressions:
 `npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1`.
 These specs intercept all network requests and start no servers.
+
+### Accounts and maintenance
+
+The six areas manage household accounts, name-only provider assignments, skills and proposals, maintenance,
+runners/projects/folder discovery, and read-only audit logs. Each action shows its host CLI equivalent.
+Choose an area to read its current state, then choose an action or a record's control. Writes are explicit;
+destructive changes show the target and edited fields in an in-page confirmation.
+
+Google link codes appear only in the creation response, disappear on dismissal, expiry, or navigation, and are
+never cached or stored by the Hub. Provider assignments accept opaque secret-file names; configure the files
+on the daemon host. Skill proposals, diffs and reference files render as text. Installs send the exact reviewed
+hash, and image retention requires a fresh preview and the daemon's phrase typed exactly by the owner.
+Audit supports exclusive row-id paging and exact filters. Folder trust opens an interactive prompt on the daemon
+host; discovery is available only where the daemon supports it. Owner-key and Mac runner pairing-code creation
+remain host CLI actions because the Hub key cannot mint owner keys.
+
+The checked-in administration route snapshot comes from the daemon's API/parity documentation; tests fail if
+an operation loses its catalogue entry or daemon dispatch. Tests use synthetic account and folder data only.
+Run the isolated administration browser regressions with Playwright installed locally:
+`npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1 admin-security.spec.cjs`.

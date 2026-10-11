@@ -123,10 +123,9 @@ def test_member_lifecycle_google_once_only_and_daemon_confirmation(claimed, fake
     for operation in ("accounts", "account_audit", "audit"):
         call(claimed, operation)
     assert_no_secrets(claimed.bodies[later:], fake_daemon.hub_token, fake_daemon.invitation_code)
-    state = (
-        json.loads((claimed.state_dir / "hub.json").read_text()) if (claimed.state_dir / "hub.json").exists() else {}
-    )
-    assert fake_daemon.invitation_code not in json.dumps(state)
+    for path in claimed.state_dir.iterdir():
+        if path.is_file():
+            assert fake_daemon.invitation_code.encode() not in path.read_bytes()
 
 
 def test_name_only_provider_assignment_and_input_rejection(claimed, fake_daemon):
@@ -217,6 +216,8 @@ def test_malformed_fields_targets_payloads_and_no_arbitrary_operations(claimed, 
 def test_invalid_views_failure_and_release_are_visible(claimed, fake_daemon):
     fake_daemon.admin_overrides["accounts"] = {"items": []}
     assert call(claimed, "accounts").status_code == 502
+    fake_daemon.admin_overrides["accounts"] = [None]
+    assert call(claimed, "accounts").status_code == 502
     fake_daemon.admin_overrides.clear()
     fake_daemon.admin_error = (
         409,
@@ -233,3 +234,13 @@ def test_invalid_views_failure_and_release_are_visible(claimed, fake_daemon):
     assert call(claimed, "maintenance").status_code == 409
     assert claimed.get("/api/claim").json()["state"] == "released"
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token, "provider-secret-sentinel")
+
+
+def test_structured_review_and_runner_history_are_allowlisted(claimed):
+    proposal = call(claimed, "proposal").json()
+    assert proposal["review"]["recommendation"] == "approve"
+    assert proposal["review"]["scope"] == {"ok": True, "notes": "Synthetic finding"}
+    runner = call(claimed, "runners").json()[0]
+    assert runner["last_update"]["ok"] is True
+    assert runner["last_update"]["version"] == "1"
+    assert "token" not in runner["info"]

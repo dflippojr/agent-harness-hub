@@ -389,18 +389,21 @@ ACCOUNT = {**dict.fromkeys(("user_id", "account_hint", "login", "display_name"),
 CREDENTIAL = {**dict.fromkeys(("id", "app_id", "app_name", "backend", "secret_ref", "policy"), TEXT),
               "models": NAMES, "created_at": NUMBER, "revoked_at": NUMBER, "available": BOOL}
 FINDING = {"code": TEXT, "path": TEXT, "message": TEXT, "severity": TEXT}
-REVIEW = {"status": TEXT, "verdict": TEXT, "summary": LONG, "findings": [FINDING], "content_hash": TEXT,
-          "reviewed_at": NUMBER, "error": TEXT, "model": TEXT}
+REVIEW = {"recommendation": TEXT, "summary": LONG, "error": TEXT,
+          **dict.fromkeys(("scope", "trigger_precision", "conflicts", "prompt_injection", "sensitive_data",
+                           "examples"), {"ok": BOOL, "notes": TEXT})}
 SKILL = {**dict.fromkeys(("id", "slug", "title", "purpose", "activation_suggestion", "content_hash", "status",
                          "target_slug", "review_status"), TEXT),
          **dict.fromkeys(("version", "created_at", "updated_at", "installed_at", "example_count",
                          "reference_count"), NUMBER), "enabled": BOOL, "projects": NAMES,
          "static_findings": [FINDING], "review": REVIEW, "skill_md": LONG, "diff": LONG,
          "references": [{"path": TEXT, "content": LONG}], "examples": [{"path": TEXT, "content": LONG}]}
+RUNNER_UPDATE = {"ok": BOOL, "version": TEXT, "build_id": TEXT, "at": NUMBER, "message": TEXT,
+                 "plist_changed": BOOL}
 RUNNER = {"name": TEXT, "online": BOOL, "last_seen_seconds": NUMBER, "pending_requests": NUMBER,
-          "update_supported": BOOL, "manual_update": TEXT, "last_update": TEXT,
+          "update_supported": BOOL, "manual_update": TEXT, "last_update": RUNNER_UPDATE,
           "info": {"version": TEXT, "protocol": NUMBER, "platform": TEXT, "arch": TEXT},
-          "compatibility": {"ok": BOOL, "status": TEXT, "reason": TEXT, "message": TEXT}}
+          "compatibility": {"state": TEXT, "notice": TEXT, "supported": {"min": NUMBER, "max": NUMBER}}}
 PROJECT = {"name": TEXT, "description": TEXT, "repo": BOOL, "homelab": BOOL, "target": TEXT, "managed": BOOL}
 FOLDER = {**dict.fromkeys(("project", "name", "folder", "path", "status", "invalid", "reason", "message"), TEXT),
           **dict.fromkeys(("running", "trusted", "git", "managed", "owner_only", "trust_required"), BOOL),
@@ -409,7 +412,7 @@ CANDIDATE = {**dict.fromkeys(("id", "path", "suggested_slug", "reason"), TEXT), 
              **dict.fromkeys(("git", "requires_git", "launchable", "configured_duplicate", "promoted",
                              "trusted"), BOOL)}
 SCAN = {"id": TEXT, "revision": NUMBER, "status": TEXT, "visited": NUMBER, "candidates": [CANDIDATE],
-        "errors": [{"path": TEXT, "code": TEXT}], "truncated": BOOL, "reason": TEXT, "expires_in": NUMBER}
+        "errors": [{"location": TEXT, "code": TEXT}], "truncated": BOOL, "reason": TEXT, "expires_in": NUMBER}
 # Audit metadata is deliberately narrower than free text or caller-defined objects.
 AUDIT = {**dict.fromkeys(("actor_id", "actor_kind", "key_id", "source", "target_id", "target_kind", "action",
                           "outcome"), TEXT),
@@ -447,7 +450,7 @@ SCHEMAS = {
     "skill_review": {"job_id": TEXT, "usage_notice": TEXT, "reviewer_model": TEXT},
     "maintenance": MAINTENANCE, "cleanup": CLEANUP, "backup": BACKUP,
     "retention_preview": RETENTION, "retention_apply": RETENTION,
-    "runners": [RUNNER], "projects": [PROJECT], "project_add": PROJECT,
+    "runners": [RUNNER], "runner_update": RUNNER_UPDATE, "projects": [PROJECT], "project_add": PROJECT,
     "remote": {"enabled": BOOL, "projects": [FOLDER], "discovery": {"supported": BOOL, "enabled": BOOL}},
     **dict.fromkeys(("scan_start", "scan", "scan_cancel"), SCAN),
     "account_audit": [AUDIT], "audit": {"items": [AUDIT], "next_before_id": NUMBER},
@@ -464,9 +467,9 @@ def project(value: Any, schema: Any) -> Any:
     if isinstance(schema, list):
         if not isinstance(value, list):
             raise ValueError("Invalid daemon list")
+        if isinstance(schema[0], dict) and any(not isinstance(row, dict) for row in value):
+            raise ValueError("Invalid daemon list row")
         return [project(row, schema[0]) for row in value[:1000]]
-    if value is None:
-        return None
     if schema in (TEXT, LONG):
         if not isinstance(value, str):
             raise ValueError("Invalid daemon text")

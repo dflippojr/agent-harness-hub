@@ -52,7 +52,11 @@ PROPOSAL = {
     "content_hash": "a" * 64,
     "status": "ready",
     "review_status": "reviewed",
-    "review": None,
+    "review": {
+        "recommendation": "approve",
+        "summary": "Synthetic review",
+        "scope": {"ok": True, "notes": "Synthetic finding"},
+    },
     "static_findings": [],
     "skill_md": "<script>alert('fixture')</script>",
     "references": [{"path": "notes.txt", "content": "Synthetic text"}],
@@ -261,7 +265,13 @@ def register_administration(app, fake, owner):
                     "info": {"version": "1", "protocol": 2, "token": "provider-secret-sentinel"},
                     "update_supported": True,
                     "manual_update": "harness update",
-                    "last_update": None,
+                    "last_update": {
+                        "ok": True,
+                        "version": "1",
+                        "at": 1700000000,
+                        "message": "Synthetic update",
+                        "plist_changed": False,
+                    },
                 }
             ]
         elif re.fullmatch(r"runners/[^/]+/update", path):
