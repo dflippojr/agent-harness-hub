@@ -199,11 +199,13 @@ These specs intercept all network requests and start no servers.
 
 Pairing requests lists the App pairing requests of the last day ([agent-harness #519](https://github.com/dflippojr/agent-harness/issues/519)),
 newest first and grouped by state, with each one's name, scopes, catalog app id, origin (or "native app"), expiry
-countdown, next step and the match code while the owner still has to compare it. Every scope shows the daemon's
+countdown and next step. The Hub never projects or renders an App request's match code. Every scope shows the daemon's
 disclosure text exactly as given, as text, with its `standard` or `elevated` badge. The page polls every 5 seconds.
 
-Approve and Confirm need the match code typed from the App's own screen; the field is never filled from the
-listing, and a wrong code shows the daemon's refusal. Elevated scopes (`sessions:all`, `approvals`, `remote_control`,
+Approve and Confirm need the code the App is showing right now, typed into an empty field; the daemon compares it
+and refuses a wrong code. If the App shows no code or an error, deny. If your App reported that the slot was already
+claimed, withdraw that request. The owner's decision (2026-10-11) to withhold App codes from the owner view departs
+from #519 step 2; the daemon and CLI follow-up will apply the same rule as Hub claims. Elevated scopes (`sessions:all`, `approvals`, `remote_control`,
 `memory_library`, `homelab`) need a separate acknowledgement: Approve stays disabled until it is ticked, and the
 server refuses an approval without it before calling the daemon. Deny and Withdraw ask for confirmation in the page.
 A request that changed state (409) or no longer exists (404) refreshes the list with a short note. Hub claims are

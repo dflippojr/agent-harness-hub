@@ -326,11 +326,11 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         asked, verifier = app_asks("Synthetic notes", ["sessions"])
         rid, code = asked["id"], asked["match_code"]
         row = listed(rid)
-        assert row["state"] == "pending" and row["needs"] == "approve" and row["match_code"] == code
+        assert row["state"] == "pending" and row["needs"] == "approve" and "match_code" not in row
         assert row["origin"] == "" and row["catalog_app_id"] == "test.example.notes"
         assert row["disclosures"][0]["scope"] == "sessions" and row["disclosures"][0]["text"]
         hub_rows = [r for r in first.call("GET", "/api/pairing").json()["requests"] if r["kind"] == "hub"]
-        assert hub_rows and all(r["match_code"] == "" for r in hub_rows)
+        assert hub_rows and all("match_code" not in r for r in hub_rows)
         assert app_redeems(rid, verifier).status_code == 409  # nothing exists before the owner decides
         wrong = "000000" if code != "000000" else "111111"
         refused = first.call("POST", f"/api/pairing/{rid}/approve", headers=origin, json={"match": wrong})
@@ -344,7 +344,7 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         paired_token, paired_id = redeemed.json()["token"], redeemed.json()["app"]["id"]
         assert paired_token.startswith("ha-")
         row = listed(rid)
-        assert row["state"] == "redeemed" and row["key_id"] == paired_id and row["match_code"] == ""
+        assert row["state"] == "redeemed" and row["key_id"] == paired_id and "match_code" not in row
         assert any(app["id"] == paired_id for app in first.call("GET", "/api/apps").json()["apps"])
 
         # Elevated scopes need the separate acknowledgement; then the owner withdraws the unredeemed approval.

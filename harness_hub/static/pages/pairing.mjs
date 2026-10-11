@@ -1,4 +1,4 @@
-// Pairing requests (agent-harness #519): the owner compares match codes and approves, confirms or denies. The daemon
+// Pairing requests (agent-harness #519): the owner types the App code and approves, confirms or denies. The daemon
 // then hands each App its own token; this page never sees one. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
@@ -18,9 +18,10 @@ function nextStep(row) {
       row.state === "approved" ? "Approved: the Hub fetches its own key." : "Nothing to do.";
   }
   return {
-    approve: "Compare the match code with the app's screen, then approve or deny.",
+    approve: "Type the code the app is showing right now. If the app shows no code or an error, deny.",
     claim: "Waiting for the app to claim this slot.",
-    confirm: "A native app claimed this slot. Compare its match code, then confirm or withdraw.",
+    confirm: "A native app claimed this slot. Type the code the app is showing right now. " +
+      "If the app shows no code or an error, deny. If your app reported that the slot was already claimed, withdraw this.",
     redeem: "Approved: waiting for the app to fetch its own token from the daemon.",
   }[row.needs] || {
     redeemed: "Paired. The app received its token directly from the daemon.",
@@ -133,9 +134,6 @@ export function renderPairing(main) {
           ["Expires", h("span", { "data-expires": row.expires_at }, countdown(row.expires_at - now()))] :
           ["Finished", when(row.finished_at)],
         ...(row.key_id ? [["Key id", row.key_id]] : [])]));
-    if (row.match_code) {
-      box.append(h("p", {}, "Match code the app should show:"), h("p", { class: "match" }, row.match_code));
-    }
     if (row.disclosures.length) {
       box.append(h("h4", {}, "What each scope allows"), h("ul", { class: "disclosures" }, row.disclosures.map((item) =>
         h("li", { "data-scope": item.scope },
@@ -193,7 +191,7 @@ export function renderPairing(main) {
     return h("div", { class: "pairing-decision" },
       h("div", { class: "setting-field" }, h("label", {}, "Match code the app shows", input),
         h("p", { class: "setting-meta", id: `match-help-${row.id}` },
-          "Type the code from the app's own screen. A wrong code is refused.")),
+          "Type the code the app is showing right now. If the app shows no code or an error, deny.")),
       ack ? h("label", { class: "pairing-ack" }, ack,
         h("span", {}, `I understand the elevated scopes above (${row.elevated.join(", ")}) and still want to approve.`)) : null,
       h("div", { class: "settings-actions" }, submit), command(cli));

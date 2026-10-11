@@ -24,7 +24,7 @@ def sent(fake, operation):
     return [entry for entry in fake.pairing_bodies if entry[0] == operation]
 
 
-def test_list_is_allowlisted_newest_first_with_codes_disclosures_and_hub_claims(claimed, fake_daemon):
+def test_list_is_allowlisted_newest_first_without_codes_with_disclosures_and_hub_claims(claimed, fake_daemon):
     plain = fake_daemon.add_pairing("Synthetic notes", ["sessions"], catalog_app_id="test.example.notes")
     elevated = fake_daemon.add_pairing("Synthetic ops", ["sessions", "homelab"], origin="")
     armed = fake_daemon.add_pairing("Armed slot", ["sessions"], state="armed", catalog_app_id="test.example.armed")
@@ -35,18 +35,18 @@ def test_list_is_allowlisted_newest_first_with_codes_disclosures_and_hub_claims(
     ordered = [row["created_at"] for row in data["requests"]]
     assert ordered == sorted(ordered, reverse=True)
     shown = {row["id"]: row for row in data["requests"]}
-    assert shown[plain]["match_code"] == fake_daemon.pairing_rows[plain]["match_code"]
+    assert all("match_code" not in row for row in data["requests"])
     assert shown[plain]["needs"] == "approve" and shown[plain]["catalog_app_id"] == "test.example.notes"
     assert shown[plain]["origin"] == "https://app.test" and shown[plain]["browser"] is True
     assert shown[elevated]["origin"] == "" and shown[elevated]["elevated"] == ["homelab"]
     assert [d["tier"] for d in shown[elevated]["disclosures"]] == ["standard", "elevated"]
     assert shown[elevated]["disclosures"][1]["text"].startswith("This app's tasks can **read your homelab")
-    assert shown[armed]["match_code"] == "" and shown[armed]["needs"] == "claim"
-    assert shown[claimed_slot]["match_code"] and shown[claimed_slot]["needs"] == "confirm"
+    assert shown[armed]["needs"] == "claim"
+    assert shown[claimed_slot]["needs"] == "confirm"
     hub = [row for row in data["requests"] if row["kind"] == "hub"]
-    assert hub and all(row["match_code"] == "" for row in hub)
+    assert hub and all("match_code" not in row for row in hub)
     assert set(shown[plain]) == {"id", "kind", "state", "needs", "name", "catalog_app_id", "origin", "browser",
-                                 "armed", "scopes", "elevated", "disclosures", "match_code", "key_id",
+                                 "armed", "scopes", "elevated", "disclosures", "key_id",
                                  "created_at", "expires_at", "approved_at", "finished_at"}
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 
@@ -61,7 +61,7 @@ def test_approve_with_the_typed_code_and_a_wrong_code_shows_the_daemons_400(clai
     reply = post(claimed, rid, "approve", {"match": f" {code[:3]} {code[3:]} "})
     assert reply.status_code == 200, reply.text
     assert reply.json()["state"] == "approved" and reply.json()["needs"] == "redeem"
-    assert reply.json()["match_code"] == ""
+    assert "match_code" not in reply.json()
     assert sent(fake_daemon, "approve")[-1] == ("approve", rid, {"match": f"{code[:3]} {code[3:]}"})
     again = post(claimed, rid, "approve", {"match": code})
     assert again.status_code == 409 and "approved" in again.json()["detail"]
@@ -87,10 +87,10 @@ def test_the_hub_flags_elevated_scopes_even_when_the_daemon_does_not():
                                   "disclosures": [{"scope": "homelab", "tier": "standard", "text": "t"}]})
     assert shown["elevated"] == ["homelab"] and shown["disclosures"][0]["tier"] == "elevated"
     hub = pairing_request_view({"id": "pr-2", "kind": "hub", "state": "pending", "match_code": "123456"})
-    assert hub["match_code"] == ""
+    assert "match_code" not in hub
     odd = pairing_request_view({"id": "pr-3", "kind": "app", "state": "approved", "match_code": "<b>1</b>",
                                 "needs": "anything", "disclosures": "x", "scopes": "sessions"})
-    assert odd["match_code"] == "" and odd["needs"] == "" and odd["disclosures"] == [] and odd["scopes"] == []
+    assert "match_code" not in odd and odd["needs"] == "" and odd["disclosures"] == [] and odd["scopes"] == []
 
 
 def test_confirm_a_native_claim_with_its_code(claimed, fake_daemon):
@@ -126,7 +126,7 @@ def test_hub_claims_are_refused_by_the_daemon_and_carry_no_code(claimed, fake_da
                          ("confirm", {"match": "123456"}), ("deny", {"confirm": True})):
         reply = post(claimed, hub_rid, action, body)
         assert reply.status_code == 403 and "daemon host" in reply.json()["detail"]
-    assert rows(claimed)[hub_rid]["match_code"] == ""
+    assert "match_code" not in rows(claimed)[hub_rid]
 
 
 @pytest.mark.parametrize("action,body", [("approve", {"match": "123456"}), ("confirm", {"match": "123456"}),
@@ -194,3 +194,11 @@ def test_daemon_failures_and_released_key(claimed, fake_daemon):
     assert claimed.get("/api/claim").json()["state"] == "released"
     assert post(claimed, rid, "approve", {"match": "123456"}).status_code == 409
     assert sent(fake_daemon, "approve") == []
+
+
+@pytest.mark.parametrize("kind", ["app", "hub", "unknown"])
+@pytest.mark.parametrize("state", ["pending", "armed", "claimed", "approved", "redeemed", "denied", "expired"])
+def test_no_owner_projection_contains_the_request_match_code(kind, state):
+    shown = pairing_request_view({"id": "pr-code", "kind": kind, "state": state, "match_code": "482913"})
+    assert "match_code" not in shown
+    assert "482913" not in str(shown)

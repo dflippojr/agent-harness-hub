@@ -517,17 +517,14 @@ def pairing_request_view(row: Any, secrets: tuple[str, ...] = ()) -> dict:
     for item in disclosures:
         if item["scope"] in elevated:
             item["tier"] = "elevated"
-    code = row.get("match_code")
-    # Only while the owner still compares it, and never a Hub claim's: that is read off the Hub's own screen.
-    shown = code if isinstance(code, str) and re.fullmatch(r"[0-9]{1,32}", code) and kind == "app" and state in (
-        "pending", "claimed") else ""
+    # Owner decision: codes come only from the App's screen, never from an owner listing (#519 step 2).
     needs = row.get("needs") if row.get("needs") in PAIRING_NEEDS else ""
     return {"id": _app_id(row.get("id")), "kind": kind, "state": state, "needs": needs,
             "name": _app_text(row.get("name"), 120, secrets),
             "catalog_app_id": _app_text(row.get("catalog_app_id"), 200, secrets),
             "origin": _app_text(row.get("origin"), 500, secrets),
             "browser": row.get("browser") is True, "armed": row.get("armed") is True,
-            "scopes": scopes, "elevated": elevated, "disclosures": disclosures, "match_code": shown,
+            "scopes": scopes, "elevated": elevated, "disclosures": disclosures,
             "key_id": _app_id(row.get("key_id")),
             **{key: _finite(row.get(key)) for key in ("created_at", "expires_at", "approved_at", "finished_at")}}
 

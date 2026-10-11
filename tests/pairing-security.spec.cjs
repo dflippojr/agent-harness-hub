@@ -53,11 +53,12 @@ test("approve needs the typed code; it is never pre-filled and a wrong code show
   const { writes, errors } = await mount(page, [request("pr-a")], { answer: (id, action, body) =>
     body.match === "000000" ? { status: 400, json: { detail: "the match code does not match the one the App shows" } } : null });
   const box = card(page, "pr-a");
-  await expect(box.locator(".match")).toHaveText("482913");
+  await expect(box).not.toContainText("482913");
+  await expect(box.locator(".match")).toHaveCount(0);
   await expect(box).toContainText("https://app.test");
   await expect(box).toContainText("test.example.notes");
   await expect(box).toContainText(/\d+:\d\d left/);
-  await expect(box).toContainText("Compare the match code");
+  await expect(box).toContainText("Type the code the app is showing right now.");
   await expect(box.getByText("harness pairing-requests approve pr-a --match <code>", { exact: true })).toBeVisible();
   const input = box.getByLabel("Match code the app shows");
   await expect(input).toHaveValue("");
@@ -170,6 +171,23 @@ for (const [label, width] of [["phone", 390], ["desktop", 1280]]) {
       expect(box.width).toBeGreaterThanOrEqual(44);
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    expect(errors).toEqual([]);
+  });
+}
+
+
+for (const [state, needs] of [["pending", "approve"], ["claimed", "confirm"]]) {
+  test(`${state} cards never expose the supplied code before the owner types it`, async ({ page }) => {
+    const row = request("pr-hidden", { state, needs, armed: state === "claimed", origin: "", browser: false });
+    const { errors } = await mount(page, [row]);
+    const box = card(page, row.id);
+    await expect(box).not.toContainText(row.match_code);
+    expect(await box.evaluate((el, code) => el.outerHTML.includes(code), row.match_code)).toBe(false);
+    await expect(box.getByLabel("Match code the app shows")).toHaveValue("");
+    await expect(box).toContainText("If the app shows no code or an error, deny.");
+    if (state === "claimed") {
+      await expect(box).toContainText("If your app reported that the slot was already claimed, withdraw this.");
+    }
     expect(errors).toEqual([]);
   });
 }
