@@ -10,6 +10,8 @@ let lastGood = null; // the last overview that reached the daemon, shown with an
 export function renderOverview(main) {
   let stopped = false;
   let timer = null;
+  let loading = false;
+  let reloadRequested = false;
   const claimBox = h("div", { id: "claim" });
   const body = h("div", { class: "grid" });
   const status = h("p", { class: "muted refreshed", "aria-live": "polite" });
@@ -19,19 +21,39 @@ export function renderOverview(main) {
     claimBox, body, status);
 
   async function load() {
+    if (stopped) return;
+    if (loading) {
+      reloadRequested = true;
+      return;
+    }
+    loading = true;
     clearTimeout(timer);
+    timer = null;
+    let delay = REFRESH_MS;
     try {
       const data = await api("overview");
-      if (stopped) return;
+      if (stopped || reloadRequested) return;
       if (data.reachable) lastGood = data;
       draw(data);
       const waiting = ["pending", "persisting"].includes(data.claim.state);
-      if (data.restarting) await api("settings/health").catch(() => {});
-      timer = setTimeout(load, waiting || data.restarting ? CLAIM_POLL_MS : REFRESH_MS);
+      if (data.restarting) {
+        await api("settings/health").catch(() => {});
+        if (stopped || reloadRequested) return;
+      }
+      delay = waiting || data.restarting ? CLAIM_POLL_MS : REFRESH_MS;
     } catch (error) {
-      if (stopped) return;
+      if (stopped || reloadRequested) return;
       clear(body, h("section", { class: "card bad", role: "alert" }, h("h2", {}, "Could not load the overview"), h("p", {}, error.message)));
-      timer = setTimeout(load, REFRESH_MS);
+    } finally {
+      loading = false;
+      if (!stopped) {
+        if (reloadRequested) {
+          reloadRequested = false;
+          load();
+        } else {
+          timer = setTimeout(load, delay);
+        }
+      }
     }
   }
 
