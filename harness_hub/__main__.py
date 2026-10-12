@@ -41,6 +41,10 @@ def serve_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allowed-host", action="append", default=[], metavar="HOST[:PORT]",
                         help="another exact Host header to answer (repeatable)")
     parser.add_argument("--name", default="Hub", help="the name the daemon records for this Hub")
+    parser.add_argument("--trust-unverified-identity-headers", action="store_true",
+                        help="UNSAFE: outside Windows, trust Tailscale-* identity headers from any local process "
+                             "(like the daemon's listen.trust_unverified_identity_headers); ignored on Windows, "
+                             "where the Hub checks that tailscaled sent them")
     return parser
 
 
@@ -80,6 +84,7 @@ def serve(argv: list[str]) -> int:
             public_url=normalize_public_url(args.public_url) if args.public_url else "",
             claim_name=args.name.strip() or "Hub",
             extra_hosts=tuple(h.strip().lower() for h in args.allowed_host if h.strip()),
+            trust_unverified_identity_headers=args.trust_unverified_identity_headers,
         )
     except ValueError as exc:
         parser.error(str(exc))

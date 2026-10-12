@@ -50,6 +50,7 @@ class FakeDaemon:
         self.redeem_role = "hub"
         self.down = False
         self.sent: list[str] = []  # every URL the Hub asked for, so tests can prove what it never fetched
+        self.allowed_logins: object = ["owner@example.test"]  # None: a daemon before Owner API 1.26
         self.app = self._build()
 
     # owner actions on the daemon host
@@ -154,9 +155,12 @@ class FakeDaemon:
             if not owner(request):
                 return JSONResponse({"detail": "requests from this machine need the local owner token"}, 401)
             # A field the Hub must not pass through: the key list's display prefix.
-            return {"api_version": "1.24", "hub": {"claimed": self.hub is not None},
+            body = {"api_version": "1.26", "hub": {"claimed": self.hub is not None},
                     "operations": [{"method": "GET", "path": "/api/admin/v1/keys"}],
                     "debug_prefix": self.hub_token[:10]}
+            if self.allowed_logins is not None:
+                body["allowed_logins"] = self.allowed_logins
+            return body
 
         @app.get("/api/admin/v1/hub-claim")
         async def hub_claim(request: Request):
@@ -236,10 +240,10 @@ def fake_daemon():
 def make_hub(tmp_path, fake_daemon):
     clients = []
 
-    def make(**overrides):
+    def make(peer_check=None, **overrides):
         settings = Settings(**{"daemon_url": "https://daemon.test", "state_dir": tmp_path / "state",
                                "poll_seconds": 0.02, **overrides})
-        app = create_app(settings, transport=fake_daemon.transport())
+        app = create_app(settings, transport=fake_daemon.transport(), peer_check=peer_check)
         client = TestClient(app, base_url=f"http://{HUB_HOST}")
         client.__enter__()
         clients.append(client)

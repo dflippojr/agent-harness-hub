@@ -32,6 +32,7 @@ from .daemon import ADMIN_ROUTES, DaemonClient, DaemonUnreachable
 from .guard import ResponseGuard, leaks
 from .inventory import InventoryCache, valid_inventory
 from .state import SERVER_FILE, StateStore, write_private
+from .tailnet import PeerCheck, TailnetIdentity, login
 from .views import (
     administration_view,
     app_view,
@@ -65,6 +66,7 @@ SIGNIN_COMMAND = "python -m harness_hub signin-link"
 REQUEST_HEADER = "x-hub-request"
 SESSION_HEADER = "x-hub-session"
 MAX_SIGNIN_BODY = 1024
+ALLOWED_LOGINS_SECONDS = 5.0  # how long a tailnet sign-in reuses the daemon's allowed_logins answer
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 SECURITY_HEADERS = [
@@ -114,13 +116,15 @@ def _error(status: int, detail: str, **extra: Any) -> JSONResponse:
     return JSONResponse({"detail": detail, **extra}, status_code=status)
 
 
-def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None) -> HostCheck:
+def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None,
+               peer_check: PeerCheck | None = None) -> HostCheck:
     store = StateStore(settings.state_dir)
     daemon = DaemonClient(settings.daemon_url, transport=transport)
     claims = ClaimManager(store, daemon, name=settings.claim_name, claim_file=settings.claim_file,
                           poll_seconds=settings.poll_seconds)
     sessions = Sessions(settings.state_dir)
     inventory = InventoryCache(store.dir, settings.daemon_url)
+    peer_check = peer_check or PeerCheck()
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -173,9 +177,66 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     @app.get("/api/session")
     async def get_session(request: Request):
+        # `tailnet_login` is the caller's own identity, present only when tailscaled added it (tailnet.py). Whether
+        # it is the owner's is decided at sign-in, against the daemon's list.
         return {"signed_in": sessions.valid(request.cookies.get(settings.cookie_name),
                                             request.headers.get(SESSION_HEADER)), "signin_command": SIGNIN_COMMAND,
-                "version": __version__}
+                "tailnet_login": login(request.headers) or None, "version": __version__}
+
+    owner_logins: dict[str, Any] = {}  # the daemon's allowed_logins, kept briefly: {"until": ..., "logins": [...]}
+
+    async def allowed_logins(token: str) -> list[str] | JSONResponse:
+        if owner_logins and time.monotonic() < owner_logins["until"]:
+            return owner_logins["logins"]
+        try:
+            reply = await daemon.admin(token)
+        except DaemonUnreachable:
+            return _error(503, f"the daemon at {settings.daemon_url} did not answer; use a sign-in link",
+                          signin_command=SIGNIN_COMMAND)
+        if not reply.ok:
+            return _error(502, f"the owner API answered HTTP {reply.status}; use a sign-in link",
+                          signin_command=SIGNIN_COMMAND)
+        allowed = reply.body.get("allowed_logins") if isinstance(reply.body, dict) else None
+        if not isinstance(allowed, list) or not all(isinstance(item, str) for item in allowed):
+            return _error(502, "the daemon does not list the owner's tailnet logins (it needs Owner API 1.26 or "
+                          "later); use a sign-in link", signin_command=SIGNIN_COMMAND)
+        owner_logins.update(until=time.monotonic() + ALLOWED_LOGINS_SECONDS, logins=list(allowed))
+        return owner_logins["logins"]
+
+    async def tailnet_sign_in(request: Request) -> JSONResponse | None:
+        """Refuse a tailnet sign-in unless the daemon lists this request's trusted login; None means accept. An
+        unclaimed Hub, an open-owner daemon and an unlisted login get the same answer; the log tells them apart."""
+        caller = login(request.headers)
+        if not caller:
+            return _error(401, "this request carries no tailnet identity from tailscaled; use a sign-in link",
+                          signin_command=SIGNIN_COMMAND)
+        if not sessions.tailnet_attempt(caller):
+            return _error(429, "too many tailnet sign-in attempts; wait a minute")
+        refused = _error(403, "this tailnet login cannot sign in to this Hub; use a sign-in link",
+                         signin_command=SIGNIN_COMMAND)
+        # A raw TCP forward lets tailscaled relay a client's own identity headers (tailnet.py). Only where the peer
+        # was verified: with unverified headers trusted, any local process can sign in anyway.
+        server = request.scope.get("server")
+        if peer_check.platform_ok() and await asyncio.to_thread(peer_check.raw_forward_to,
+                                                                server[1] if server else None):
+            log.warning("refused tailnet sign-in: this node's tailscale serve config has a raw TCP forward to the "
+                        "Hub's port, or could not be read")
+            return refused
+        key = claims.key()
+        if not key:
+            log.warning("refused tailnet sign-in: this Hub has not claimed its daemon")
+            return refused
+        allowed = await allowed_logins(key["token"])
+        if isinstance(allowed, JSONResponse):
+            return allowed
+        if not allowed:
+            # Open-owner legacy mode: the daemon names no owner, so no tailnet login proves ownership.
+            log.warning("refused tailnet sign-in: the daemon has no owner allowlist (allowed_logins)")
+            return refused
+        if caller not in allowed:
+            log.warning("refused tailnet sign-in for a login the daemon does not list as the owner's")
+            return refused
+        return None
 
     @app.post("/api/session")
     async def sign_in(request: Request):
@@ -197,14 +258,20 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             body = json.loads(data)
         except ValueError:
             body = None
-        code = body.get("code") if isinstance(body, dict) else None
-        was_throttled = sessions.throttled()
-        credentials = sessions.redeem_code(code)
-        if credentials is None:
-            if was_throttled:
-                return _error(429, "too many sign-in attempts; wait a minute")
-            return _error(401, "that sign-in link is not valid; links work once, for ten minutes",
-                          signin_command=SIGNIN_COMMAND)
+        if isinstance(body, dict) and body.get("method") == "tailnet":
+            refusal = await tailnet_sign_in(request)
+            if refusal is not None:
+                return refusal
+            credentials = sessions.create()
+        else:
+            code = body.get("code") if isinstance(body, dict) else None
+            was_throttled = sessions.throttled()
+            credentials = sessions.redeem_code(code)
+            if credentials is None:
+                if was_throttled:
+                    return _error(429, "too many sign-in attempts; wait a minute")
+                return _error(401, "that sign-in link is not valid; links work once, for ten minutes",
+                              signin_command=SIGNIN_COMMAND)
         session, binding = credentials
         response = Response(status_code=204, headers={SESSION_HEADER: binding})
         response.set_cookie(settings.cookie_name, session, max_age=SESSION_TTL_SECONDS,
@@ -855,6 +922,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
-    served = HostCheck(ResponseGuard(app, claims.secrets), settings.allowed_hosts())
+    identity = TailnetIdentity(ResponseGuard(app, claims.secrets), check=peer_check,
+                               trust_unverified=settings.trust_unverified_identity_headers)
+    served = HostCheck(identity, settings.allowed_hosts())
     served.fastapi = app
     return served
