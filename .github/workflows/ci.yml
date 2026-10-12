@@ -4,7 +4,7 @@ name: CI
 #   lint     - ruff, and a syntax check of every browser ES module
 #   test     - the unit suite on Linux and Windows (the Hub runs on the daemon host, which can be either)
 #   e2e      - a real Agent Harness daemon from a pinned dflippojr/agent-harness commit, claimed and read by the Hub
-#   package  - the wheel (with the static UI) and the Docker image build
+#   package  - the wheel (with the static UI), and the Docker image build and smoke test (scripts/smoke-image.sh)
 #   sonar    - SonarCloud analysis of the test job's coverage; the quality gate fails this check
 on:
   push:
@@ -172,7 +172,7 @@ jobs:
           cd /tmp
           /tmp/wheel/bin/python -m harness_hub --version
           /tmp/wheel/bin/python -c "from importlib import resources; s = resources.files('harness_hub') / 'static'; assert (s / 'index.html').is_file() and (s / 'pages' / 'overview.mjs').is_file()"
-      - name: Build the Docker image
+      - name: Build and smoke-test the Docker image
         run: |
           docker build -t agent-harness-hub:ci .
-          docker run --rm agent-harness-hub:ci --version
+          scripts/smoke-image.sh agent-harness-hub:ci

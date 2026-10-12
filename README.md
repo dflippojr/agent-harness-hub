@@ -191,6 +191,48 @@ uv pip compile pyproject.toml requirements-daemon.in --extra dev --universal --p
 
 Update exact versions in `pyproject.toml` and the daemon commit/requirements snapshot together when needed.
 
+### Release
+
+Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`. The tag must equal `v` + `harness_hub.__version__`
+and point at a commit on `main`. That ancestry check is an accident guard, not a control: the tag runs the workflow
+file from the tagged commit, so a deliberate release is stopped only by the reviewer gate and the tag ruleset below.
+The workflow builds the wheel, sdist and image once and smoke-tests the image with `scripts/smoke-image.sh`. It then
+publishes the wheel and sdist to PyPI as `agent-harness-hub` through a trusted publisher (no API token) in the `pypi`
+environment. In the `ghcr` environment it pushes the image as `ghcr.io/dflippojr/agent-harness-hub:X.Y.Z` with the
+workflow's `GITHUB_TOKEN`, and also as `:latest` only when `vX.Y.Z` is the highest release tag on `main`, so a
+backport never moves `:latest` backwards. If a run doesn't move `:latest`, it logs a warning. Last, it attests the
+pushed digest's build provenance. The package is MIT licensed (`LICENSE`).
+
+The `ghcr` environment is a reviewer prompt for this workflow only. The package permissions come from the workflow
+file, not from the environment, so another workflow in this repository can still push the image. The signer check
+below is what ties an image to this workflow.
+
+These are the names for the daemon installer's `HARNESS_HUB_PACKAGE` and `HARNESS_HUB_IMAGE` (agent-harness #547).
+Pin the image to a version or, better, a digest instead of `:latest`, and check the digest's provenance before you
+run it. Pin the signer as well as the repository, using the tag of the version you run:
+
+```bash
+docker pull ghcr.io/dflippojr/agent-harness-hub:X.Y.Z
+gh attestation verify oci://ghcr.io/dflippojr/agent-harness-hub@sha256:<digest> \
+  --repo dflippojr/agent-harness-hub \
+  --cert-identity "https://github.com/dflippojr/agent-harness-hub/.github/workflows/release.yml@refs/tags/vX.Y.Z" \
+  --deny-self-hosted-runners
+# then HARNESS_HUB_IMAGE=ghcr.io/dflippojr/agent-harness-hub@sha256:<digest>
+```
+
+Owner setup before the first tag. Only an admin can do these; the workflow doesn't create them:
+
+1. On PyPI, register `agent-harness-hub` with a trusted publisher for repository `dflippojr/agent-harness-hub`,
+   workflow `release.yml` and environment `pypi`.
+2. In Settings → Environments, create `pypi` and `ghcr`. Protect both: the owner is a **required reviewer**, and
+   **deployment branches and tags** are limited to the tag pattern `v*`. If a workflow names an environment that
+   does not exist, GitHub creates it with no protection, so create both before the first tag.
+3. In Settings → Rules → Rulesets, add a tag ruleset that targets `refs/tags/v*`. It restricts creations, updates
+   and deletions, with only repository admins on the bypass list. Then agent or leaked tokens can't create, move or
+   delete release tags.
+4. In Settings → Rules → Rulesets, add a branch ruleset for `main` that requires a pull request before merging. The
+   ancestry check above only means something when `main` can't take direct pushes.
+
 ### Apps
 
 Apps shows the daemon inventory's connection state, last seen, scopes, origins,

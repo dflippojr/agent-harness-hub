@@ -1,0 +1,175 @@
+name: Release
+
+# A vX.Y.Z tag publishes that version (all jobs on GitHub-hosted runners):
+#   build         - refuse a tagged commit that is not on main, check the tag matches harness_hub.__version__, build
+#                   the wheel, sdist and image once, smoke-test them and hand them on as artifacts; read-only
+#   pypi          - publish the wheel and sdist through the PyPI trusted publisher (environment `pypi`)
+#   ghcr          - push the built image as ghcr.io/dflippojr/agent-harness-hub:X.Y.Z, and :latest only when X.Y.Z is
+#                   the highest release tag on main, then attest its build provenance (environment `ghcr`); it runs
+#                   after PyPI accepts the release
+# The `ghcr` environment is a reviewer prompt for this workflow only. The package grants below come from this file,
+# not from the environment, so another workflow in the repository can still push the image (README "Release").
+# The main-ancestry check in build is an accident guard, not a control: a tag runs this file from the tagged commit.
+# Only pypi and ghcr get id-token: write; only ghcr gets packages: write and attestations: write.
+# Owner setup before the first tag (README "Release"): the PyPI trusted publisher, the `pypi` and `ghcr` environments
+# with the owner as required reviewer and deployments limited to v* tags, a refs/tags/v* ruleset, and a main ruleset
+# that requires a pull request.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/dflippojr/agent-harness-hub
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      latest: ${{ steps.latest.outputs.latest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The tagged commit is on main
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::tagged commit $GITHUB_SHA is not on main"
+            exit 1
+          }
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: The tag matches harness_hub.__version__
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(python -c "import harness_hub; print(harness_hub.__version__)")
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || "$TAG" != "v$version" ]]; then
+            echo "::error::tag $TAG does not match harness_hub.__version__ $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Move latest only for the highest release tag
+        id: latest
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Only release tags on main count, so a stray tag (off main, or a typo such as v10.0.0) can't stop later
+          # releases from moving :latest.
+          highest=$(git tag -l 'v*' --merged origin/main --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
+          if [[ "$TAG" == "$highest" ]]; then
+            latest=true
+          else
+            latest=false
+            echo "::warning::$TAG is not the highest release tag on main ($highest); :latest not moved"
+          fi
+          echo "highest release tag $highest; latest=$latest"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+      - name: Build the wheel and sdist
+        run: |
+          python -m pip install --require-hashes -r requirements-build.lock
+          python -m build --no-isolation
+          ls -l dist
+      - name: The wheel installs and carries the UI
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python -m venv /tmp/wheel
+          /tmp/wheel/bin/pip install --require-hashes -r requirements.lock
+          /tmp/wheel/bin/pip install --no-deps dist/agent_harness_hub-"$VERSION"-py3-none-any.whl
+          cd /tmp
+          test "$(/tmp/wheel/bin/python -m harness_hub --version)" = "harness_hub $VERSION"
+          /tmp/wheel/bin/python -c "from importlib import resources; s = resources.files('harness_hub') / 'static'; assert (s / 'index.html').is_file() and (s / 'pages' / 'overview.mjs').is_file()"
+      - name: Build and smoke-test the image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          REVISION: ${{ github.sha }}
+        run: |
+          docker build --label "org.opencontainers.image.version=$VERSION" \
+            --label "org.opencontainers.image.revision=$REVISION" -t "$IMAGE:$VERSION" .
+          scripts/smoke-image.sh "$IMAGE:$VERSION" "$VERSION"
+          docker save "$IMAGE:$VERSION" | gzip > image.tar.gz
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: image
+          path: image.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/agent-harness-hub/${{ needs.build.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
+  ghcr:
+    needs: [build, pypi]
+    runs-on: ubuntu-latest
+    environment:
+      name: ghcr
+      url: https://github.com/dflippojr/agent-harness-hub/pkgs/container/agent-harness-hub
+    permissions:
+      attestations: write
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: image
+      - name: Push the version tag, and latest for the highest release
+        id: push
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          LATEST: ${{ needs.build.outputs.latest }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          gunzip -c image.tar.gz | docker load
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker push "$IMAGE:$VERSION"
+          if [[ "$LATEST" == "true" ]]; then
+            docker tag "$IMAGE:$VERSION" "$IMAGE:latest"
+            docker push "$IMAGE:latest"
+          fi
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$VERSION")
+          digest=${digest#*@}
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::no pushed digest for $IMAGE:$VERSION"; exit 1; }
+          echo "Pushed $IMAGE@$digest" >> "$GITHUB_STEP_SUMMARY"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      # The image's provenance goes to the attestations API and the registry; verify with
+      # gh attestation verify oci://ghcr.io/dflippojr/agent-harness-hub@sha256:... --repo dflippojr/agent-harness-hub
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          # Storage records exist only for organization-owned repositories.
+          create-storage-record: false
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io
