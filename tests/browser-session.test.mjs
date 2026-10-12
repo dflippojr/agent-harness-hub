@@ -4,6 +4,18 @@ import test from "node:test";
 import "./overview-polling.test.mjs";
 import { api } from "../harness_hub/static/lib/api.mjs";
 import { switchFor } from "../harness_hub/static/pages/modules.mjs";
+import { signinFromHash } from "../harness_hub/static/pages/signin.mjs";
+
+test("any #signin= fragment is a link; only a well-formed one carries a code to post", () => {
+  const code = "A".repeat(20);
+  assert.deepEqual(signinFromHash(""), { link: false, code: "" });
+  assert.deepEqual(signinFromHash("#/overview"), { link: false, code: "" });
+  assert.deepEqual(signinFromHash("#signin=" + code), { link: true, code });
+  for (const bad of ["#signin=", "#signin=bogus-code", "#signin=" + code + ".", "#signin=" + code + ")",
+    "#signin=" + "A".repeat(129), "#signin=" + code + "&x=1"]) {
+    assert.deepEqual(signinFromHash(bad), { link: true, code: "" }, bad);
+  }
+});
 
 test("module switches use schema relationships, reject unrelated and ambiguous bool settings", () => {
   const notification = { key: "notify.enabled", type: "bool", modules: ["notifications"] };

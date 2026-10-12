@@ -23,7 +23,8 @@ its manual restart instructions.
 Settings also manages smart approvals, backend model/effort defaults, the memory agent profile (saving commits
 and pushes to its library), member GitHub access, read-only Google sign-in status, and test notifications. Secret
 references remain file paths: the Hub never opens or resolves those files. Installer-only secrets remain hidden
-and read-only. Every action includes its daemon CLI equivalent.
+and read-only. Every action includes its daemon CLI equivalent. When the daemon has no `memory_library` module
+(not installed, or switched off), the memory section says so and shows how to enable it instead of an error.
 
 ## Install and run
 
@@ -77,7 +78,8 @@ python -m harness_hub signin-link --state-dir ~/.agent-harness-hub
 ```
 
 The link works once, for ten minutes. Its code travels in the URL fragment, which the browser never sends to a server
-or puts in a Referer; the page posts it once and gets an HttpOnly, SameSite=Strict session cookie for twelve hours.
+or puts in a Referer; a truncated or mangled link is refused on the page without being sent. The page posts a
+well-formed code once and gets an HttpOnly, SameSite=Strict session cookie for twelve hours.
 The cookie alone cannot authorize requests: a second per-session value is kept in origin-scoped `sessionStorage`
 and sent in `X-Hub-Session`. Each new tab needs its own sign-in link. HTTPS uses a `__Host-hub_session` cookie
 with `Secure`, `HttpOnly`, `SameSite=Strict` and no Domain attribute.
@@ -216,7 +218,9 @@ HUB_E2E_DAEMON_SRC=../agent-harness pytest -m e2e   # a real daemon from a check
 ```
 
 The UI is plain ES modules in `harness_hub/static` with no build step. Every tap target is at least 44 px, and the
-layout switches from a phone menu to a left rail at 900 px.
+layout switches from a phone menu to a left rail at 900 px; a tap outside the open phone menu closes it.
+The shell (sign-in links, the phone menu, Modules and the Settings memory section) has its own isolated spec:
+`npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1 shell-browser.spec.cjs`.
 The Modules browser flow can also be run with `playwright-cli run-code --filename=tests/modules-browser.js`
 on a signed-in Modules page backed by a fresh `tests.conftest.FakeDaemon` (one browser session).
 
