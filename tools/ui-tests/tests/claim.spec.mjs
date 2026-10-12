@@ -12,8 +12,8 @@ test.describe("claim", () => {
     test.setTimeout(240_000);
     instance = await startInstance({ unclaimed: true });
   });
-  test.afterAll(() => {
-    instance?.stop();
+  test.afterAll(async () => {
+    await instance?.stop();
     instance = undefined;
   });
 

@@ -8,6 +8,6 @@ export default async function globalSetup() {
   process.env.HUB_UI_URL = instance.hub;
   process.env.HUB_UI_DAEMON_URL = instance.daemon;
   return async () => {
-    console.log(instance.stop().trim());
+    console.log((await instance.stop()).trim());
   };
 }

@@ -3,11 +3,12 @@
 //   HUB_UI_PYTHON        Python 3.12+ with the Hub and the daemon's requirements (default: python)
 //   HUB_UI_DAEMON_SRC    agent-harness checkout with fake model mode (required)
 //   HUB_UI_INSTANCE_DIR  base directory for instance directories (default: <tmp>/hub-ui-tests)
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const python = process.env.HUB_UI_PYTHON || "python";
@@ -19,8 +20,11 @@ function run(...args) {
   return execFileSync(python, [launcher, ...args], { cwd: repoRoot, encoding: "utf8", timeout: 120_000 });
 }
 
-export function stopInstance(dir) {
-  return run("stop", "--dir", dir);
+// Asynchronous, so this process stays free to reap the launcher it started while `stop` waits for it to exit.
+export async function stopInstance(dir) {
+  const { stdout } = await promisify(execFile)(python, [launcher, "stop", "--dir", dir],
+    { cwd: repoRoot, encoding: "utf8", timeout: 120_000 });
+  return stdout;
 }
 
 // A fresh instance in its own run-<uuid> directory; resolves with its READY fields once seeded.
@@ -36,8 +40,8 @@ export function startInstance({ unclaimed = false } = {}) {
     const fail = (reason) => {
       clearTimeout(timer);
       child.kill();
-      try { stopInstance(dir); } catch { /* the launcher removes its own directory on a failed start */ }
-      reject(new Error(`${reason}\n${output.slice(-3000)}`));
+      // The launcher removes its own directory on a failed start; this covers one that hung instead.
+      stopInstance(dir).catch(() => {}).finally(() => reject(new Error(`${reason}\n${output.slice(-3000)}`)));
     };
     const timer = setTimeout(() => fail("the instance was not ready in time"), START_MS);
     const read = (chunk) => {

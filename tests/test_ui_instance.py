@@ -8,6 +8,7 @@ import importlib.util
 import json
 import socket
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -95,3 +96,11 @@ def test_stop_is_repeatable_and_deletes_only_instance_directories(tmp_path):
     assert ui.stop(owned) == 0
     assert not owned.exists()
     assert ui.stop(owned) == 0
+
+
+def test_a_zombie_or_vanished_process_counts_as_stopped():
+    # On Linux a killed launcher stays a zombie until the test runner that started it reaps it.
+    psutil = pytest.importorskip("psutil")
+    assert ui.exited(Mock(status=Mock(return_value=psutil.STATUS_ZOMBIE)))
+    assert ui.exited(Mock(status=Mock(side_effect=psutil.NoSuchProcess(1))))
+    assert not ui.exited(Mock(status=Mock(return_value=psutil.STATUS_RUNNING)))

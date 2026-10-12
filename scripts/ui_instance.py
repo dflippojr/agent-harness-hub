@@ -295,9 +295,19 @@ def kill_recorded(handle: dict) -> bool:
         with contextlib.suppress(psutil.NoSuchProcess):
             p.kill()
     _, alive = psutil.wait_procs(procs, timeout=15)
+    alive = [p for p in alive if not exited(p)]
     for p in alive:
         print(f"process {p.pid} is still running", file=sys.stderr)
     return not alive
+
+
+def exited(proc) -> bool:
+    """Gone, or a zombie: it has exited and only waits for its parent (the test runner, say) to reap it."""
+    import psutil
+    try:
+        return proc.status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
 
 
 def stop(root: Path) -> int:
