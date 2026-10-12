@@ -1,6 +1,7 @@
 """Exercise runner policy with synthetic contexts; never contact or alter a runner."""
 
 import copy
+import ctypes
 import json
 import os
 import shutil
@@ -15,6 +16,10 @@ INSTALLER = ROOT / "ops/github/install-runner.ps1"
 REPO = "dflippojr/agent-harness-hub"
 POWERSHELL = shutil.which("pwsh") or (shutil.which("powershell") if os.name == "nt" else None)
 pytestmark = pytest.mark.skipif(POWERSHELL is None, reason="runner scripts require PowerShell")
+# The installer refuses an elevated token. Hosted Windows CI runners are elevated, so there the installer tests
+# check that refusal instead of the mocked installation.
+ELEVATED = os.name == "nt" and bool(ctypes.windll.shell32.IsUserAnAdmin())
+needs_standard_user = pytest.mark.skipif(ELEVATED, reason="installer refuses an elevated token")
 
 
 def _process_env():
@@ -239,6 +244,7 @@ function Get-ScheduledTask { param($TaskName) [PSCustomObject]@{ TaskName = $Tas
 
 
 @pytest.mark.skipif(os.name != "nt", reason="installer uses Windows identity and config.cmd")
+@needs_standard_user
 def test_installer_sets_hook_ephemeral_registration_and_limited_task(mock_installation):
     execute, install_dir, hook_dir, env = mock_installation
     result = execute()
@@ -265,6 +271,7 @@ def test_installer_sets_hook_ephemeral_registration_and_limited_task(mock_instal
 
 
 @pytest.mark.skipif(os.name != "nt", reason="installer uses Windows identity and config.cmd")
+@needs_standard_user
 @pytest.mark.parametrize(
     ("options", "message"),
     [
@@ -280,3 +287,15 @@ def test_installer_refuses_unsafe_setup_without_starting_a_task(mock_installatio
     assert message in result.stderr
     assert not Path(env["INSTALL_TEST_TASK"]).exists()
     assert not Path(env["INSTALL_TEST_STARTED"]).exists()
+
+
+@pytest.mark.skipif(not ELEVATED, reason="needs an elevated Windows token")
+def test_installer_refuses_elevated_token_without_installing(mock_installation):
+    execute, install_dir, hook_dir, env = mock_installation
+    result = execute()
+    assert result.returncode != 0
+    assert "non-administrator" in result.stderr
+    assert not install_dir.exists()
+    assert not hook_dir.exists()
+    assert not Path(env["INSTALL_TEST_LOG"]).exists()
+    assert not Path(env["INSTALL_TEST_TASK"]).exists()
