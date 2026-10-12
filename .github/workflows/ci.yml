@@ -5,7 +5,7 @@ name: CI
 #   test     - the unit suite on Linux and Windows (the Hub runs on the daemon host, which can be either)
 #   e2e      - a real Agent Harness daemon from a pinned dflippojr/agent-harness commit, claimed and read by the Hub
 #   package  - the wheel (with the static UI) and the Docker image build
-# SonarCloud is not wired in yet: it needs the SonarCloud project and the SONAR_TOKEN secret first.
+#   sonar    - SonarCloud analysis of the test job's coverage; the quality gate fails this check
 on:
   push:
     branches: [main]
@@ -70,6 +70,54 @@ jobs:
           name: coverage
           path: coverage.xml
           retention-days: 3
+
+  sonar:
+    # SonarCloud analysis of the `test` job's coverage. Automatic analysis is
+    # turned off in SonarCloud; this job is the analysis. It runs on the same
+    # Ubuntu image that uploads coverage.xml, so the absolute <source> paths in
+    # it resolve. -Dsonar.qualitygate.wait=true fails this check when the gate fails.
+    needs: test
+    runs-on: ubuntu-latest
+    # Forks have no secrets. Same-repository Dependabot PRs use the separate
+    # Dependabot secret store; they run the same scan when its token is set.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Check SonarCloud token availability
+        id: sonar-token
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          DEPENDABOT_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]' }}
+        run: |
+          if [ -n "$SONAR_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          elif [ "$DEPENDABOT_PR" = "true" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SonarCloud analysis was not performed: add repository Dependabot secret SONAR_TOKEN, then rerun this PR workflow."
+            echo "SonarCloud analysis was not performed because the repository Dependabot secret SONAR_TOKEN is unavailable. Add that secret and rerun this PR workflow to publish analysis." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "SONAR_TOKEN is required for SonarCloud analysis." >&2
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: steps.sonar-token.outputs.available == 'true'
+        with:
+          # Full history so SonarCloud can blame lines and find the PR base.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download coverage
+        if: steps.sonar-token.outputs.available == 'true'
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: coverage
+      - name: Scan with SonarCloud
+        if: steps.sonar-token.outputs.available == 'true'
+        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.host.url=https://sonarcloud.io
+            -Dsonar.qualitygate.wait=true
 
   e2e:
     strategy:
