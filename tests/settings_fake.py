@@ -38,6 +38,7 @@ def register_settings(app, fake, owner):
     fake.previous = None
     fake.recovery = None
     fake.restart_polls = 0
+    fake.memory_installed = True
     fake.restart_requested = False
     fake.settings_calls = []
     fake.mode = "off"
@@ -132,6 +133,8 @@ def register_settings(app, fake, owner):
         if path == "backends/sample":
             fake.backend.update(body)
             return fake.backend
+        if path.startswith("memory") and not fake.memory_installed:
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
         if path == "memory":
             return {"enabled": True, "profile": fake.profile, "profile_max_chars": 4000,
                     "last_commit": {"head": "sample-commit", "path": "profile.md", "summary": "Synthetic",

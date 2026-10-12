@@ -118,3 +118,15 @@ def test_registry_sensitive_values_and_guard_fail_closed(claimed, fake_daemon):
     fake_daemon.values["queue.limit"] = fake_daemon.hub_token
     assert claimed.get("/api/settings/config").status_code == 500
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token, "provider-secret-sentinel")
+
+
+def test_absent_memory_module_is_a_state_not_a_fault(claimed, fake_daemon):
+    hub = claimed
+    assert hub.get("/api/settings/memory").json()["installed"] is True
+    fake_daemon.memory_installed = False
+    absent = hub.get("/api/settings/memory")
+    assert absent.status_code == 200
+    assert absent.json()["installed"] is False and absent.json()["enabled"] is False
+    assert "Not Found" not in absent.text
+    saved = write(hub, "PUT", "memory", {"content": "Synthetic", "summary": "Synthetic"})
+    assert saved.status_code == 404

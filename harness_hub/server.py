@@ -47,6 +47,7 @@ from .views import (
     health_view,
     limits_view,
     marketplace_slots,
+    memory_route_absent,
     module_view,
     normalize_origin,
     overview,
@@ -885,6 +886,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return await refused(key["token"])
         except DaemonUnreachable:
             return _error(503, "The daemon did not answer. Check its health before repeating a write.")
+        if operation == "memory" and reply.status == 404 and memory_route_absent(reply.body):
+            return JSONResponse(control_view(operation, {"enabled": False}, installed=False))
         if not reply.ok:
             return JSONResponse(settings_error(reply.body, reply.status), status_code=reply.status)
         if operation == "restart" and isinstance(reply.body, dict) and reply.body.get("accepted") is True:

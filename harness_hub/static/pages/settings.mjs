@@ -199,6 +199,14 @@ export function renderSettings(main) {
         }
       }],
       ["memory", "Memory agent profile", "harness memory show", (data, box) => {
+        if (data.installed === false) {
+          box.append(h("p", { class: "muted" }, "The memory library module (memory_library) is not installed or is " +
+            "switched off on this daemon, so there is no agent profile to edit. Turn on memory_library.enabled, or " +
+            "add the module with the daemon installer's --enable-modules option."),
+          command("harness config set memory_library.enabled=true"),
+          command("bash install/install.sh --enable-modules memory_library"));
+          return;
+        }
         const profile = h("textarea", { rows: 8, disabled: !data.enabled }); profile.value = data.profile;
         box.append(field("Agent profile", profile), h("p", { class: "muted" },
           data.enabled ? "Saving commits and pushes this profile to the memory library." : "Memory library is disabled."),
