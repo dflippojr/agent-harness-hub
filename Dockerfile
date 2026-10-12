@@ -5,13 +5,17 @@
 # owned by the daemon owner's account, so the Hub key never lives in the image or a volume.
 FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
+LABEL org.opencontainers.image.source="https://github.com/dflippojr/agent-harness-hub" \
+      org.opencontainers.image.description="Hub: the standalone admin console for an Agent Harness daemon" \
+      org.opencontainers.image.licenses="MIT"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /src
-COPY pyproject.toml README.md requirements.lock requirements-build.lock ./
+COPY pyproject.toml README.md LICENSE requirements.lock requirements-build.lock ./
 COPY harness_hub ./harness_hub
 RUN pip install --require-hashes -r requirements.lock -r requirements-build.lock \
     && pip install --no-deps --no-build-isolation . && rm -rf /src

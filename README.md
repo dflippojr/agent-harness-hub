@@ -191,6 +191,15 @@ uv pip compile pyproject.toml requirements-daemon.in --extra dev --universal --p
 
 Update exact versions in `pyproject.toml` and the daemon commit/requirements snapshot together when needed.
 
+### Release
+
+Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`. The tag must equal `v` + `harness_hub.__version__`.
+The workflow builds the wheel, sdist and image once and smoke-tests the image with `scripts/smoke-image.sh`. It
+then publishes the wheel and sdist to PyPI as `agent-harness-hub` through a trusted publisher (no API token), and
+pushes the image as `ghcr.io/dflippojr/agent-harness-hub:X.Y.Z` and `:latest` with the workflow's `GITHUB_TOKEN`.
+These are the names for the daemon installer's `HARNESS_HUB_PACKAGE` and `HARNESS_HUB_IMAGE` (agent-harness #547).
+The package is MIT licensed (`LICENSE`).
+
 ### Apps
 
 Apps shows the daemon inventory's connection state, last seen, scopes, origins,
