@@ -4,7 +4,9 @@
 other `Tailscale-*` identity headers. Any other program on this machine, or a container that reaches the host loopback,
 can reach the same listener and send the same headers. So, like the daemon (agent-harness `harness/tailscale_peer.py`),
 the Hub looks up who owns the other end of the TCP connection: the identity headers count only when that process is
-tailscaled, run from the Tailscale install directory. Otherwise they are removed before anything reads them.
+the running Tailscale Windows service and its executable is tailscaled in the Tailscale install directory. Otherwise
+they are removed before anything reads them. The install path alone is not enough: any local account can start that
+same binary (say, as a userspace proxy) and send whatever headers it likes through it.
 
 The check is implemented for Windows. Elsewhere the headers are removed unless the Hub runs with
 `--trust-unverified-identity-headers`, which trusts any local process that sends them.
@@ -43,6 +45,7 @@ FORWARDED_FOR = b"x-forwarded-for"
 CACHE_SIZE = 256
 CACHE_SECONDS = 5.0  # absolute, from the lookup: a closed connection's port can be reused by another process
 TAILSCALED = "tailscaled.exe"
+SERVICE = "Tailscale"
 SIGN_IN_PATH = "/api/session"
 
 
@@ -86,6 +89,15 @@ def process_exe(pid: int) -> str:
     return psutil.Process(pid).exe()
 
 
+def service_pid() -> int | None:
+    """The PID of the Tailscale Windows service, or None when it is not running. Needs only SERVICE_QUERY_STATUS,
+    which a non-admin account has; a missing service raises."""
+    import psutil
+
+    service = psutil.win_service_get(SERVICE)
+    return service.pid() if service.status() == "running" else None
+
+
 def local_addresses() -> set[str]:
     """Every address on this machine's interfaces, the node's Tailscale IPs among them."""
     import psutil
@@ -122,15 +134,16 @@ def is_tailscaled(exe: str, dirs: list[Path]) -> bool:
 
 
 class PeerCheck:
-    """Whether a connection's peer is tailscaled. Verdicts are cached per (client host, port) for a few seconds so
-    keep-alive requests do not repeat the lookup; a failed lookup is not cached and counts as not tailscaled. A
-    cached verdict can outlive the connection it was made for, so sign-in asks for a fresh lookup (`fresh`)."""
+    """Whether a connection's peer is the Tailscale service's tailscaled. Verdicts are cached per (client host, port)
+    for a few seconds so keep-alive requests do not repeat the lookup; a failed lookup is not cached and counts as not
+    tailscaled. A cached verdict can outlive the connection it was made for, so sign-in asks for a fresh lookup
+    (`fresh`)."""
 
-    def __init__(self, *, owner=connection_owner, exe=process_exe, dirs=install_dirs, platform_ok=supported,
-                 own_addresses=local_addresses, clock=time.monotonic, size: int = CACHE_SIZE,
+    def __init__(self, *, owner=connection_owner, exe=process_exe, dirs=install_dirs, service=service_pid,
+                 platform_ok=supported, own_addresses=local_addresses, clock=time.monotonic, size: int = CACHE_SIZE,
                  ttl: float = CACHE_SECONDS):
         self.owner, self.exe, self.dirs, self.platform_ok, self.clock = owner, exe, dirs, platform_ok, clock
-        self.own_addresses = own_addresses
+        self.own_addresses, self.service = own_addresses, service
         self.size, self.ttl = size, ttl
         self._cache: OrderedDict[tuple[str, int], tuple[float, bool]] = OrderedDict()
         self._lock = threading.Lock()
@@ -164,7 +177,7 @@ class PeerCheck:
         self.lookups += 1
         try:
             pid = self.owner(key, (str(server[0]), int(server[1])))
-            verdict = bool(pid) and is_tailscaled(self.exe(pid), self.dirs())
+            verdict = bool(pid) and pid == self.service() and is_tailscaled(self.exe(pid), self.dirs())
         except Exception as exc:  # noqa: BLE001 - any failure means the peer is not known to be tailscaled
             log.warning("could not identify the process behind a request with Tailscale identity headers: %s", exc)
             return False

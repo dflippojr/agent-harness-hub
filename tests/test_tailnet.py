@@ -27,11 +27,13 @@ class FakePeers:
         self.exe_path = exe
         self.windows = windows
         self.pid: int | None = 4242
+        self.service_pid: int | None = 4242  # the Tailscale service's process
         self.asked: list[tuple[tuple, tuple]] = []
 
     def check(self) -> PeerCheck:
         return PeerCheck(owner=self.owner, exe=lambda pid: self.exe_path, dirs=lambda: [INSTALL],
-                         platform_ok=lambda: self.windows, own_addresses=lambda: OWN_ADDRESSES)
+                         service=lambda: self.service_pid, platform_ok=lambda: self.windows,
+                         own_addresses=lambda: OWN_ADDRESSES)
 
     def owner(self, client, server):
         self.asked.append((client, server))
@@ -74,6 +76,21 @@ def test_tailscaled_must_run_from_the_install_directory():
     assert not is_tailscaled("", [INSTALL])
 
 
+def test_tailscaled_must_be_the_tailscale_service():
+    def check(service):
+        return PeerCheck(owner=lambda *a: 7, exe=lambda pid: TAILSCALED, dirs=lambda: [INSTALL], service=service,
+                         platform_ok=lambda: True)
+
+    def missing():
+        raise OSError("service 'Tailscale' does not exist")
+
+    peer, server = ("127.0.0.1", 50000), ("127.0.0.1", 8120)
+    assert check(lambda: 7).verify(peer, server) is True
+    assert check(lambda: 8).verify(peer, server) is False  # the right binary, run by someone else
+    assert check(lambda: None).verify(peer, server) is False  # service stopped
+    assert check(missing).verify(peer, server) is False  # missing, or the query was refused
+
+
 def test_peer_verdicts_are_cached_briefly_and_failures_are_not():
     now = [0.0]
     calls = []
@@ -84,8 +101,8 @@ def test_peer_verdicts_are_cached_briefly_and_failures_are_not():
             raise OSError("access denied")
         return 7
 
-    check = PeerCheck(owner=owner, exe=lambda pid: TAILSCALED, dirs=lambda: [INSTALL], platform_ok=lambda: True,
-                      clock=lambda: now[0])
+    check = PeerCheck(owner=owner, exe=lambda pid: TAILSCALED, dirs=lambda: [INSTALL], service=lambda: 7,
+                      platform_ok=lambda: True, clock=lambda: now[0])
     peer, server = ("127.0.0.1", 50000), ("127.0.0.1", 8120)
     assert check.verify(peer, server) is False  # the failed lookup counts as not tailscaled, uncached
     assert check.verify(peer, server) is True
@@ -98,7 +115,7 @@ def test_peer_verdicts_are_cached_briefly_and_failures_are_not():
 def test_sign_in_never_uses_a_cached_verdict():
     calls = []
     check = PeerCheck(owner=lambda client, server: calls.append(client) or 7, exe=lambda pid: TAILSCALED,
-                      dirs=lambda: [INSTALL], platform_ok=lambda: True, clock=lambda: 0.0)
+                      dirs=lambda: [INSTALL], service=lambda: 7, platform_ok=lambda: True, clock=lambda: 0.0)
     peer, server = ("127.0.0.1", 50000), ("127.0.0.1", 8120)
     assert check.verify(peer, server) is True and check.verify(peer, server) is True and len(calls) == 1
     assert check.verify(peer, server, fresh=True) is True and len(calls) == 2
@@ -255,6 +272,15 @@ def test_forged_headers_from_another_local_process_are_ignored(make_hub, fake_da
     response = tailnet_sign_in(hub)
     assert response.status_code == 401 and "tailscaled" in response.json()["detail"]
     assert hub.get("/api/overview").status_code == 401
+
+
+def test_a_tailscaled_that_is_not_the_service_signs_no_one_in(tailnet_hub, peers):
+    # Any local account can run the installed tailscaled.exe as a userspace proxy and forge headers through it.
+    peers.service_pid = 5150
+    assert tailnet_hub.get("/api/session", headers=identity()).json()["tailnet_login"] is None
+    response = tailnet_sign_in(tailnet_hub)
+    assert response.status_code == 401 and "set-cookie" not in response.headers
+    assert tailnet_hub.get("/api/overview").status_code == 401
 
 
 def test_forwarded_headers_never_make_a_peer_trusted(make_hub):
