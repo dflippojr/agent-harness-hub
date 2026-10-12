@@ -59,6 +59,7 @@ def test_release_publishes_on_version_tags_with_pinned_actions():
     actions = re.findall(r"uses: (\S+)", release)
     assert actions and all(
         re.fullmatch(r"(actions/[a-z-]+|pypa/gh-action-pypi-publish)@[a-f0-9]{40}", action) for action in actions)
+    assert "actions/attest-build-provenance@" in release
     assert release.count("persist-credentials: false") == sum(a.startswith("actions/checkout@") for a in actions)
     assert '"$TAG" != "v$version"' in release and "harness_hub.__version__" in release
     assert "--require-hashes -r requirements-build.lock" in release
@@ -70,6 +71,26 @@ def test_release_publishes_on_version_tags_with_pinned_actions():
     assert "PYPI_API_TOKEN" not in release and "secrets." not in release.replace("secrets.GITHUB_TOKEN", "")
 
 
+def test_release_refuses_commits_off_main_and_moves_latest_only_forward():
+    jobs = _jobs((ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"))
+    build, ghcr = jobs["build"], jobs["ghcr"]
+    assert "fetch-depth: 0" in build
+    assert 'git merge-base --is-ancestor "$GITHUB_SHA" origin/main' in build
+    assert build.index("--is-ancestor") < build.index("python -m build")
+    assert "git tag -l 'v*' --sort=-v:refname" in build and 'if [[ "$TAG" == "$highest" ]]' in build
+    assert "LATEST: ${{ needs.build.outputs.latest }}" in ghcr
+    latest_push = ghcr.index('docker push "$IMAGE:latest"')
+    assert ghcr.rindex('if [[ "$LATEST" == "true" ]]', 0, latest_push) > ghcr.index('docker push "$IMAGE:$VERSION"')
+
+
+def test_release_attests_the_pushed_image_digest():
+    ghcr = _jobs((ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"))["ghcr"]
+    assert "subject-name: ${{ env.IMAGE }}" in ghcr
+    assert "subject-digest: ${{ steps.push.outputs.digest }}" in ghcr
+    assert "push-to-registry: true" in ghcr
+    assert ghcr.index("actions/attest-build-provenance@") > ghcr.index('docker push "$IMAGE:$VERSION"')
+
+
 def test_release_grants_publish_permissions_only_to_the_publishing_jobs():
     release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     header = release.split("\njobs:\n", 1)[0]
@@ -79,11 +100,14 @@ def test_release_grants_publish_permissions_only_to_the_publishing_jobs():
     assert "permissions:" not in jobs["build"] and "docker push" not in jobs["build"]
     assert re.search(r"permissions:\n      id-token: write\n    steps:", jobs["pypi"])
     assert "name: pypi" in jobs["pypi"] and "pypa/gh-action-pypi-publish@" in jobs["pypi"]
-    assert re.search(r"permissions:\n      packages: write\n    steps:", jobs["ghcr"])
-    assert "needs: [build, pypi]" in jobs["ghcr"]
+    assert re.search(
+        r"permissions:\n      attestations: write\n      id-token: write\n      packages: write\n    steps:", jobs["ghcr"])
+    assert "name: ghcr" in jobs["ghcr"] and "needs: [build, pypi]" in jobs["ghcr"]
     for job_id, job in jobs.items():
-        assert ("id-token" in job) == (job_id == "pypi")
+        assert ("id-token" in job) == (job_id in {"pypi", "ghcr"})
         assert ("packages:" in job) == (job_id == "ghcr")
+        assert ("attestations:" in job) == (job_id == "ghcr")
+        assert ("environment:" in job) == (job_id in {"pypi", "ghcr"})
         assert "python -m build" not in job or job_id == "build"
         assert "docker build" not in job or job_id == "build"
 
