@@ -127,7 +127,8 @@ test("elevated scopes keep Approve disabled until the separate acknowledgement i
   const box = card(page, "pr-e");
   await expect(box.locator('[data-scope="approvals"] .pill')).toHaveText("elevated");
   await expect(box.locator('[data-scope="approvals"] .disclosure-text'))
-    .toHaveText("This app can **approve or deny tool calls** in its own tasks.");
+    .toHaveText("This app can approve or deny tool calls in its own tasks.");
+  await expect(box.locator('[data-scope="approvals"] .disclosure-text strong')).toHaveText("approve or deny tool calls");
   await expect(box.getByText("harness pairing-requests approve pr-e --match <code> --acknowledge-elevated", { exact: true })).toBeVisible();
   await box.getByLabel("Match code the app shows").fill("482913");
   const approve = box.getByRole("button", { name: /^Approve/ });
@@ -147,9 +148,22 @@ test("disclosure text and names render as text, never as HTML", async ({ page })
   const { errors } = await mount(page, [request("pr-x", { name: markup, origin: "", browser: false,
     disclosures: [{ scope: "sessions", tier: "standard", text: markup }] })]);
   await expect(card(page, "pr-x").locator(".disclosure-text")).toHaveText(markup);
+  await expect(card(page, "pr-x").locator(".disclosure-text strong")).toHaveCount(0);
   await expect(card(page, "pr-x").locator("h3")).toHaveText(markup + " · pr-x");
   await expect(card(page, "pr-x")).toContainText("native app");
   await expect(page.locator("main img, main script")).toHaveCount(0);
+  expect(await page.evaluate(() => window.injected)).toBeUndefined();
+  expect(errors).toEqual([]);
+});
+
+test("only **pairs** in disclosures become bold, and markup inside them stays text", async ({ page }) => {
+  const markup = '<img src=x onerror="window.injected=1">';
+  const { errors } = await mount(page, [request("pr-b", { disclosures: [{ scope: "sessions", tier: "standard",
+    text: "Plain **" + markup + "** and *single* and ** unmatched" }] })]);
+  const text = card(page, "pr-b").locator(".disclosure-text");
+  await expect(text).toHaveText("Plain " + markup + " and *single* and ** unmatched");
+  await expect(text.locator("strong")).toHaveText(markup);
+  await expect(page.locator("main img")).toHaveCount(0);
   expect(await page.evaluate(() => window.injected)).toBeUndefined();
   expect(errors).toEqual([]);
 });
@@ -281,5 +295,22 @@ test("a daemon confirmation warning appears on Pairing requests after a poll", a
   await expect(page.getByRole("alert")).toHaveText(warning);
   expect(await page.locator("main").evaluate(el => el.outerHTML.includes("482913"))).toBe(false);
   expect(writes).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test("a refused approve below the fold brings the message into view and focuses it", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const rows = ["pr-1", "pr-2", "pr-3", "pr-4", "pr-5", "pr-6"].map(id => request(id));
+  const { errors } = await mount(page, rows, { answer: (id, action, body) => body.match === "000000" ?
+    { status: 400, json: { detail: "the match code does not match the one the App shows",
+      error: { code: "match_mismatch" } } } : null });
+  const box = card(page, "pr-6");
+  await box.scrollIntoViewIfNeeded();
+  await box.getByLabel("Match code the app shows").fill("000000");
+  await box.getByRole("button", { name: /^Approve/ }).click();
+  const note = page.getByText("the match code does not match the one the App shows");
+  await expect(note).toBeFocused();
+  await expect(note).toBeInViewport();
+  expect(await page.evaluate(() => document.activeElement !== document.body)).toBe(true);
   expect(errors).toEqual([]);
 });

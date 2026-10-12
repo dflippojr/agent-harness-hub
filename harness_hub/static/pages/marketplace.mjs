@@ -3,7 +3,7 @@
 // only image shown is an inline one the server already checked. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { clear, command, h, when } from "../lib/dom.mjs";
+import { clear, command, emphasis, h, when } from "../lib/dom.mjs";
 import { pairingRecovery } from "../lib/pairing.mjs";
 
 const POLL_MS = 5000;
@@ -156,8 +156,8 @@ export function renderMarketplace(main) {
     return h("ul", { class: "disclosures" }, items.map((item) => h("li", { "data-scope": item.scope },
       h("p", { class: "disclosure-head" }, h("span", { class: "pill " + (item.tier === "elevated" ? "bad" : "off") },
         item.tier), " ", h("code", {}, item.scope)),
-      h("p", { class: "disclosure-text" }, item.text || "The Hub has no description for this scope. " +
-        "The daemon's description appears once the slot is armed."),
+      h("p", { class: "disclosure-text" }, emphasis(item.text || "The Hub has no description for this scope. " +
+        "The daemon's description appears once the slot is armed.")),
       item.justification ? h("p", { class: "setting-meta" }, "Publisher's reason (not verified): " +
         item.justification) : null)));
   }

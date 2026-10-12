@@ -129,7 +129,9 @@ test("elevated scopes need the acknowledgement and a browser app needs its exact
   const consent = page.locator(".market-consent");
   await expect(consent).toContainText("Claims and redemption must use the chosen exact origin");
   await expect(consent.locator('[data-scope="homelab"] .pill')).toHaveText("elevated");
-  await expect(consent.locator('[data-scope="homelab"] .disclosure-text')).toHaveText(HOMELAB.text);
+  await expect(consent.locator('[data-scope="homelab"] .disclosure-text'))
+    .toHaveText("This app's tasks can read your homelab services' logs.");
+  await expect(consent.locator('[data-scope="homelab"] .disclosure-text strong')).toHaveText("read your homelab services' logs");
   const approve = consent.getByRole("button", { name: "Approve" });
   await expect(approve).toBeDisabled();
   await consent.getByRole("checkbox").check();
