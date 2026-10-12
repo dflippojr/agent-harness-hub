@@ -199,7 +199,7 @@ function Get-FileHash { param($Algorithm, $LiteralPath)
 }
 function Expand-Archive { param($LiteralPath, $DestinationPath, [switch]$Force)
     Set-Content -LiteralPath (Join-Path $DestinationPath '.env') -Value @(
-        'SYNTHETIC_KEY=preserved', 'ACTIONS_RUNNER_HOOK_JOB_STARTED=old-hook')
+        'SYNTHETIC_KEY=stale', 'ACTIONS_RUNNER_HOOK_JOB_STARTED=old-hook')
     Set-Content -LiteralPath (Join-Path $DestinationPath 'config.cmd') -Value @(
         '@echo off', 'echo %* > "%INSTALL_TEST_LOG%"', 'exit /b %INSTALL_TEST_EXIT%')
 }
@@ -245,8 +245,11 @@ function Get-ScheduledTask { param($TaskName) [PSCustomObject]@{ TaskName = $Tas
 
 @pytest.mark.skipif(os.name != "nt", reason="installer uses Windows identity and config.cmd")
 @needs_standard_user
-def test_installer_sets_hook_ephemeral_registration_and_limited_task(mock_installation):
+@pytest.mark.parametrize("existing_empty_dir", [False, True])
+def test_installer_sets_hook_ephemeral_registration_and_limited_task(mock_installation, existing_empty_dir):
     execute, install_dir, hook_dir, env = mock_installation
+    if existing_empty_dir:
+        install_dir.mkdir()
     result = execute()
     assert result.returncode == 0, result.stderr
     args = Path(env["INSTALL_TEST_LOG"]).read_text()
@@ -258,10 +261,8 @@ def test_installer_sets_hook_ephemeral_registration_and_limited_task(mock_instal
     assert installed_hook.read_bytes() == HOOK.read_bytes()
     env_bytes = (install_dir / ".env").read_bytes()
     assert not env_bytes.startswith(b"\xef\xbb\xbf")
-    assert env_bytes.decode("utf-8").splitlines() == [
-        "SYNTHETIC_KEY=preserved",
-        f"ACTIONS_RUNNER_HOOK_JOB_STARTED={installed_hook}",
-    ]
+    # The archive's stale .env keys are dropped: the file holds only the hook line.
+    assert env_bytes.decode("utf-8").splitlines() == [f"ACTIONS_RUNNER_HOOK_JOB_STARTED={installed_hook}"]
     task = json.loads(Path(env["INSTALL_TEST_TASK"]).read_text(encoding="utf-8-sig"))
     assert task["Principal"]["RunLevel"] == "Limited"
     assert task["Principal"]["LogonType"] == "Interactive"
@@ -285,6 +286,24 @@ def test_installer_refuses_unsafe_setup_without_starting_a_task(mock_installatio
     result = execute(**options)
     assert result.returncode != 0
     assert message in result.stderr
+    assert not Path(env["INSTALL_TEST_TASK"]).exists()
+    assert not Path(env["INSTALL_TEST_STARTED"]).exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="installer uses Windows identity and config.cmd")
+@needs_standard_user
+def test_installer_refuses_non_empty_install_dir_without_touching_it(mock_installation):
+    execute, install_dir, hook_dir, env = mock_installation
+    leftover = install_dir / "_work" / "stale.txt"
+    leftover.parent.mkdir(parents=True)
+    leftover.write_text("left by a previous job", encoding="utf-8")
+    result = execute()
+    assert result.returncode != 0
+    assert "not empty" in result.stderr
+    assert leftover.read_text(encoding="utf-8") == "left by a previous job"
+    assert not (install_dir / ".env").exists()
+    assert not hook_dir.exists()
+    assert not Path(env["INSTALL_TEST_LOG"]).exists()
     assert not Path(env["INSTALL_TEST_TASK"]).exists()
     assert not Path(env["INSTALL_TEST_STARTED"]).exists()
 

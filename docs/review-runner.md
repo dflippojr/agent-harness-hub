@@ -42,9 +42,10 @@ a runner without this hook in its `.env` runs any job that requests its label.
    other local users must not be able to replace the hook.
 2. Copy these scripts from the trusted default branch. Use a new, empty runner
    directory and a separate hook directory outside the checkout. The installer
-   verifies the pinned runner archive's SHA-256 and refuses `.runner` files that
-   indicate an existing registration. It also refuses an elevated administrator
-   token; the account must still be a standard account even when not elevated.
+   refuses a runner directory that is not empty, including one with a `.runner`
+   file from an earlier registration. It verifies the pinned runner archive's
+   SHA-256 and refuses an elevated administrator token; the account must still
+   be a standard account even when not elevated.
 3. Obtain a fresh repository registration token through an authorized operator.
    Supply it in memory to the account running the installer; never save it in
    source, shell history, task arguments, or logs. For example, where that account
@@ -59,9 +60,10 @@ a runner without this hook in its `.env` runs any job that requests its label.
    Defaults are `D:\Agents\agent-harness-hub-review`, runner name and label
    `agent-harness-hub-review`, and task `AgentHarnessHub-GitHubRunner-Review`.
    The installer copies the hook to `D:\Agents\agent-harness-hub-review-hooks`
-   and writes its absolute path as `ACTIONS_RUNNER_HOOK_JOB_STARTED` in the
-   runner's `.env`. Other `.env` keys are preserved. Custom `-InstallDir`,
-   `-HookDir`, `-Name`, and `-TaskName` allow separate pool members.
+   and writes the runner's `.env` with one line: `ACTIONS_RUNNER_HOOK_JOB_STARTED`
+   set to the hook's absolute path. Custom `-InstallDir`, `-HookDir`, `-Name`,
+   and `-TaskName` allow separate pool members; each `-InstallDir` must be new
+   or empty.
 4. The hidden task starts immediately and at logon under this same account,
    with `RunLevel Limited` and an interactive logon. It does not install a
    system service or run as SYSTEM. The account must remain signed in.

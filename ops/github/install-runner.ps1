@@ -9,7 +9,8 @@
   hook is installed outside the runner directory and the checkout. Registration
   accepts one job; the owner preserves diagnostics, cleans the work directory,
   and provisions a fresh registration before the next review. See
-  docs/review-runner.md. This script refuses an already configured runner.
+  docs/review-runner.md. This script refuses a non-empty install directory and
+  an already configured runner.
 
 .EXAMPLE
   $token = gh api -X POST repos/dflippojr/agent-harness-hub/actions/runners/registration-token --jq .token
@@ -49,6 +50,9 @@ $url = "https://github.com/actions/runner/releases/download/v$Version/actions-ru
 if (Test-Path -LiteralPath (Join-Path $InstallDir '.runner')) {
     throw "a runner is already configured in $InstallDir"
 }
+if ((Test-Path -LiteralPath $InstallDir) -and (Get-ChildItem -LiteralPath $InstallDir -Force | Select-Object -First 1)) {
+    throw "install directory is not empty: $InstallDir; use a new, empty directory"
+}
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 if (-not (Test-Path -LiteralPath $zip)) { Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $zip }
 $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
@@ -59,12 +63,8 @@ New-Item -ItemType Directory -Force $HookDir | Out-Null
 $hook = Join-Path $HookDir 'review-job-started.ps1'
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'review-job-started.ps1') -Destination $hook -Force
 $runnerEnv = Join-Path $InstallDir '.env'
-$envLines = @()
-if (Test-Path -LiteralPath $runnerEnv) {
-    $envLines = @(Get-Content -LiteralPath $runnerEnv | Where-Object { $_ -notmatch '^ACTIONS_RUNNER_HOOK_JOB_STARTED=' })
-}
 # UTF-8 without a BOM: the runner reads .env as key=value, not PowerShell.
-[IO.File]::WriteAllLines($runnerEnv, [string[]]($envLines + "ACTIONS_RUNNER_HOOK_JOB_STARTED=$hook"),
+[IO.File]::WriteAllLines($runnerEnv, [string[]]@("ACTIONS_RUNNER_HOOK_JOB_STARTED=$hook"),
     (New-Object Text.UTF8Encoding($false)))
 
 Push-Location $InstallDir
