@@ -20,6 +20,9 @@ MESSAGES = {
     "unclaimed": "This Hub has not claimed the daemon yet.",
     "pending": "Waiting for the owner to approve this claim on the daemon host.",
     "claimed": "This Hub is the daemon's Hub.",
+    "persisting": "The daemon issued this Hub's key, but private state storage could not save it. "
+                  "Saving will be retried. Keep the Hub running and repair storage on the host; "
+                  "if the Hub exits before saving, release it on the daemon host and claim again.",
     "refused": "This daemon already has a Hub. Only the owner can release it, on the daemon host.",
     "expired": "The claim expired before it was approved. Start a new claim.",
     "denied": "The owner denied this claim on the daemon host. Start a new claim to try again.",

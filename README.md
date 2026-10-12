@@ -99,6 +99,35 @@ When the daemon already has a Hub, the claim is refused (409) and the Hub shows 
 `harness hub release --confirm`. An expired or denied claim shows that, with a button to start a new one. If the Hub
 is released later, the Hub notices that its key no longer works, forgets it and offers a new claim.
 
+Stopping a waiting claim is ordered with redemption: if an in-flight redemption succeeds, the Hub keeps its key
+and reports **Claimed**. If stopping returns **Unclaimed**, that request cannot later change the Hub's claim state.
+
+If the daemon issues the one-time Hub key but the private state write fails, Overview shows **Waiting to save key**.
+The Hub keeps that credential privately in memory and retries saving it without redeeming again. It offers no
+claim replacement or cancellation while saving is pending, and enables owner operations only after the save
+succeeds. Keep the Hub process running and repair free space, write permissions, or the state directory's storage.
+Saving retries with exponential backoff from 2 seconds to at most 60 seconds; an explicit claim action wakes the
+retry and resets the delay. Storage failures log at most once a minute. Claim writes run outside the event loop,
+and reads continue serving the last saved snapshot while a disk write is blocked. Terminal results such as
+Denied are retained in memory and retried locally too; they never cause another redemption.
+
+Claim actions wait at most 15 seconds for the claim lock, then return a retryable HTTP 503 with the current state.
+Starting a new claim also has a 15-second total network deadline. Redemption uses the daemon client's 5-second
+connect and 10-second per-phase timeouts, without a total cancellation deadline: a trickling response can last
+longer, and cancelling it can lose the one-time key. Stop waiting leaves that operation intact if its wait expires.
+Shutdown waits up to 15 seconds; a shielded cleanup task continues draining redemption, attempts a final save,
+and only then closes the daemon client. Cancelling shutdown does not cancel that task. Cleanup requires the
+process and event loop to remain running; a forced exit cannot guarantee delivery of a daemon's minted key.
+If persistence still fails before the process exits (or the process crashes), the credential in memory is lost:
+on the daemon host run
+`harness hub release --confirm`, repair the Hub's state storage, restart the Hub, and start and approve a new claim.
+
+Private state writes fsync the temporary file before replacement. POSIX also fsyncs the parent directory after
+the rename where the filesystem supports directory fsync; other directory sync failures leave the result pending
+for retry. Windows uses MoveFileExW with REPLACE_EXISTING and WRITE_THROUGH after the file fsync. Windows does not
+expose the same directory-fsync guarantee, and same-volume rename metadata durability depends on the filesystem
+and storage hardware; forced power loss can still require host recovery.
+
 ## Modules
 
 Modules shows each daemon module's running presence, saved switch and scalar status detail, including status errors.

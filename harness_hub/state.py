@@ -8,6 +8,7 @@ withholds anything that still looks like a credential (`guard.py`).
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import tempfile
@@ -32,8 +33,32 @@ def prepare_dir(path: Path) -> Path:
     return path
 
 
+def _replace_private(source: str, path: Path) -> None:
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        move = ctypes.WinDLL("kernel32", use_last_error=True).MoveFileExW
+        move.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+        move.restype = wintypes.BOOL
+        # REPLACE_EXISTING | WRITE_THROUGH; the file itself was already fsynced.
+        if not move(source, str(path), 0x1 | 0x8):
+            raise ctypes.WinError(ctypes.get_last_error())
+    else:
+        os.replace(source, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            try:
+                os.fsync(directory)
+            except OSError as exc:
+                if exc.errno not in (errno.EINVAL, errno.ENOTSUP):
+                    raise
+        finally:
+            os.close(directory)
+
+
 def write_private(path: Path, text: str) -> None:
-    """Atomically replace `path` with `text`, readable by this account only."""
+    """Replace private state after fsyncing the file and, where supported, its directory."""
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -46,7 +71,7 @@ def write_private(path: Path, text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, path)
+        _replace_private(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
@@ -105,6 +130,7 @@ class StateStore:
         self.dir = prepare_dir(state_dir)
         self.path = self.dir / STATE_FILE
         self._lock = threading.Lock()
+        self._write_lock = threading.Lock()
         data = read_json(self.path, {})
         self._data: dict = data if isinstance(data, dict) else {}
 
@@ -114,13 +140,18 @@ class StateStore:
             return dict(value) if isinstance(value, dict) else None
 
     def update(self, **values: dict | None) -> None:
-        with self._lock:
+        # Disk I/O serializes writers, but never blocks readers of the last saved snapshot.
+        with self._write_lock:
+            with self._lock:
+                candidate = dict(self._data)
             for name, value in values.items():
                 if value is None:
-                    self._data.pop(name, None)
+                    candidate.pop(name, None)
                 else:
-                    self._data[name] = value
-            write_private(self.path, json.dumps(self._data, indent=2) + "\n")
+                    candidate[name] = dict(value)
+            write_private(self.path, json.dumps(candidate, indent=2) + "\n")
+            with self._lock:
+                self._data = candidate
 
     def secrets(self) -> list[str]:
         """Every secret this store holds, for the response guard."""

@@ -1,0 +1,178 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { renderOverview } from "../harness_hub/static/pages/overview.mjs";
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+class Element {
+  constructor(tag) {
+    this.tag = tag;
+    this.children = [];
+    this.listeners = new Map();
+    this.attrs = new Map();
+    this.text = "";
+  }
+  append(child) { this.children.push(child); }
+  replaceChildren() { this.children = []; this.text = ""; }
+  setAttribute(name, value) { this.attrs.set(name, value); }
+  addEventListener(name, fn) { this.listeners.set(name, fn); }
+  set textContent(value) { this.text = value; this.children = []; }
+  get textContent() { return this.text + this.children.map((child) => child.textContent).join(""); }
+}
+
+function mount(t, fetcher) {
+  const names = ["document", "Node", "sessionStorage", "fetch", "setTimeout", "clearTimeout"];
+  const originals = names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]);
+  t.after(() => {
+    for (const [name, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  });
+  const timers = new Map();
+  const calls = [];
+  let next = 0;
+  Object.assign(globalThis, {
+    Node: Element,
+    document: {
+      createElement: (tag) => new Element(tag),
+      createTextNode: (text) => Object.assign(new Element("text"), { text }),
+    },
+    sessionStorage: { getItem: () => null },
+    fetch: (url, options) => { calls.push({ url, method: options.method }); return fetcher(url, options); },
+    setTimeout: (callback, delay) => { const id = ++next; timers.set(id, { callback, delay }); return id; },
+    clearTimeout: (id) => timers.delete(id),
+  });
+  const main = new Element("main");
+  const stop = renderOverview(main);
+  const refresh = main.children[0].children[1].listeners.get("click");
+  t.after(stop);
+  return { main, stop, refresh, timers, calls };
+}
+
+const response = (data) => new Response(JSON.stringify(data), { status: 200 });
+const overview = (state = "unclaimed", restarting = false) => ({
+  reachable: false, restarting,
+  claim: { state, message: state, match_code: "123456", expires_at: 900, approve_command: "approve", release_command: "release" },
+});
+// A turn of the event loop drains promise continuations; no wall-clock waits or real timers.
+const settle = () => new Promise(setImmediate);
+
+for (const failure of [false, true]) {
+  test("Overview teardown during restart health " + (failure ? "rejection" : "success") + " cannot rearm polling", async (t) => {
+    const health = deferred(), entered = deferred();
+    const page = mount(t, (url) => {
+      if (url === "/api/overview") return Promise.resolve(response(overview("unclaimed", true)));
+      assert.equal(url, "/api/settings/health");
+      entered.resolve();
+      return health.promise;
+    });
+    await entered.promise;
+    const drawn = page.main.textContent;
+    page.stop();
+    if (failure) health.reject(new Error("offline"));
+    else health.resolve(response({ ok: true }));
+    await settle();
+    await page.refresh();
+    assert.equal(page.timers.size, 0);
+    assert.equal(page.main.textContent, drawn);
+    assert.deepEqual(page.calls.map((call) => call.url), ["/api/overview", "/api/settings/health"]);
+  });
+}
+
+for (const failure of [false, true]) {
+  test("Overview teardown during overview " + (failure ? "rejection" : "success") + " ignores the reply", async (t) => {
+    const read = deferred();
+    const page = mount(t, () => read.promise);
+    const drawn = page.main.textContent;
+    page.stop();
+    if (failure) read.reject(new Error("offline"));
+    else read.resolve(response(overview("pending", true)));
+    await settle();
+    assert.equal(page.main.textContent, drawn);
+    assert.equal(page.calls.length, 1);
+    assert.equal(page.timers.size, 0);
+  });
+}
+
+for (const [state, restarting, delay] of [
+  ["pending", false, 2000], ["persisting", false, 2000], ["claimed", false, 30000], ["unclaimed", true, 2000],
+]) {
+  test("Overview preserves mounted " + state + "/restart=" + restarting + " polling and retires callbacks", async (t) => {
+    const page = mount(t, (url) => Promise.resolve(response(url === "/api/overview" ? overview(state, restarting) : { ok: true })));
+    await settle();
+    assert.equal(page.timers.size, 1);
+    const [id, timer] = [...page.timers][0];
+    assert.equal(timer.delay, delay);
+    page.timers.delete(id);
+    await timer.callback();
+    assert.equal(page.timers.size, 1);
+    const retained = [...page.timers.values()][0].callback;
+    const calls = page.calls.length;
+    page.stop();
+    await retained();
+    await page.refresh();
+    assert.equal(page.calls.length, calls);
+    assert.equal(page.timers.size, 0);
+  });
+}
+
+test("Overview coalesces overlapping reloads and discards the superseded reply", async (t) => {
+  const read = deferred();
+  let reads = 0;
+  const page = mount(t, () => {
+    reads += 1;
+    if (reads === 2) return read.promise;
+    return Promise.resolve(response(overview(reads === 1 ? "unclaimed" : "claimed")));
+  });
+  await settle();
+  const [id, timer] = [...page.timers][0];
+  page.timers.delete(id);
+  const polling = timer.callback();
+  await page.refresh();
+  await page.refresh();
+  assert.equal(page.calls.length, 2);
+  assert.equal(page.timers.size, 0);
+  read.resolve(response(overview("pending", true)));
+  await polling;
+  await settle();
+  assert.deepEqual(page.calls.map((call) => call.url), ["/api/overview", "/api/overview", "/api/overview"]);
+  assert.equal(page.timers.size, 1);
+  assert.equal([...page.timers.values()][0].delay, 30000);
+  assert.match(page.main.textContent, /Claimed/);
+  assert.doesNotMatch(page.main.textContent, /Waiting for approval|Daemon restarting/);
+});
+
+test("Overview reload after Stop waiting supersedes the in-flight poll", async (t) => {
+  const read = deferred(), deletion = deferred();
+  let reads = 0;
+  const page = mount(t, (url, options) => {
+    if (options.method === "DELETE") return deletion.promise;
+    reads += 1;
+    return reads === 2 ? read.promise : Promise.resolve(response(overview(reads === 1 ? "pending" : "claimed")));
+  });
+  await settle();
+  function find(element) {
+    if (element.tag === "button" && element.textContent === "Stop waiting") return element;
+    return element.children.map(find).find(Boolean);
+  }
+  const button = find(page.main);
+  assert.ok(button);
+  const deleting = button.listeners.get("click")();
+  const [id, timer] = [...page.timers][0];
+  page.timers.delete(id);
+  const polling = timer.callback();
+  deletion.resolve(response({ state: "claimed" }));
+  await deleting;
+  assert.equal(page.calls.filter((call) => call.url === "/api/overview").length, 2);
+  read.resolve(response(overview("pending")));
+  await polling;
+  await settle();
+  assert.equal(page.timers.size, 1);
+  assert.match(page.main.textContent, /Claimed/);
+  assert.equal(page.calls.filter((call) => call.url === "/api/overview").length, 3);
+});

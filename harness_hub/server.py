@@ -138,7 +138,6 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             yield
         finally:
             await claims.stop()
-            await daemon.aclose()
 
     app = FastAPI(title="Hub", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None,
                   openapi_url=None)
@@ -238,7 +237,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     # A transient rejection must not destroy the owner's persistent key.
                     confirmation = await daemon.admin(key["token"])
                     if confirmation.status == 401:
-                        claims.released()
+                        await claims.released(key["token"])
                     else:
                         error = "the owner API rejected the key once; retained it pending confirmation"
                 elif discovery.ok and record.ok:
@@ -255,7 +254,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         """The daemon answered 401: drop the key only if a second read confirms it, then point to Overview."""
         confirmation = await daemon.admin(token)
         if confirmation.status == 401:
-            claims.released()
+            await claims.released(token)
         return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
 
     async def read_inventory(key: dict, shown) -> tuple[dict | None, str, str] | JSONResponse:
@@ -837,14 +836,17 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         try:
             await claims.start()
         except ClaimError as exc:
-            status = {"refused": 409, "rate_limited": 429, "claimed": 409}.get(exc.state, 502)
+            status = exc.status or {"refused": 409, "rate_limited": 429, "claimed": 409,
+                      "persisting": 503, "pending": 503}.get(exc.state, 502)
             return JSONResponse({"detail": str(exc), "claim": claim_view(claims)}, status_code=status)
         return JSONResponse(claim_view(claims), status_code=201)
 
     @app.delete("/api/claim")
     async def forget_claim():
-        if claims.state() != CLAIMED:
-            claims.forget()
+        try:
+            await claims.forget()
+        except ClaimError as exc:
+            return _error(503, str(exc), claim=claim_view(claims))
         return claim_view(claims)
 
     @app.get("/", include_in_schema=False)
@@ -853,6 +855,6 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
-    served = HostCheck(ResponseGuard(app, store.secrets), settings.allowed_hosts())
+    served = HostCheck(ResponseGuard(app, claims.secrets), settings.allowed_hosts())
     served.fastapi = app
     return served
