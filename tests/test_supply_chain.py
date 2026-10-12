@@ -100,8 +100,8 @@ def test_release_grants_publish_permissions_only_to_the_publishing_jobs():
     assert "permissions:" not in jobs["build"] and "docker push" not in jobs["build"]
     assert re.search(r"permissions:\n      id-token: write\n    steps:", jobs["pypi"])
     assert "name: pypi" in jobs["pypi"] and "pypa/gh-action-pypi-publish@" in jobs["pypi"]
-    assert re.search(
-        r"permissions:\n      attestations: write\n      id-token: write\n      packages: write\n    steps:", jobs["ghcr"])
+    ghcr_permissions = r"permissions:\n      attestations: write\n      id-token: write\n      packages: write\n"
+    assert re.search(ghcr_permissions + r"    steps:", jobs["ghcr"])
     assert "name: ghcr" in jobs["ghcr"] and "needs: [build, pypi]" in jobs["ghcr"]
     for job_id, job in jobs.items():
         assert ("id-token" in job) == (job_id in {"pypi", "ghcr"})
