@@ -98,8 +98,12 @@ the daemon accepts, with the same rules:
 - The node's `tailscale serve` config is part of that boundary: a raw TCP forward (`tailscale serve --tcp` or
   `--tls-terminated-tcp`) carries a client's own headers through the service unchanged. So at sign-in the Hub reads
   the serve config through the Tailscale CLI, foreground sessions and services included, and refuses tailnet sign-in
-  when any TCP handler forwards to the Hub's port, or when the config can't be read. Publish the Hub with serve's
-  HTTPS proxy (`tailscale serve --bg --https=443 http://127.0.0.1:<port>`), never a raw TCP forward.
+  when any TCP handler forwards to the Hub's port, or when the config can't be read. This is a best-effort check, not
+  an enforced boundary: it catches only a forward still in place when the sign-in request arrives. Anything able to
+  change this node's serve config (the Tailscale backend's user, local admins, a sandbox that can reach the
+  tailscaled pipe) can open a connection through a raw forward and remove the forward before sending the request.
+  Publish the Hub with serve's HTTPS proxy (`tailscale serve --bg --https=443 http://127.0.0.1:<port>`), never a
+  raw TCP forward.
 - tailscaled vouches for the tailnet node a request came from, and a program on this machine that opens the node's
   own serve address arrives as this node, which Tailscale resolves to the owner. So on a connection verified as
   tailscaled, and only there, the Hub reads the source address serve puts in `X-Forwarded-For` (serve replaces any

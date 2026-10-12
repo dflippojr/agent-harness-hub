@@ -23,7 +23,10 @@ tailscaled also carries bytes it never parses: a raw TCP forward in the node's s
 or `--tls-terminated-tcp`) passes a client's own `Tailscale-*` and `X-Forwarded-For` headers straight to the Hub from
 the service's process. Anything that may change the serve config (the backend's user, local admins) could add one, so
 sign-in reads the config through the LocalAPI (the `tailscale` CLI in the install directory) and refuses when any TCP
-handler forwards to the Hub's port, or when the config cannot be read.
+handler forwards to the Hub's port, or when the config cannot be read. This is best effort, not enforcement: it
+catches only a forward still in place when the sign-in request arrives. Whatever can change the serve config (the
+backend's user, local admins, a sandbox that can reach the tailscaled pipe) can open a connection through a raw
+forward and remove the forward before sending the request. The owner accepted that residual risk.
 
 A trusted login is still not the owner: `POST /api/session` accepts it only if the daemon lists it in
 `allowed_logins` (server.py).
