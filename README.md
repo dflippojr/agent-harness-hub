@@ -64,6 +64,7 @@ docker run -d --network host --mount type=bind,src="$HOME/.agent-harness-hub",ds
 | `--public-url` | none | the HTTPS URL browsers use, such as a `tailscale serve` address; allowed as a Host and makes cookies `Secure` |
 | `--allowed-host` | none | another exact `Host` header to answer (repeatable) |
 | `--name` | `Hub` | the name the daemon records for this Hub |
+| `--trust-unverified-identity-headers` | off | **unsafe**; outside Windows, trust `Tailscale-*` headers from any local process (see [Sign in](#sign-in)) |
 
 ## Sign in
 
@@ -81,7 +82,28 @@ The cookie alone cannot authorize requests: a second per-session value is kept i
 and sent in `X-Hub-Session`. Each new tab needs its own sign-in link. HTTPS uses a `__Host-hub_session` cookie
 with `Secure`, `HttpOnly`, `SameSite=Strict` and no Domain attribute.
 Proving you can read the Hub's owner-only state directory is the same proof the daemon uses for local callers.
-Sign-in from the owner's tailnet identity is tracked separately.
+
+### With your tailnet identity
+
+Through `tailscale serve`, the sign-in page also offers **Continue as `<your login>`**. This is the other owner proof
+the daemon accepts, with the same rules:
+
+- `tailscale serve` adds `Tailscale-User-Login`. The Hub trusts the `Tailscale-*` headers only when the process on the
+  other end of the TCP connection is `tailscaled.exe` from the Tailscale install directory (`Program Files\Tailscale`).
+  Headers from any other process, including a forged `tailscaled.exe` elsewhere, are removed before anything reads
+  them. `X-Forwarded-*` and `Forwarded` headers are never read.
+- The peer check is implemented for Windows only, like the daemon's. Elsewhere the headers are always removed unless
+  you start the Hub with `--trust-unverified-identity-headers`, the counterpart of the daemon's
+  `listen.trust_unverified_identity_headers`. That option trusts **any** local process (or container reaching the
+  host loopback) that sends the headers; use it only where no untrusted code can connect to the Hub's port.
+- The Hub signs the login in only if the daemon lists it in `allowed_logins` (`harness.local.yaml`), read from the
+  owner API discovery root on every attempt, compared exactly. That needs a claimed Hub and a daemon with Owner API
+  1.26 or later ([agent-harness #621](https://github.com/dflippojr/agent-harness/pull/621)). An empty list
+  (open-owner legacy mode) admits no tailnet login. Refused tailnet attempts do not count toward the sign-in link
+  throttle.
+
+The session is the same as a link's: twelve hours, an HttpOnly cookie plus a per-tab `X-Hub-Session` value. Sign-in
+links keep working, and remain the only way in before the Hub has claimed its daemon.
 
 ## First run: claiming the daemon
 

@@ -7,6 +7,10 @@ directory and prints a sign-in link carrying the code in its fragment, which the
 line or a Referer. The page posts the code once; the Hub answers with an HttpOnly, SameSite=Strict session cookie
 and a separate origin binding that the browser keeps in sessionStorage and sends as a header.
 Codes last ten minutes and work once. Sessions live in the server's memory and end when it restarts.
+
+The owner's tailnet identity is the other proof the daemon accepts: on a request that tailscaled forwarded
+(tailnet.py), the page can ask for a session with `{"method": "tailnet"}`, and the server grants it only for a login
+the daemon lists in `allowed_logins` (server.py).
 """
 
 from __future__ import annotations
@@ -78,10 +82,18 @@ class Sessions:
                 return None
             codes.remove(match)
             write_private(self.path, json.dumps(codes) + "\n")
-            session = secrets.token_urlsafe(32)
-            binding = secrets.token_urlsafe(32)
-            self._sessions[_digest(session)] = (now + SESSION_TTL_SECONDS, _digest(binding))
-            return session, binding
+            return self._start(now)
+
+    def create(self) -> tuple[str, str]:
+        """A session for a caller proved some other way (a tailnet login the daemon lists as the owner's)."""
+        with self._lock:
+            return self._start(self.clock())
+
+    def _start(self, now: float) -> tuple[str, str]:
+        session = secrets.token_urlsafe(32)
+        binding = secrets.token_urlsafe(32)
+        self._sessions[_digest(session)] = (now + SESSION_TTL_SECONDS, _digest(binding))
+        return session, binding
 
     def valid(self, session: str | None, binding: str | None = None) -> bool:
         if not session or not binding:

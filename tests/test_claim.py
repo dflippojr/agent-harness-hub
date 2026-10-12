@@ -36,7 +36,7 @@ def test_full_flow_claims_the_daemon_and_never_shows_a_secret(hub, fake_daemon):
 
     overview = hub.get("/api/overview").json()
     assert overview["reachable"] is True and overview["error"] == ""
-    assert overview["ownership"] == {"api_version": "1.24", "daemon_has_hub": True, "this_hub": True,
+    assert overview["ownership"] == {"api_version": "1.26", "daemon_has_hub": True, "this_hub": True,
                                      "record": {"name": "Hub", "kind": "native", "key_id": claimed["key_id"],
                                                 "claimed_at": fake_daemon.hub["claimed_at"]}}
     assert overview["daemon"]["release"] == "0.9.0"

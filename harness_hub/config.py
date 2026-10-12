@@ -53,6 +53,7 @@ class Settings:
     claim_name: str = "Hub"
     poll_seconds: float = 2.0
     extra_hosts: tuple[str, ...] = field(default=())
+    trust_unverified_identity_headers: bool = False  # off Windows only: any local process may then send a login
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "daemon_url", normalize_daemon_url(self.daemon_url))

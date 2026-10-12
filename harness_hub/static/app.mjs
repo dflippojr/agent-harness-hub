@@ -99,7 +99,15 @@ async function boot() {
   }
   if (!state.signedIn) {
     document.body.classList.add("signed-out");
-    renderSignin(main, state);
+    const onTailnet = async () => {
+      try {
+        await api("session", { method: "POST", body: { method: "tailnet" } });
+        location.reload();
+      } catch (error) {
+        renderSignin(main, { ...state, error, onTailnet });
+      }
+    };
+    renderSignin(main, { ...state, onTailnet });
     return;
   }
   document.body.classList.remove("signed-out");
