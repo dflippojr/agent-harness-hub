@@ -220,6 +220,11 @@ layout switches from a phone menu to a left rail at 900 px.
 The Modules browser flow can also be run with `playwright-cli run-code --filename=tests/modules-browser.js`
 on a signed-in Modules page backed by a fresh `tests.conftest.FakeDaemon` (one browser session).
 
+For browser testing, `python scripts/ui_instance.py start --dir <dir>` starts a disposable Hub and a fake model
+daemon from an agent-harness checkout (`HUB_UI_DAEMON_SRC`), on loopback with synthetic data, and
+`npm --prefix tools/ui-tests test -- --workers=1` runs the Playwright journeys against one.
+[docs/ui-testing.md](docs/ui-testing.md) is the contract: start, sign-in, journeys and teardown.
+
 Dependency versions and artifact hashes are reviewed in `requirements*.lock`; CI also pins the daemon fixture,
 Actions commits, and the Docker base digest. Update locks deliberately with uv:
 

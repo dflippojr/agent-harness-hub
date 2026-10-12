@@ -4,6 +4,7 @@ name: CI
 #   lint     - ruff, and a syntax check of every browser ES module
 #   test     - the unit suite on Linux and Windows (the Hub runs on the daemon host, which can be either)
 #   e2e      - a real Agent Harness daemon from a pinned dflippojr/agent-harness commit, claimed and read by the Hub
+#   ui       - browser journeys (tools/ui-tests) against a disposable fake model daemon and Hub (docs/ui-testing.md)
 #   package  - the wheel (with the static UI), and the Docker image build and smoke test (scripts/smoke-image.sh)
 #   sonar    - SonarCloud analysis of the test job's coverage; the quality gate fails this check
 on:
@@ -150,6 +151,62 @@ jobs:
         env:
           HUB_E2E_DAEMON_SRC: daemon
         run: python -m pytest -m e2e -v -p no:cacheprovider
+
+  ui:
+    # Browser journeys (docs/ui-testing.md) against a disposable fake model daemon and Hub on loopback, with
+    # synthetic data: desktop and phone, light and dark.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HUB_UI_DAEMON_SRC: ${{ github.workspace }}/daemon
+    steps:
+      - name: Choose the disposable instance directory
+        run: echo "HUB_UI_INSTANCE_DIR=$RUNNER_TEMP/hub-ui-tests" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check out the daemon
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: dflippojr/agent-harness
+          ref: aa5a9047dbe4bcba6b7ec3348d0cd529c00ebe2b
+          path: daemon
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.lock
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: tools/ui-tests/package-lock.json
+      - name: Install the daemon, the Hub and Playwright
+        run: |
+          python -m pip install --require-hashes -r requirements-e2e.lock -r requirements-build.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+          npm --prefix tools/ui-tests ci
+          npm --prefix tools/ui-tests exec -- playwright install --with-deps chromium webkit
+      - name: UI journeys
+        run: npm --prefix tools/ui-tests test -- --workers=1
+      - name: Stop any instance left behind
+        if: always()
+        run: |
+          for dir in "$HUB_UI_INSTANCE_DIR"/run-*; do
+            if [ -d "$dir" ]; then python scripts/ui_instance.py stop --dir "$dir"; fi
+          done
+      - name: Upload the report, traces and instance logs
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ui-test-evidence
+          path: |
+            tools/ui-tests/playwright-report/
+            tools/ui-tests/test-results/
+            ${{ runner.temp }}/hub-ui-tests/logs/
+          if-no-files-found: ignore
+          retention-days: 7
 
   package:
     runs-on: ubuntu-latest
