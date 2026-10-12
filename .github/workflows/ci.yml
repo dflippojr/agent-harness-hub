@@ -159,8 +159,9 @@ jobs:
     timeout-minutes: 30
     env:
       HUB_UI_DAEMON_SRC: ${{ github.workspace }}/daemon
-      HUB_UI_INSTANCE_DIR: ${{ runner.temp }}/hub-ui-tests
     steps:
+      - name: Choose the disposable instance directory
+        run: echo "HUB_UI_INSTANCE_DIR=$RUNNER_TEMP/hub-ui-tests" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
