@@ -30,9 +30,9 @@ async function mount(page, rows, { entries = [], erasures = [], invalidDetails =
       throw Error("Unexpected API call: " + pathname);
     }
     if (pathname === "/") return route.fulfill({ contentType: "text/html", body:
-      '<main id="main"></main><script type="module">import {renderApps} from "/static/pages/apps.mjs"; renderApps(document.querySelector("main"));</script>' });
-    if (!/^\/static\/[a-z/.-]+\.mjs$/.test(pathname)) throw Error("Unexpected resource: " + pathname);
-    return route.fulfill({ contentType: "text/javascript", body:
+      '<link rel="stylesheet" href="/static/style.css"><main id="main"></main><script type="module">import {renderApps} from "/static/pages/apps.mjs"; renderApps(document.querySelector("main"));</script>' });
+    if (!/^\/static\/[a-z/.-]+\.(mjs|css)$/.test(pathname)) throw Error("Unexpected resource: " + pathname);
+    return route.fulfill({ contentType: pathname.endsWith(".css") ? "text/css" : "text/javascript", body:
       await readFile(path.join(__dirname, "../harness_hub", pathname), "utf8") });
   });
   await page.goto("http://hub.test/");
@@ -109,5 +109,18 @@ test("invalid erasure and limits responses show errors and never offer default r
   await expect(page.getByRole("button", { name: "Save session caps", exact: true })).toHaveCount(0);
   await expect(page.locator("input")).toHaveCount(0);
   expect(writes).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+test("a healthy inventory shows no empty error box; a failed read still shows its message", async ({ page }) => {
+  const { errors } = await mount(page, [app("k-ok", "Synthetic notes")]);
+  await expect(page.getByRole("heading", { name: "Paired apps and keys" })).toBeVisible();
+  const alerts = page.locator("[role=alert]:visible");
+  for (const alert of await alerts.all()) await expect(alert).not.toHaveText("");
+  await expect(page.locator(".notice.bad:visible")).toHaveCount(0);
+  await page.route("http://hub.test/api/apps", route => route.fulfill({ status: 502,
+    json: { detail: "The daemon returned invalid app inventory." } }));
+  await page.getByRole("button", { name: "Refresh apps" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "The daemon returned invalid app inventory." })).toBeVisible();
   expect(errors).toEqual([]);
 });

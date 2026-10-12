@@ -120,6 +120,8 @@ body.signed-out .nav { display: none; }
 .btn:disabled { opacity: .6; cursor: progress; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .btn.ghost { background: transparent; }
+/* A pressed toggle (the chosen area on Accounts and maintenance) looks selected, like the current navigation link. */
+.btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .btn.icon { padding: 0; display: inline-grid; place-items: center; }
 .btn:focus-visible, .nav-link:focus-visible, a:focus-visible, summary:focus-visible {
   outline: 3px solid var(--accent);
@@ -204,6 +206,8 @@ body.menu-open::after {
 .muted { color: var(--muted); }
 .notice { padding: 10px 12px; border-radius: var(--radius); }
 .notice.bad { background: var(--bad-bg); color: var(--bad); }
+/* An empty notice (no message yet) takes no space: only a real message shows its box. */
+.notice:empty { display: none; }
 .refreshed { font-size: .85rem; margin-top: 12px; }
 
 .match {
