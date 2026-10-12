@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
 
 import httpx
@@ -30,6 +31,7 @@ from harness_hub.state import STATE_FILE
 from harness_hub.views import ELEVATED_SCOPES, SCOPE_DISCLOSURES
 
 from ..conftest import assert_no_secrets
+from ..response_capture import capture_response
 
 pytestmark = pytest.mark.e2e
 
@@ -134,21 +136,29 @@ class Hub:
                 "--port", str(self.port)]
         if claim_file:
             args += ["--claim-file", str(claim_file)]
-        self.log = (state_dir.parent / f"hub-{self.port}.log").open("w")
-        self.proc = subprocess.Popen(args, stdout=self.log, stderr=subprocess.STDOUT)
-        self.http = httpx.Client(base_url=self.url, timeout=10, headers={"X-Hub-Request": "1"})
         self.bodies: list[str] = []
-        wait(lambda: self.http.get("/healthz").status_code == 200, 30, "the Hub to start")
+        self._cleanup = ExitStack()
+        try:
+            self.log = self._cleanup.enter_context((state_dir.parent / f"hub-{self.port}.log").open("w"))
+            self.proc = subprocess.Popen(args, stdout=self.log, stderr=subprocess.STDOUT)
+            self._cleanup.callback(self._stop_process)
+            self.http = httpx.Client(base_url=self.url, timeout=10, headers={"X-Hub-Request": "1"})
+            self._cleanup.callback(self.http.close)
+            wait(lambda: self.http.get("/healthz").status_code == 200, 30, "the Hub to start")
+        except BaseException as error:
+            try:
+                self.stop()
+            except BaseException as cleanup_error:
+                error.add_note(f"Hub startup cleanup also failed: {cleanup_error!r}")
+            raise
 
     def call(self, method: str, path: str, **kw) -> httpx.Response:
         response = self.http.request(method, path, **kw)
-        self.bodies.append(response.text)
-        self.bodies.extend(v for k, v in response.headers.items() if k.lower() != "set-cookie")
-        return response
+        return capture_response(self.bodies, response)
 
     def sign_in(self):
         link = subprocess.run([sys.executable, "-m", "harness_hub", "signin-link", "--state-dir", str(self.state_dir)],
-                              capture_output=True, text=True, check=True).stdout.strip()
+                              capture_output=True, text=True, check=True, timeout=60).stdout.strip()
         assert link.startswith(self.url + "/#signin=")
         response = self.call("POST", "/api/session", json={"code": link.split("#signin=", 1)[1]})
         assert response.status_code == 204
@@ -161,13 +171,19 @@ class Hub:
         return (json.loads((self.state_dir / STATE_FILE).read_text(encoding="utf-8")).get("key") or {}).get("token", "")
 
     def stop(self):
-        self.http.close()
-        self.proc.terminate()
+        # ExitStack attempts every cleanup even if one fails, and drains callbacks only once.
+        self._cleanup.close()
+
+    def _stop_process(self):
         try:
-            self.proc.wait(15)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-        self.log.close()
+            if self.proc.poll() is None:
+                self.proc.terminate()
+            self.proc.wait(timeout=15)
+        except (subprocess.TimeoutExpired, OSError):
+            try:
+                self.proc.kill()
+            finally:
+                self.proc.wait(timeout=15)
 
 
 def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
@@ -519,9 +535,10 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
 
         assert_no_secrets(first.bodies + second.bodies, token)
     finally:
-        first.stop()
-        if second:
-            second.stop()
+        with ExitStack() as cleanup:
+            if second:
+                cleanup.callback(second.stop)
+            cleanup.callback(first.stop)
 
 
 def test_all_scope_disclosures_and_elevated_tiers_match_pinned_daemon():
