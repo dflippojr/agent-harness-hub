@@ -11,13 +11,14 @@ import pytest
 
 from harness_hub import __main__ as cli
 from harness_hub import auth
-from harness_hub.tailnet import PeerCheck, connection_owner, is_tailscaled
+from harness_hub.tailnet import PeerCheck, connection_owner, install_dirs, is_tailscaled, serve_config, tcp_forwards
 
 OWNER = "owner@example.test"
 REMOTE = "100.64.0.7"  # another node on the tailnet
 OWN_ADDRESSES = {"100.100.1.1", "fd7a:115c:a1e0::1", "127.0.0.1", "::1", "192.168.1.20"}  # this machine's
 INSTALL = Path(os.path.abspath("C:/Program Files/Tailscale"))
 TAILSCALED = str(INSTALL / "tailscaled.exe")
+HUB_PORT = 8120  # the port the test client's requests arrive on (conftest.HUB_HOST)
 
 
 class FakePeers:
@@ -28,12 +29,20 @@ class FakePeers:
         self.windows = windows
         self.pid: int | None = 4242
         self.service_pid: int | None = 4242  # the Tailscale service's process
+        self.serve_config: object = {"TCP": {"443": {"HTTPS": True}},  # serve's HTTP proxy to the Hub
+                                     "Web": {"node.example.ts.net:443": {"Handlers": {"/": {
+                                         "Proxy": f"http://127.0.0.1:{HUB_PORT}"}}}}}
         self.asked: list[tuple[tuple, tuple]] = []
 
     def check(self) -> PeerCheck:
         return PeerCheck(owner=self.owner, exe=lambda pid: self.exe_path, dirs=lambda: [INSTALL],
                          service=lambda: self.service_pid, platform_ok=lambda: self.windows,
-                         own_addresses=lambda: OWN_ADDRESSES)
+                         own_addresses=lambda: OWN_ADDRESSES, serve=self.serve)
+
+    def serve(self):
+        if isinstance(self.serve_config, Exception):
+            raise self.serve_config
+        return self.serve_config
 
     def owner(self, client, server):
         self.asked.append((client, server))
@@ -329,3 +338,43 @@ def test_unsafe_trust_option_parses():
     args = cli.serve_parser().parse_args(["--trust-unverified-identity-headers"])
     assert args.trust_unverified_identity_headers is True
     assert cli.serve_parser().parse_args([]).trust_unverified_identity_headers is False
+
+
+@pytest.mark.parametrize("config", [
+    {"TCP": {"4443": {"TCPForward": f"127.0.0.1:{HUB_PORT}"}}},  # tailscale serve --tcp
+    {"TCP": {"4443": {"TCPForward": f"localhost:{HUB_PORT}", "TerminateTLS": "node.example.ts.net"}}},
+    {"Foreground": {"session": {"TCP": {"4443": {"TCPForward": f"[::1]:{HUB_PORT}"}}}}},  # a foreground serve
+    {"Services": {"svc:hub": {"TCP": {"4443": {"TCPForward": f"192.168.1.20:{HUB_PORT}"}}}}},
+    {"TCP": {"4443": {"TCPForward": "unparsable"}}},  # a target whose port is unclear could be the Hub
+    OSError("Access is denied"),  # a config that cannot be read
+])
+def test_a_raw_tcp_forward_to_the_hub_signs_no_one_in(tailnet_hub, peers, fake_daemon, config):
+    # tailscaled passes a raw TCP client's own Tailscale-* and X-Forwarded-For headers through untouched.
+    peers.serve_config = config
+    asked = len(fake_daemon.sent)
+    response = tailnet_sign_in(tailnet_hub)
+    assert response.status_code == 403 and "set-cookie" not in response.headers
+    assert len(fake_daemon.sent) == asked
+    assert tailnet_hub.get("/api/overview").status_code == 401
+    peers.serve_config = None  # no serve config at all
+    assert tailnet_sign_in(tailnet_hub).status_code == 204
+
+
+def test_raw_tcp_forwards_elsewhere_do_not_block_sign_in(tailnet_hub, peers):
+    peers.serve_config["TCP"]["22"] = {"TCPForward": "127.0.0.1:22"}
+    peers.serve_config["TCP"]["8443"] = {"TCPForward": f"127.0.0.1:{HUB_PORT}0"}
+    assert tailnet_sign_in(tailnet_hub).status_code == 204
+
+
+def test_tcp_forwards_are_found_anywhere_in_the_config():
+    config = {"TCP": {"1": {"TCPForward": "a:1"}}, "Foreground": {"s": {"TCP": {"2": {"TCPForward": "b:2"}}}},
+              "Services": {"svc:x": {"TCP": {"3": {"TCPForward": "c:3"}}}}, "Web": {"h:443": {"Handlers": {}}}}
+    assert sorted(tcp_forwards(config)) == ["a:1", "b:2", "c:3"]
+    assert tcp_forwards(None) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32" or not any((d / "tailscale.exe").is_file() for d in install_dirs()),
+                    reason="needs the Tailscale CLI on Windows")
+def test_real_serve_config_is_readable():
+    config = serve_config()
+    assert config is None or isinstance(config, dict)

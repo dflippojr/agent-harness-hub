@@ -19,6 +19,12 @@ is verified as tailscaled, and only then, the Hub reads the one header that name
 missing, carries more than one address, or names an address of this machine. Outside that verified case no
 `X-Forwarded-*` header is ever read.
 
+tailscaled also carries bytes it never parses: a raw TCP forward in the node's serve config (`tailscale serve --tcp`,
+or `--tls-terminated-tcp`) passes a client's own `Tailscale-*` and `X-Forwarded-For` headers straight to the Hub from
+the service's process. Anything that may change the serve config (the backend's user, local admins) could add one, so
+sign-in reads the config through the LocalAPI (the `tailscale` CLI in the install directory) and refuses when any TCP
+handler forwards to the Hub's port, or when the config cannot be read.
+
 A trusted login is still not the owner: `POST /api/session` accepts it only if the daemon lists it in
 `allowed_logins` (server.py).
 """
@@ -27,8 +33,10 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -45,6 +53,8 @@ FORWARDED_FOR = b"x-forwarded-for"
 CACHE_SIZE = 256
 CACHE_SECONDS = 5.0  # absolute, from the lookup: a closed connection's port can be reused by another process
 TAILSCALED = "tailscaled.exe"
+TAILSCALE_CLI = "tailscale.exe"
+SERVE_STATUS_SECONDS = 10.0
 SERVICE = "Tailscale"
 SIGN_IN_PATH = "/api/session"
 
@@ -98,6 +108,46 @@ def service_pid() -> int | None:
     return service.pid() if service.status() == "running" else None
 
 
+def serve_config() -> object:
+    """This node's serve config, foreground sessions and services included, from the LocalAPI through the installed
+    CLI (`null` when there is none). Any failure raises."""
+    cli = next((d / TAILSCALE_CLI for d in install_dirs() if (d / TAILSCALE_CLI).is_file()), None)
+    if cli is None:
+        raise FileNotFoundError(f"no {TAILSCALE_CLI} in {[str(d) for d in install_dirs()]}")
+    # A fixed argument list and the CLI from the admin-owned install directory, never one found on PATH.
+    done = subprocess.run([str(cli), "serve", "status", "--json"], capture_output=True,  # noqa: S603
+                          timeout=SERVE_STATUS_SECONDS, check=True,
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return json.loads(done.stdout)
+
+
+def tcp_forwards(config: object) -> list[str]:
+    """Every raw TCP forward target (`TCPForward`) anywhere in a serve config: its own TCP handlers, those of
+    foreground sessions (`Foreground`) and of services (`Services`)."""
+    found: list[str] = []
+    if isinstance(config, dict):
+        for key, value in config.items():
+            if key == "TCPForward":
+                found.append(value if isinstance(value, str) else repr(value))
+            else:
+                found.extend(tcp_forwards(value))
+    elif isinstance(config, list):
+        for item in config:
+            found.extend(tcp_forwards(item))
+    return found
+
+
+def _forward_port(target: str) -> int | None:
+    text = target.strip()
+    if "://" in text:
+        text = text.split("://", 1)[1]
+    host, sep, port = text.rpartition(":")
+    try:
+        return int(port) if sep and host else None
+    except ValueError:
+        return None
+
+
 def local_addresses() -> set[str]:
     """Every address on this machine's interfaces, the node's Tailscale IPs among them."""
     import psutil
@@ -140,10 +190,10 @@ class PeerCheck:
     (`fresh`)."""
 
     def __init__(self, *, owner=connection_owner, exe=process_exe, dirs=install_dirs, service=service_pid,
-                 platform_ok=supported, own_addresses=local_addresses, clock=time.monotonic, size: int = CACHE_SIZE,
-                 ttl: float = CACHE_SECONDS):
+                 platform_ok=supported, own_addresses=local_addresses, serve=serve_config, clock=time.monotonic,
+                 size: int = CACHE_SIZE, ttl: float = CACHE_SECONDS):
         self.owner, self.exe, self.dirs, self.platform_ok, self.clock = owner, exe, dirs, platform_ok, clock
-        self.own_addresses, self.service = own_addresses, service
+        self.own_addresses, self.service, self.serve = own_addresses, service, serve
         self.size, self.ttl = size, ttl
         self._cache: OrderedDict[tuple[str, int], tuple[float, bool]] = OrderedDict()
         self._lock = threading.Lock()
@@ -195,6 +245,20 @@ class PeerCheck:
             log.warning("could not list this machine's addresses to check a tailnet request's source: %s", exc)
             return False
         return str(ip) not in own
+
+
+    def raw_forward_to(self, port: int | None) -> bool:
+        """Whether a raw TCP forward in this node's serve config could reach the Hub's `port`, so tailscaled might
+        be relaying a client's own headers. A config that cannot be read, or a target whose port is unclear, counts
+        as one."""
+        if not port:
+            return True
+        try:
+            targets = tcp_forwards(self.serve())
+        except Exception as exc:  # noqa: BLE001 - an unread config cannot be cleared
+            log.warning("could not read this node's tailscale serve config: %s", exc)
+            return True
+        return any(_forward_port(target) in (None, port) for target in targets)
 
 
 def has_identity(scope: Scope) -> bool:

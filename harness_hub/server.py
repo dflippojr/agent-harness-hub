@@ -124,6 +124,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                           poll_seconds=settings.poll_seconds)
     sessions = Sessions(settings.state_dir)
     inventory = InventoryCache(store.dir, settings.daemon_url)
+    peer_check = peer_check or PeerCheck()
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -213,6 +214,14 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return _error(429, "too many tailnet sign-in attempts; wait a minute")
         refused = _error(403, "this tailnet login cannot sign in to this Hub; use a sign-in link",
                          signin_command=SIGNIN_COMMAND)
+        # A raw TCP forward lets tailscaled relay a client's own identity headers (tailnet.py). Only where the peer
+        # was verified: with unverified headers trusted, any local process can sign in anyway.
+        server = request.scope.get("server")
+        if peer_check.platform_ok() and await asyncio.to_thread(peer_check.raw_forward_to,
+                                                                server[1] if server else None):
+            log.warning("refused tailnet sign-in: this node's tailscale serve config has a raw TCP forward to the "
+                        "Hub's port, or could not be read")
+            return refused
         key = claims.key()
         if not key:
             log.warning("refused tailnet sign-in: this Hub has not claimed its daemon")

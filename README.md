@@ -89,9 +89,17 @@ Through `tailscale serve`, the sign-in page also offers **Continue as `<your log
 the daemon accepts, with the same rules:
 
 - `tailscale serve` adds `Tailscale-User-Login`. The Hub trusts the `Tailscale-*` headers only when the process on the
-  other end of the TCP connection is `tailscaled.exe` from the Tailscale install directory (`Program Files\Tailscale`).
-  Headers from any other process, including a forged `tailscaled.exe` elsewhere, are removed before anything reads
-  them. Sign-in always looks the connection up again rather than reuse a verdict cached for an earlier connection.
+  other end of the TCP connection is the running Tailscale Windows service, and its executable is `tailscaled.exe`
+  from the Tailscale install directory (`Program Files\Tailscale`). Headers from any other process are removed before
+  anything reads them, including a copy of the installed `tailscaled.exe` that someone started themselves (as a
+  userspace proxy, say) and a `tailscaled.exe` elsewhere. If the service is missing or stopped, or its process can't
+  be looked up, no identity is trusted. Sign-in always looks the connection up again rather than reuse a verdict
+  cached for an earlier connection.
+- The node's `tailscale serve` config is part of that boundary: a raw TCP forward (`tailscale serve --tcp` or
+  `--tls-terminated-tcp`) carries a client's own headers through the service unchanged. So at sign-in the Hub reads
+  the serve config through the Tailscale CLI, foreground sessions and services included, and refuses tailnet sign-in
+  when any TCP handler forwards to the Hub's port, or when the config can't be read. Publish the Hub with serve's
+  HTTPS proxy (`tailscale serve --bg --https=443 http://127.0.0.1:<port>`), never a raw TCP forward.
 - tailscaled vouches for the tailnet node a request came from, and a program on this machine that opens the node's
   own serve address arrives as this node, which Tailscale resolves to the owner. So on a connection verified as
   tailscaled, and only there, the Hub reads the source address serve puts in `X-Forwarded-For` (serve replaces any
