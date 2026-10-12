@@ -66,6 +66,7 @@ SIGNIN_COMMAND = "python -m harness_hub signin-link"
 REQUEST_HEADER = "x-hub-request"
 SESSION_HEADER = "x-hub-session"
 MAX_SIGNIN_BODY = 1024
+ALLOWED_LOGINS_SECONDS = 5.0  # how long a tailnet sign-in reuses the daemon's allowed_logins answer
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 SECURITY_HEADERS = [
@@ -181,18 +182,13 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                                             request.headers.get(SESSION_HEADER)), "signin_command": SIGNIN_COMMAND,
                 "tailnet_login": login(request.headers) or None, "version": __version__}
 
-    async def tailnet_sign_in(request: Request) -> JSONResponse | None:
-        """Refuse a tailnet sign-in unless the daemon lists this request's trusted login; None means accept."""
-        caller = login(request.headers)
-        if not caller:
-            return _error(401, "this request carries no tailnet identity from tailscaled; use a sign-in link",
-                          signin_command=SIGNIN_COMMAND)
-        key = claims.key()
-        if not key:
-            return _error(409, "tailnet sign-in needs this Hub to have claimed its daemon; use a sign-in link",
-                          signin_command=SIGNIN_COMMAND)
+    owner_logins: dict[str, Any] = {}  # the daemon's allowed_logins, kept briefly: {"until": ..., "logins": [...]}
+
+    async def allowed_logins(token: str) -> list[str] | JSONResponse:
+        if owner_logins and time.monotonic() < owner_logins["until"]:
+            return owner_logins["logins"]
         try:
-            reply = await daemon.admin(key["token"])
+            reply = await daemon.admin(token)
         except DaemonUnreachable:
             return _error(503, f"the daemon at {settings.daemon_url} did not answer; use a sign-in link",
                           signin_command=SIGNIN_COMMAND)
@@ -203,14 +199,34 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         if not isinstance(allowed, list) or not all(isinstance(item, str) for item in allowed):
             return _error(502, "the daemon does not list the owner's tailnet logins (it needs Owner API 1.26 or "
                           "later); use a sign-in link", signin_command=SIGNIN_COMMAND)
+        owner_logins.update(until=time.monotonic() + ALLOWED_LOGINS_SECONDS, logins=list(allowed))
+        return owner_logins["logins"]
+
+    async def tailnet_sign_in(request: Request) -> JSONResponse | None:
+        """Refuse a tailnet sign-in unless the daemon lists this request's trusted login; None means accept. An
+        unclaimed Hub, an open-owner daemon and an unlisted login get the same answer; the log tells them apart."""
+        caller = login(request.headers)
+        if not caller:
+            return _error(401, "this request carries no tailnet identity from tailscaled; use a sign-in link",
+                          signin_command=SIGNIN_COMMAND)
+        if not sessions.tailnet_attempt(caller):
+            return _error(429, "too many tailnet sign-in attempts; wait a minute")
+        refused = _error(403, "this tailnet login cannot sign in to this Hub; use a sign-in link",
+                         signin_command=SIGNIN_COMMAND)
+        key = claims.key()
+        if not key:
+            log.warning("refused tailnet sign-in: this Hub has not claimed its daemon")
+            return refused
+        allowed = await allowed_logins(key["token"])
+        if isinstance(allowed, JSONResponse):
+            return allowed
         if not allowed:
             # Open-owner legacy mode: the daemon names no owner, so no tailnet login proves ownership.
-            return _error(403, "the daemon has no owner allowlist (allowed_logins in harness.local.yaml); use a "
-                          "sign-in link", signin_command=SIGNIN_COMMAND)
+            log.warning("refused tailnet sign-in: the daemon has no owner allowlist (allowed_logins)")
+            return refused
         if caller not in allowed:
             log.warning("refused tailnet sign-in for a login the daemon does not list as the owner's")
-            return _error(403, "this tailnet login is not one of the daemon owner's allowed_logins",
-                          signin_command=SIGNIN_COMMAND)
+            return refused
         return None
 
     @app.post("/api/session")

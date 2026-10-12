@@ -91,16 +91,23 @@ the daemon accepts, with the same rules:
 - `tailscale serve` adds `Tailscale-User-Login`. The Hub trusts the `Tailscale-*` headers only when the process on the
   other end of the TCP connection is `tailscaled.exe` from the Tailscale install directory (`Program Files\Tailscale`).
   Headers from any other process, including a forged `tailscaled.exe` elsewhere, are removed before anything reads
-  them. `X-Forwarded-*` and `Forwarded` headers are never read.
+  them. Sign-in always looks the connection up again rather than reuse a verdict cached for an earlier connection.
+- tailscaled vouches for the tailnet node a request came from, and a program on this machine that opens the node's
+  own serve address arrives as this node, which Tailscale resolves to the owner. So on a connection verified as
+  tailscaled, and only there, the Hub reads the source address serve puts in `X-Forwarded-For` (serve replaces any
+  value a client sent). The identity is ignored when that header is missing, lists more than one address, or names
+  any address of this machine, its Tailscale IPs included. Tailnet sign-in therefore works only from another device;
+  on the Hub's own machine, use a sign-in link. `X-Forwarded-*` and `Forwarded` headers are read nowhere else.
 - The peer check is implemented for Windows only, like the daemon's. Elsewhere the headers are always removed unless
   you start the Hub with `--trust-unverified-identity-headers`, the counterpart of the daemon's
   `listen.trust_unverified_identity_headers`. That option trusts **any** local process (or container reaching the
   host loopback) that sends the headers; use it only where no untrusted code can connect to the Hub's port.
 - The Hub signs the login in only if the daemon lists it in `allowed_logins` (`harness.local.yaml`), read from the
-  owner API discovery root on every attempt, compared exactly. That needs a claimed Hub and a daemon with Owner API
+  owner API discovery root (reused for up to five seconds), compared exactly. That needs a claimed Hub and a daemon with Owner API
   1.26 or later ([agent-harness #621](https://github.com/dflippojr/agent-harness/pull/621)). An empty list
-  (open-owner legacy mode) admits no tailnet login. Refused tailnet attempts do not count toward the sign-in link
-  throttle.
+  (open-owner legacy mode) admits no tailnet login. An unclaimed Hub, an open-owner daemon and an unlisted login all
+  get the same refusal; the Hub's log says which. Each login gets five tailnet attempts a minute, counted apart from
+  the sign-in link throttle so no one else can lock the owner out.
 
 The session is the same as a link's: twelve hours, an HttpOnly cookie plus a per-tab `X-Hub-Session` value. Sign-in
 links keep working, and remain the only way in before the Hub has claimed its daemon.

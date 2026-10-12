@@ -14,6 +14,8 @@ from harness_hub import auth
 from harness_hub.tailnet import PeerCheck, connection_owner, is_tailscaled
 
 OWNER = "owner@example.test"
+REMOTE = "100.64.0.7"  # another node on the tailnet
+OWN_ADDRESSES = {"100.100.1.1", "fd7a:115c:a1e0::1", "127.0.0.1", "::1", "192.168.1.20"}  # this machine's
 INSTALL = Path(os.path.abspath("C:/Program Files/Tailscale"))
 TAILSCALED = str(INSTALL / "tailscaled.exe")
 
@@ -29,7 +31,7 @@ class FakePeers:
 
     def check(self) -> PeerCheck:
         return PeerCheck(owner=self.owner, exe=lambda pid: self.exe_path, dirs=lambda: [INSTALL],
-                         platform_ok=lambda: self.windows)
+                         platform_ok=lambda: self.windows, own_addresses=lambda: OWN_ADDRESSES)
 
     def owner(self, client, server):
         self.asked.append((client, server))
@@ -37,7 +39,8 @@ class FakePeers:
 
 
 def identity(login: str = OWNER, **extra: str) -> dict:
-    return {"Tailscale-User-Login": login, "Tailscale-User-Name": "Owner", **extra}
+    """What tailscale serve adds for a request from another node: the login and the tailnet source address."""
+    return {"Tailscale-User-Login": login, "Tailscale-User-Name": "Owner", "X-Forwarded-For": REMOTE, **extra}
 
 
 def tailnet_sign_in(hub, login: str = OWNER, **headers: str):
@@ -92,6 +95,55 @@ def test_peer_verdicts_are_cached_briefly_and_failures_are_not():
     assert check.verify(None, server) is False
 
 
+def test_sign_in_never_uses_a_cached_verdict():
+    calls = []
+    check = PeerCheck(owner=lambda client, server: calls.append(client) or 7, exe=lambda pid: TAILSCALED,
+                      dirs=lambda: [INSTALL], platform_ok=lambda: True, clock=lambda: 0.0)
+    peer, server = ("127.0.0.1", 50000), ("127.0.0.1", 8120)
+    assert check.verify(peer, server) is True and check.verify(peer, server) is True and len(calls) == 1
+    assert check.verify(peer, server, fresh=True) is True and len(calls) == 2
+
+
+def test_sign_in_looks_the_peer_up_again(tailnet_hub, peers):
+    assert tailnet_hub.get("/api/session", headers=identity()).json()["tailnet_login"] == OWNER
+    asked = len(peers.asked)
+    assert tailnet_hub.get("/api/session", headers=identity()).json()["tailnet_login"] == OWNER
+    assert len(peers.asked) == asked  # keep-alive reads reuse the verdict
+    # The port has since gone to another process: sign-in asks the connection table again and refuses.
+    peers.exe_path = str(Path(os.path.abspath("C:/Users/evil/tailscaled.exe")))
+    response = tailnet_sign_in(tailnet_hub)
+    assert len(peers.asked) == asked + 1
+    assert response.status_code == 401 and "set-cookie" not in response.headers
+
+
+@pytest.mark.parametrize("forwarded", [
+    [("X-Forwarded-For", "100.100.1.1")],  # this node's own Tailscale IPv4
+    [("X-Forwarded-For", "fd7a:115c:a1e0::1")],  # and IPv6
+    [("X-Forwarded-For", "192.168.1.20")],  # any other address of this machine
+    [("X-Forwarded-For", "127.0.0.1")],
+    [("X-Forwarded-For", "::ffff:100.100.1.1")],
+    [],  # missing
+    [("X-Forwarded-For", f"{REMOTE}, 100.64.0.8")],  # more than one address
+    [("X-Forwarded-For", REMOTE), ("X-Forwarded-For", "100.64.0.8")],
+    [("X-Forwarded-For", "not-an-address")],
+])
+def test_tailscaled_requests_from_this_machine_get_no_identity(tailnet_hub, forwarded):
+    headers = [("Tailscale-User-Login", OWNER), *forwarded]
+    assert tailnet_hub.client.get("/api/session", headers=headers).json()["tailnet_login"] is None
+    response = tailnet_hub.client.post("/api/session", json={"method": "tailnet"},
+                                       headers=[("X-Hub-Request", "1"), *headers])
+    assert response.status_code == 401 and "set-cookie" not in response.headers
+    assert tailnet_hub.get("/api/overview").status_code == 401
+
+
+def test_unknown_own_addresses_admit_no_source(make_hub):
+    peers = FakePeers()
+    check = peers.check()
+    check.own_addresses = lambda: (_ for _ in ()).throw(OSError("no interfaces"))
+    hub = make_hub(peer_check=check)
+    assert hub.get("/api/session", headers=identity()).json()["tailnet_login"] is None
+
+
 def test_check_runs_nowhere_but_windows():
     check = PeerCheck(owner=lambda *a: 7, exe=lambda pid: TAILSCALED, dirs=lambda: [INSTALL],
                       platform_ok=lambda: False)
@@ -121,15 +173,39 @@ def test_unlisted_login_is_refused(tailnet_hub, fake_daemon):
 
 
 def test_refused_logins_do_not_throttle_link_sign_in(tailnet_hub):
-    for _ in range(auth.FAILURES_PER_MINUTE + 1):
+    for _ in range(auth.TAILNET_ATTEMPTS_PER_MINUTE):
         assert tailnet_sign_in(tailnet_hub, "guest@example.test").status_code == 403
     tailnet_hub.sign_in()
+
+
+def test_tailnet_attempts_are_throttled_per_login(tailnet_hub, fake_daemon):
+    for _ in range(auth.TAILNET_ATTEMPTS_PER_MINUTE):
+        assert tailnet_sign_in(tailnet_hub, "guest@example.test").status_code == 403
+    asked = len(fake_daemon.sent)
+    assert tailnet_sign_in(tailnet_hub, "guest@example.test").status_code == 429
+    assert len(fake_daemon.sent) == asked  # a throttled attempt costs no owner API call
+    # Another tailnet member cannot lock the owner out, and links keep working.
+    assert tailnet_sign_in(tailnet_hub).status_code == 204
+    tailnet_hub.sign_in()
+
+
+def test_allowed_logins_answer_is_reused_briefly(tailnet_hub, fake_daemon):
+    def discovery_calls():
+        return sum(url.rstrip("/").endswith("/api/admin/v1") for url in fake_daemon.sent)
+
+    before = discovery_calls()
+    assert tailnet_sign_in(tailnet_hub, "guest@example.test").status_code == 403
+    assert tailnet_sign_in(tailnet_hub).status_code == 204
+    assert discovery_calls() == before + 1
 
 
 def test_no_owner_allowlist_admits_no_login(tailnet_hub, fake_daemon):
     fake_daemon.allowed_logins = []
     response = tailnet_sign_in(tailnet_hub)
-    assert response.status_code == 403 and "allowlist" in response.json()["detail"]
+    unlisted = tailnet_sign_in(tailnet_hub, "guest@example.test")
+    # Open-owner mode reads the same as an unlisted login, so tailnet callers learn nothing about the daemon.
+    assert response.status_code == unlisted.status_code == 403
+    assert response.json() == unlisted.json()
 
 
 @pytest.mark.parametrize("listed", [None, "owner@example.test", [OWNER, 7]])
@@ -141,7 +217,8 @@ def test_a_daemon_without_a_usable_list_admits_no_login(tailnet_hub, fake_daemon
 
 def test_unclaimed_daemon_admits_no_login(make_hub, peers):
     hub = make_hub(peer_check=peers.check())
-    assert tailnet_sign_in(hub).status_code == 409
+    response = tailnet_sign_in(hub)
+    assert response.status_code == 403 and "claim" not in response.json()["detail"]
 
 
 def test_unreachable_or_refusing_daemon_admits_no_login(tailnet_hub, fake_daemon):

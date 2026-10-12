@@ -29,6 +29,8 @@ CODE_TTL_SECONDS = 600
 SESSION_TTL_SECONDS = 12 * 3600
 MAX_CODES = 5
 FAILURES_PER_MINUTE = 10
+TAILNET_ATTEMPTS_PER_MINUTE = 5  # per login, apart from the link throttle so no one else can lock the owner out
+TAILNET_LOGINS_TRACKED = 256
 
 
 def _digest(value: str) -> str:
@@ -61,6 +63,7 @@ class Sessions:
         self.clock = clock
         self._sessions: dict[str, tuple[float, str]] = {}
         self._failures: list[float] = []
+        self._tailnet: dict[str, list[float]] = {}
         self._lock = threading.Lock()
 
     def throttled(self) -> bool:
@@ -68,6 +71,19 @@ class Sessions:
         with self._lock:
             self._failures = [t for t in self._failures if t > now - 60]
             return len(self._failures) >= FAILURES_PER_MINUTE
+
+    def tailnet_attempt(self, login: str) -> bool:
+        """Count a tailnet sign-in attempt for a verified login; False once it has had its share this minute."""
+        now = self.clock()
+        with self._lock:
+            recent = [t for t in self._tailnet.pop(login, []) if t > now - 60]
+            allowed = len(recent) < TAILNET_ATTEMPTS_PER_MINUTE
+            if allowed:
+                recent.append(now)
+            self._tailnet[login] = recent  # most recent last, so the oldest login is dropped first
+            while len(self._tailnet) > TAILNET_LOGINS_TRACKED:
+                del self._tailnet[next(iter(self._tailnet))]
+            return allowed
 
     def redeem_code(self, code: str | None) -> tuple[str, str] | None:
         """Spend a sign-in code; returns a cookie id and an origin binding, or None."""

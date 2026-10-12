@@ -9,8 +9,16 @@ tailscaled, run from the Tailscale install directory. Otherwise they are removed
 The check is implemented for Windows. Elsewhere the headers are removed unless the Hub runs with
 `--trust-unverified-identity-headers`, which trusts any local process that sends them.
 
+tailscaled proves that it added the headers, not who it added them for. serve runs WhoIs on the connection's tailnet
+source, and a program on this machine that connects to the node's own serve address arrives from the node's own
+Tailscale IP, which WhoIs resolves to the node's owner (checked on tailscaled 1.102.4 on Windows). So once the peer
+is verified as tailscaled, and only then, the Hub reads the one header that names that source: serve replaces
+`X-Forwarded-For` with it (a client's own value does not survive). The identity is removed when that header is
+missing, carries more than one address, or names an address of this machine. Outside that verified case no
+`X-Forwarded-*` header is ever read.
+
 A trusted login is still not the owner: `POST /api/session` accepts it only if the daemon lists it in
-`allowed_logins` (server.py). `X-Forwarded-*` headers are never read.
+`allowed_logins` (server.py).
 """
 
 from __future__ import annotations
@@ -31,9 +39,11 @@ log = logging.getLogger(__name__)
 
 HEADER_PREFIX = b"tailscale-"
 LOGIN_HEADER = b"tailscale-user-login"
+FORWARDED_FOR = b"x-forwarded-for"
 CACHE_SIZE = 256
 CACHE_SECONDS = 5.0  # absolute, from the lookup: a closed connection's port can be reused by another process
 TAILSCALED = "tailscaled.exe"
+SIGN_IN_PATH = "/api/session"
 
 
 def supported() -> bool:
@@ -76,6 +86,31 @@ def process_exe(pid: int) -> str:
     return psutil.Process(pid).exe()
 
 
+def local_addresses() -> set[str]:
+    """Every address on this machine's interfaces, the node's Tailscale IPs among them."""
+    import psutil
+
+    return {a.address for addrs in psutil.net_if_addrs().values() for a in addrs}
+
+
+def _ip(text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        ip = ipaddress.ip_address(text.split("%", 1)[0].strip())
+    except ValueError:
+        return None
+    return ip.ipv4_mapped if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped else ip
+
+
+def forwarded_source(scope: Scope) -> str:
+    """The tailnet source address tailscaled set in `X-Forwarded-For`, or '' when there is not exactly one. Read it
+    only on a connection verified to come from tailscaled."""
+    values = [v for n, v in scope.get("headers") or () if n.lower() == FORWARDED_FOR]
+    if len(values) != 1:
+        return ""
+    ip = _ip(values[0].decode("latin-1"))
+    return str(ip) if ip else ""
+
+
 def is_tailscaled(exe: str, dirs: list[Path]) -> bool:
     """The name alone proves nothing: the executable must sit directly in a Tailscale install directory."""
     if not exe:
@@ -88,11 +123,14 @@ def is_tailscaled(exe: str, dirs: list[Path]) -> bool:
 
 class PeerCheck:
     """Whether a connection's peer is tailscaled. Verdicts are cached per (client host, port) for a few seconds so
-    keep-alive requests do not repeat the lookup; a failed lookup is not cached and counts as not tailscaled."""
+    keep-alive requests do not repeat the lookup; a failed lookup is not cached and counts as not tailscaled. A
+    cached verdict can outlive the connection it was made for, so sign-in asks for a fresh lookup (`fresh`)."""
 
     def __init__(self, *, owner=connection_owner, exe=process_exe, dirs=install_dirs, platform_ok=supported,
-                 clock=time.monotonic, size: int = CACHE_SIZE, ttl: float = CACHE_SECONDS):
+                 own_addresses=local_addresses, clock=time.monotonic, size: int = CACHE_SIZE,
+                 ttl: float = CACHE_SECONDS):
         self.owner, self.exe, self.dirs, self.platform_ok, self.clock = owner, exe, dirs, platform_ok, clock
+        self.own_addresses = own_addresses
         self.size, self.ttl = size, ttl
         self._cache: OrderedDict[tuple[str, int], tuple[float, bool]] = OrderedDict()
         self._lock = threading.Lock()
@@ -116,11 +154,11 @@ class PeerCheck:
             while len(self._cache) > self.size:
                 self._cache.popitem(last=False)
 
-    def verify(self, client: tuple[str, int] | None, server: tuple[str, int] | None) -> bool:
+    def verify(self, client: tuple[str, int] | None, server: tuple[str, int] | None, *, fresh: bool = False) -> bool:
         if not client or not server or not self.platform_ok():
             return False
         key = (str(client[0]), int(client[1]))
-        hit = self.cached(key)
+        hit = None if fresh else self.cached(key)
         if hit is not None:
             return hit
         self.lookups += 1
@@ -132,6 +170,18 @@ class PeerCheck:
             return False
         self._remember(key, verdict)
         return verdict
+
+    def remote(self, source: str) -> bool:
+        """Whether the tailnet source tailscaled reported is another node: not empty, not this machine."""
+        ip = _ip(source) if source else None
+        if ip is None or ip.is_loopback or ip.is_unspecified:
+            return False
+        try:
+            own = {str(_ip(a)) for a in self.own_addresses() if _ip(a)}
+        except Exception as exc:  # noqa: BLE001 - without this machine's addresses, no source can be cleared
+            log.warning("could not list this machine's addresses to check a tailnet request's source: %s", exc)
+            return False
+        return str(ip) not in own
 
 
 def has_identity(scope: Scope) -> bool:
@@ -164,11 +214,23 @@ class TailnetIdentity:
     async def trusted(self, scope: Scope) -> bool:
         check = self.check
         if not check.platform_ok():
-            return self.trust_unverified
+            return self.trust_unverified  # no peer to verify, so X-Forwarded-For proves nothing either
         client, server = scope.get("client"), scope.get("server")
-        if client and server and check.cached((str(client[0]), int(client[1]))) is None:
-            return await asyncio.to_thread(check.verify, client, server)
-        return check.verify(client, server)
+        # Sign-in turns the identity into a credential: never on a verdict cached for an earlier connection.
+        fresh = scope["type"] == "http" and scope.get("method") == "POST" and scope.get("path") == SIGN_IN_PATH
+        if fresh or (client and server and check.cached((str(client[0]), int(client[1]))) is None):
+            verified = await asyncio.to_thread(check.verify, client, server, fresh=fresh)
+        else:
+            verified = check.verify(client, server)
+        if not verified:
+            return False
+        source = forwarded_source(scope)
+        if await asyncio.to_thread(check.remote, source):
+            return True
+        # Every request from a browser on this machine lands here, so only a sign-in attempt is worth a warning.
+        log.log(logging.WARNING if fresh else logging.DEBUG, "ignored a tailnet identity from tailscaled whose "
+                "source is %s", f"this machine ({source})" if source else "missing or ambiguous")
+        return False
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] in ("http", "websocket") and has_identity(scope) and not await self.trusted(scope):
