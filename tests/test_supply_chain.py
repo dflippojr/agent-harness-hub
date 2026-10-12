@@ -7,6 +7,8 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# The only permitted action outside actions/: the SonarCloud scanner, pinned to a commit SHA.
+ALLOWED_THIRD_PARTY_ACTIONS = {"SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9"}
 
 
 def test_all_locked_dependencies_have_versions_and_hashes():
@@ -32,7 +34,10 @@ def test_docker_and_ci_install_only_locked_external_inputs():
     assert "!requirements.lock" in ignore and "!requirements-build.lock" in ignore
     ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     actions = re.findall(r"uses: (\S+)", ci)
-    assert actions and all(re.fullmatch(r"actions/[a-z-]+@[a-f0-9]{40}", action) for action in actions)
+    assert actions and all(
+        re.fullmatch(r"actions/[a-z-]+@[a-f0-9]{40}", action) or action in ALLOWED_THIRD_PARTY_ACTIONS
+        for action in actions
+    )
     assert ci.count("persist-credentials: false") == sum(action.startswith("actions/checkout@") for action in actions)
     assert "ref: aa5a9047dbe4bcba6b7ec3348d0cd529c00ebe2b" in ci
     assert "pip install -r daemon/requirements.txt" not in ci
