@@ -104,6 +104,12 @@ the daemon accepts, with the same rules:
   tailscaled pipe) can open a connection through a raw forward and remove the forward before sending the request.
   Publish the Hub with serve's HTTPS proxy (`tailscale serve --bg --https=443 http://127.0.0.1:<port>`), never a
   raw TCP forward.
+- A subnet route is the other way tailscaled passes a device's own bytes on. When this node advertises a route,
+  tailscaled ends a routed TCP connection itself and opens a new one to the target from the Tailscale service's own
+  socket, which no serve config shows. With the Hub's `host` set to `0.0.0.0` or a LAN address the route covers, a
+  tailnet device could reach it that way with headers it wrote itself. `tailscale serve` proxies to the Hub's loopback
+  listener, so the Hub trusts the identity headers only on a connection whose server address is loopback; on any
+  other address, or when the address is missing, they are removed.
 - tailscaled vouches for the tailnet node a request came from, and a program on this machine that opens the node's
   own serve address arrives as this node, which Tailscale resolves to the owner. So on a connection verified as
   tailscaled, and only there, the Hub reads the source address serve puts in `X-Forwarded-For` (serve replaces any

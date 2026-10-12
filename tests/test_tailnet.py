@@ -4,14 +4,24 @@ from __future__ import annotations
 
 import os
 import socket
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from starlette.testclient import TestClient
 
 from harness_hub import __main__ as cli
 from harness_hub import auth
-from harness_hub.tailnet import PeerCheck, connection_owner, install_dirs, is_tailscaled, serve_config, tcp_forwards
+from harness_hub.tailnet import (
+    PeerCheck,
+    connection_owner,
+    install_dirs,
+    is_loopback,
+    is_tailscaled,
+    serve_config,
+    tcp_forwards,
+)
 
 OWNER = "owner@example.test"
 REMOTE = "100.64.0.7"  # another node on the tailnet
@@ -169,6 +179,38 @@ def test_unknown_own_addresses_admit_no_source(make_hub):
     hub = make_hub(peer_check=check)
     assert hub.get("/api/session", headers=identity()).json()["tailnet_login"] is None
 
+
+
+def test_a_verified_tailscaled_on_a_non_loopback_server_address_is_refused():
+    """With a subnet route, tailscaled ends a routed connection and opens its own to the Hub's LAN or wildcard
+    address, carrying the device's own headers (#37). Only the loopback listener serve proxies to counts."""
+    assert PeerCheck().server_ok is is_loopback
+    calls = []
+    check = PeerCheck(owner=lambda client, server: calls.append(server) or 7, exe=lambda pid: TAILSCALED,
+                      dirs=lambda: [INSTALL], service=lambda: 7, platform_ok=lambda: True)
+    for server in (("192.168.1.20", 8120), ("100.100.1.1", 8120), ("0.0.0.0", 8120), ("::", 8120),  # noqa: S104
+                   ("fe80::1%3", 8120), ("fd7a:115c:a1e0::1", 8120), ("localhost", 8120), ("", 8120),
+                   (None, 8120), ("/run/hub.sock", None)):
+        assert check.verify(("127.0.0.1", 50000), server) is False
+        assert check.verify(("127.0.0.1", 50000), server, fresh=True) is False
+    assert check.verify(("127.0.0.1", 50000), None) is False
+    assert not calls  # refused before the connection table is read, and never cached
+    for port, server in enumerate((("127.0.0.1", 8120), ("::1", 8120), ("127.0.0.2", 8120),
+                                   ("::ffff:127.0.0.1", 8120)), 51000):
+        assert check.verify(("127.0.0.1", port), server) is True
+    assert len(calls) == 4
+
+
+def test_a_subnet_routed_connection_signs_no_one_in(tailnet_hub, peers):
+    # The same app, reached on a LAN address: the device writes its own bytes, so it can name the loopback Host.
+    routed = TestClient(tailnet_hub.client.app, base_url=f"http://192.168.1.20:{HUB_PORT}")
+    loopback_host = {"Host": f"127.0.0.1:{HUB_PORT}", "X-Hub-Request": "1"}
+    asked = len(peers.asked)
+    assert routed.get("/api/session", headers={**identity(), **loopback_host}).json()["tailnet_login"] is None
+    response = routed.post("/api/session", json={"method": "tailnet"}, headers={**identity(), **loopback_host})
+    assert response.status_code == 401 and "set-cookie" not in response.headers
+    assert len(peers.asked) == asked  # tailscaled would have owned the socket; it was never asked
+    assert tailnet_sign_in(tailnet_hub).status_code == 204  # serve's own loopback connection still works
 
 def test_check_runs_nowhere_but_windows():
     check = PeerCheck(owner=lambda *a: 7, exe=lambda pid: TAILSCALED, dirs=lambda: [INSTALL],
@@ -372,6 +414,22 @@ def test_tcp_forwards_are_found_anywhere_in_the_config():
     assert sorted(tcp_forwards(config)) == ["a:1", "b:2", "c:3"]
     assert tcp_forwards(None) == []
 
+
+
+def test_serve_config_is_decoded_as_utf8(monkeypatch, tmp_path):
+    (tmp_path / "Tailscale").mkdir()
+    (tmp_path / "Tailscale" / "tailscale.exe").touch()
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    monkeypatch.delenv("ProgramW6432", raising=False)
+    seen = {}
+
+    def run(args, **kw):
+        seen.update(kw)
+        return subprocess.CompletedProcess(args, 0, stdout='{"Web": {"nöde.example.ts.net:443": {}}}')
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert serve_config() == {"Web": {"nöde.example.ts.net:443": {}}}
+    assert seen["encoding"] == "utf-8"  # Go prints UTF-8 whatever the console code page is
 
 @pytest.mark.skipif(sys.platform != "win32" or not any((d / "tailscale.exe").is_file() for d in install_dirs()),
                     reason="needs the Tailscale CLI on Windows")

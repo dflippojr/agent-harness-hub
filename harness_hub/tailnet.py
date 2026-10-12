@@ -28,6 +28,12 @@ catches only a forward still in place when the sign-in request arrives. Whatever
 backend's user, local admins, a sandbox that can reach the tailscaled pipe) can open a connection through a raw
 forward and remove the forward before sending the request. The owner accepted that residual risk.
 
+tailscaled also carries a peer's bytes when this node advertises a subnet route: it ends a routed TCP connection
+itself and opens a new one to the target from the service's own socket, which no serve config shows. With the Hub
+listening on `0.0.0.0` or a LAN address that the route covers, a tailnet device could send its own identity headers
+and pass every check above. `tailscale serve` proxies to the Hub's loopback listener, so the identity headers count
+only on a connection whose server address is loopback; a missing or non-loopback one refuses them.
+
 A trusted login is still not the owner: `POST /api/session` accepts it only if the daemon lists it in
 `allowed_logins` (server.py).
 """
@@ -119,7 +125,7 @@ def serve_config() -> object:
         raise FileNotFoundError(f"no {TAILSCALE_CLI} in {[str(d) for d in install_dirs()]}")
     # A fixed argument list and the CLI from the admin-owned install directory, never one found on PATH.
     done = subprocess.run([str(cli), "serve", "status", "--json"], capture_output=True,  # noqa: S603
-                          timeout=SERVE_STATUS_SECONDS, check=True,
+                          encoding="utf-8", timeout=SERVE_STATUS_SECONDS, check=True,
                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     return json.loads(done.stdout)
 
@@ -166,6 +172,12 @@ def _ip(text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     return ip.ipv4_mapped if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped else ip
 
 
+def is_loopback(host: object) -> bool:
+    """Whether a connection's server address is loopback. A missing one, a host name or a socket path is not."""
+    ip = _ip(host) if isinstance(host, str) and host else None
+    return ip is not None and ip.is_loopback
+
+
 def forwarded_source(scope: Scope) -> str:
     """The tailnet source address tailscaled set in `X-Forwarded-For`, or '' when there is not exactly one. Read it
     only on a connection verified to come from tailscaled."""
@@ -187,16 +199,16 @@ def is_tailscaled(exe: str, dirs: list[Path]) -> bool:
 
 
 class PeerCheck:
-    """Whether a connection's peer is the Tailscale service's tailscaled. Verdicts are cached per (client host, port)
-    for a few seconds so keep-alive requests do not repeat the lookup; a failed lookup is not cached and counts as not
-    tailscaled. A cached verdict can outlive the connection it was made for, so sign-in asks for a fresh lookup
-    (`fresh`)."""
+    """Whether a connection's peer is the Tailscale service's tailscaled, on the Hub's loopback address. Verdicts are
+    cached per (client host, port) for a few seconds so keep-alive requests do not repeat the lookup; a failed lookup
+    is not cached and counts as not tailscaled. A cached verdict can outlive the connection it was made for, so
+    sign-in asks for a fresh lookup (`fresh`)."""
 
     def __init__(self, *, owner=connection_owner, exe=process_exe, dirs=install_dirs, service=service_pid,
-                 platform_ok=supported, own_addresses=local_addresses, serve=serve_config, clock=time.monotonic,
-                 size: int = CACHE_SIZE, ttl: float = CACHE_SECONDS):
+                 platform_ok=supported, own_addresses=local_addresses, serve=serve_config, server_ok=is_loopback,
+                 clock=time.monotonic, size: int = CACHE_SIZE, ttl: float = CACHE_SECONDS):
         self.owner, self.exe, self.dirs, self.platform_ok, self.clock = owner, exe, dirs, platform_ok, clock
-        self.own_addresses, self.service, self.serve = own_addresses, service, serve
+        self.own_addresses, self.service, self.serve, self.server_ok = own_addresses, service, serve, server_ok
         self.size, self.ttl = size, ttl
         self._cache: OrderedDict[tuple[str, int], tuple[float, bool]] = OrderedDict()
         self._lock = threading.Lock()
@@ -222,6 +234,9 @@ class PeerCheck:
 
     def verify(self, client: tuple[str, int] | None, server: tuple[str, int] | None, *, fresh: bool = False) -> bool:
         if not client or not server or not self.platform_ok():
+            return False
+        if not self.server_ok(server[0]):
+            # A subnet-routed connection also comes from tailscaled's own socket, on the routed address.
             return False
         key = (str(client[0]), int(client[1]))
         hit = None if fresh else self.cached(key)
