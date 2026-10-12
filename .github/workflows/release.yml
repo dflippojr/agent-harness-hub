@@ -5,11 +5,15 @@ name: Release
 #                   the wheel, sdist and image once, smoke-test them and hand them on as artifacts; read-only
 #   pypi          - publish the wheel and sdist through the PyPI trusted publisher (environment `pypi`)
 #   ghcr          - push the built image as ghcr.io/dflippojr/agent-harness-hub:X.Y.Z, and :latest only when X.Y.Z is
-#                   the highest release tag, then attest its build provenance (environment `ghcr`); it runs after
-#                   PyPI accepts the release
+#                   the highest release tag on main, then attest its build provenance (environment `ghcr`); it runs
+#                   after PyPI accepts the release
+# The `ghcr` environment is a reviewer prompt for this workflow only. The package grants below come from this file,
+# not from the environment, so another workflow in the repository can still push the image (README "Release").
+# The main-ancestry check in build is an accident guard, not a control: a tag runs this file from the tagged commit.
 # Only pypi and ghcr get id-token: write; only ghcr gets packages: write and attestations: write.
 # Owner setup before the first tag (README "Release"): the PyPI trusted publisher, the `pypi` and `ghcr` environments
-# with the owner as required reviewer and deployments limited to v* tags, and a refs/tags/v* ruleset.
+# with the owner as required reviewer and deployments limited to v* tags, a refs/tags/v* ruleset, and a main ruleset
+# that requires a pull request.
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
@@ -60,8 +64,15 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          highest=$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
-          if [[ "$TAG" == "$highest" ]]; then latest=true; else latest=false; fi
+          # Only release tags on main count, so a stray tag (off main, or a typo such as v10.0.0) can't stop later
+          # releases from moving :latest.
+          highest=$(git tag -l 'v*' --merged origin/main --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
+          if [[ "$TAG" == "$highest" ]]; then
+            latest=true
+          else
+            latest=false
+            echo "::warning::$TAG is not the highest release tag on main ($highest); :latest not moved"
+          fi
           echo "highest release tag $highest; latest=$latest"
           echo "latest=$latest" >> "$GITHUB_OUTPUT"
       - name: Build the wheel and sdist

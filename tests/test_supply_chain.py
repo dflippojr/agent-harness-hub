@@ -77,10 +77,26 @@ def test_release_refuses_commits_off_main_and_moves_latest_only_forward():
     assert "fetch-depth: 0" in build
     assert 'git merge-base --is-ancestor "$GITHUB_SHA" origin/main' in build
     assert build.index("--is-ancestor") < build.index("python -m build")
-    assert "git tag -l 'v*' --sort=-v:refname" in build and 'if [[ "$TAG" == "$highest" ]]' in build
+    assert "git tag -l 'v*' --merged origin/main --sort=-v:refname" in build
+    assert 'if [[ "$TAG" == "$highest" ]]' in build
+    assert "::warning::$TAG is not the highest release tag on main" in build
     assert "LATEST: ${{ needs.build.outputs.latest }}" in ghcr
     latest_push = ghcr.index('docker push "$IMAGE:latest"')
     assert ghcr.rindex('if [[ "$LATEST" == "true" ]]', 0, latest_push) > ghcr.index('docker push "$IMAGE:$VERSION"')
+
+
+def test_release_docs_pin_the_attestation_signer_and_the_owner_setup():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    section = readme.split("\n### Release\n", 1)[1].split("\n### ", 1)[0]
+    verify = re.search(r"gh attestation verify oci://\S+ \\\n(.*\\\n)*.*--deny-self-hosted-runners", section)
+    assert verify, "README must show the attestation verify command"
+    assert ('--cert-identity "https://github.com/dflippojr/agent-harness-hub/.github/workflows/release.yml'
+            '@refs/tags/vX.Y.Z"') in verify.group(0)
+    assert "reviewer prompt for this workflow only" in section
+    assert "accident guard" in section
+    assert "branch ruleset for `main`" in section
+    release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert "reviewer prompt for this workflow only" in release and "accident guard" in release
 
 
 def test_release_attests_the_pushed_image_digest():
