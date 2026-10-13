@@ -33,6 +33,7 @@ UI_TESTS = REPO / "tools" / "ui-tests"
 FEATURES = ("signin", "overview", "apps", "modules", "pairing", "settings")
 START_SECONDS = 180  # docs/ui-testing.md, "Start": CI allows 180
 STEP_SECONDS = 600
+STEPS = ("launch", "doctor", "drive", "cleanup")  # a run passes only when every one of them ran and passed
 
 
 def now() -> str:
@@ -116,7 +117,8 @@ class Run:
     # Steps --------------------------------------------------------------------------------------------------------
     def launch(self) -> bool:
         """docs/ui-testing.md, "Start", with --log-dir in the evidence folder so the logs survive Teardown."""
-        instance = Path(tempfile.gettempdir()) / f"hub-verify-{self.evidence.name}"
+        # A new empty directory per run (the launcher accepts an empty --dir), so no two runs ever share one.
+        instance = Path(tempfile.mkdtemp(prefix="hub-verify-", dir=tempfile.gettempdir()))
         log_dir, out = self.evidence / "logs", self.evidence / "launcher.txt"
         self.record.update(instance_dir=str(instance), log_dir=str(log_dir), launcher_output=str(out))
         self.save()
@@ -151,8 +153,9 @@ class Run:
         return self.step("doctor", code == 0, "all checks pass" if code == 0 else "; ".join(failed) or f"exit {code}")
 
     def drive_argv(self, features: list[str]) -> list[str]:
-        npm = shutil.which("npm") or "npm"
-        argv = [npm, "--prefix", str(UI_TESTS), "exec", "--", "playwright", "test", "--config",
+        # Playwright's CLI under node itself: npm.cmd would pass the --grep "|" through cmd.exe on Windows.
+        node = shutil.which("node") or "node"
+        argv = [node, str(UI_TESTS / "node_modules" / "@playwright" / "test" / "cli.js"), "test", "--config",
                 str(UI_TESTS / "verify.config.mjs"), "--workers=1"]
         return argv + (["--grep", "|".join(f"@{f}" for f in features)] if features else [])
 
@@ -210,8 +213,12 @@ class Run:
             lines += [f"  - `{line.strip()[:160]}`" for line in notable[:8]]
         return lines or ["- no instance logs"]
 
+    def passed(self) -> bool:
+        ran = {name for name, _, _ in self.steps}
+        return set(STEPS) <= ran and all(ok for _, ok, _ in self.steps)
+
     def summary(self, features: list[str]) -> Path:
-        ok = all(passed for _, passed, _ in self.steps)
+        ok = self.passed()
         shots = sorted(p.relative_to(self.evidence).as_posix() for p in self.evidence.glob("screenshots/*.png"))
         doc = [f"# Verify: {'PASS' if ok else 'FAIL'}", "",
                f"- Run: `{self.evidence.name}`; features: {', '.join(features) or 'main path (all)'}",
@@ -228,13 +235,19 @@ class Run:
 
     def run(self, features: list[str]) -> int:
         self.save()
+        interrupted: BaseException | None = None
         try:
             if self.launch() and self.doctor():
                 self.drive(features)
+        except BaseException as e:  # noqa: BLE001 - Ctrl+C included: record it, clean up, then re-raise below
+            interrupted = e
+            self.step("interrupted", False, f"{type(e).__name__} stopped the run before it finished")
         finally:
             self.cleanup()
             print(f"evidence: {self.summary(features)}", flush=True)
-        return 0 if all(passed for _, passed, _ in self.steps) else 1
+        if interrupted is not None and not isinstance(interrupted, KeyboardInterrupt):
+            raise interrupted
+        return 0 if self.passed() else 1
 
 
 def main(argv: list[str] | None = None) -> int:

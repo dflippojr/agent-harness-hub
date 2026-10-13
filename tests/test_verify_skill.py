@@ -10,6 +10,7 @@ import socket
 import sys
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -143,7 +144,7 @@ spec.loader.exec_module(ui)
 if sys.argv[1] == "stop":
     sys.exit(ui.main(sys.argv[1:]))
 root = Path(sys.argv[sys.argv.index("--dir") + 1])
-root.mkdir(parents=True)
+root.mkdir(parents=True, exist_ok=True)  # verify.py hands over a new empty directory
 (root / ui.MARKER).write_text("stand-in", encoding="utf-8")
 with socket.socket() as s:
     s.bind(("127.0.0.1", 0))
@@ -203,3 +204,47 @@ def test_cleanup_after_a_failed_drive_leaves_nothing_running(tmp_path, monkeypat
     assert "# Verify: FAIL" in summary
     assert "| drive | FAIL |" in summary and "| cleanup | PASS |" in summary
     assert verify.main(["cleanup", "--evidence", str(tmp_path / "evidence")]) == 0  # safe to repeat
+
+
+def test_each_run_gets_its_own_instance_directory(tmp_path, monkeypatch):
+    verify = load("verify")
+    monkeypatch.setattr(verify.tempfile, "gettempdir", lambda: str(tmp_path))
+    exited = Mock(pid=0, returncode=2, **{"poll.return_value": 2})
+
+    def spawn(name, argv, log, env=None):
+        log.write_text("refused", encoding="utf-8")
+        return exited
+    dirs = []
+    for parent in ("run-a", "run-b"):  # the same evidence basename under different parents
+        run = verify.Run(tmp_path / parent / "evidence")
+        run.spawn, run.track_tree = spawn, lambda name, pid: None
+        assert not run.launch()
+        dirs.append(run.record["instance_dir"])
+    assert dirs[0] != dirs[1]
+
+
+def test_an_interrupted_run_is_a_failure_and_still_cleans_up(tmp_path):
+    verify = load("verify")
+    run = verify.Run(tmp_path / "evidence")
+    run.launch = lambda: run.step("launch", True, "stand-in")
+    run.doctor = lambda: run.step("doctor", True, "stand-in")
+
+    def interrupt(features):
+        raise KeyboardInterrupt
+    run.drive = interrupt
+    cleaned = []
+    run.cleanup = lambda: cleaned.append(True) or run.step("cleanup", True, "stand-in")
+
+    assert run.run([]) == 1
+    assert cleaned
+    summary = (tmp_path / "evidence" / "summary.md").read_text(encoding="utf-8")
+    assert "# Verify: FAIL" in summary and "| interrupted | FAIL |" in summary
+
+
+def test_a_run_missing_a_step_does_not_pass(tmp_path):
+    run = load("verify").Run(tmp_path / "evidence")
+    for name in ("launch", "doctor", "cleanup"):
+        run.step(name, True, "")
+    assert not run.passed()
+    run.step("drive", True, "")
+    assert run.passed()
