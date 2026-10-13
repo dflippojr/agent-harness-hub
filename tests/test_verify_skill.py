@@ -304,3 +304,24 @@ def test_a_reused_process_group_id_is_never_touched():
     finally:
         stranger.kill()
         stranger.wait()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the run token: the POSIX containment")
+def test_an_orphan_outside_the_tree_and_group_is_found_by_the_run_token(tmp_path):
+    psutil = pytest.importorskip("psutil")
+    verify = load("verify")
+    contained = verify.Containment()
+    contained.reaper = False  # as on macOS
+    orphan_file = tmp_path / "orphan.pid"
+    step = contained.popen([sys.executable, "-c", FAILING_DRIVE, str(orphan_file), "own-session"])
+    step.wait(timeout=30)
+    orphan = int(orphan_file.read_text(encoding="utf-8"))
+    assert contained.kill([]) >= 1  # no recorded group: only the token finds it
+    assert not psutil.pid_exists(orphan) or psutil.Process(orphan).status() == psutil.STATUS_ZOMBIE
+
+
+def test_isolation_fails_when_a_process_cannot_be_inspected(instance):
+    blocked = doctor.check_isolation(instance, [("hub", isolated_env(instance), []), ("daemon", None, [])])
+    assert not blocked.ok and "daemon could not be inspected" in blocked.detail
+    hub_only = doctor.check_isolation(instance, [("hub", isolated_env(instance), [])])
+    assert not hub_only.ok and "no daemon process was inspected" in hub_only.detail

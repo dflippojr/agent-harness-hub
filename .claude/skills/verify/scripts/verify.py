@@ -75,17 +75,22 @@ class Containment:
     - Windows: one Job Object with kill-on-close, so they also die if this script is killed.
     - Linux: this script becomes a child subreaper, so an orphan, even one that started its own session, is
       re-parented here and stays its descendant. Each step also leads its own process group.
-    - Other POSIX systems: the recorded process groups only.
+    - Everywhere but Windows: every step's environment carries this run's random token, so a process that left
+      both the tree and the group (macOS has no subreaper) is still found by it.
 
     A recorded group counts only while its members started no earlier than its leader did, so a group id reused
     after the run is never touched."""
 
-    def __init__(self):
+    RUN_VAR = "VERIFY_RUN_ID"  # the variable holding the run token
+
+    def __init__(self, token: str = ""):
         self.job = _windows_job() if os.name == "nt" else None
         self.reaper = self.job is None and _become_subreaper()
+        self.token = token or secrets.token_hex(16)
 
     def popen(self, argv: list[str], **kwargs) -> subprocess.Popen:
         if self.job is None:
+            kwargs["env"] = dict(kwargs.get("env") or os.environ, **{self.RUN_VAR: self.token})
             return subprocess.Popen(argv, start_new_session=True, **kwargs)  # noqa: S603
         flags = subprocess.CREATE_NEW_PROCESS_GROUP | 0x4  # CREATE_SUSPENDED: in the job before it starts anything
         proc = subprocess.Popen(argv, creationflags=flags, **kwargs)  # noqa: S603
@@ -98,6 +103,10 @@ class Containment:
         import psutil
         found = {p.pid: p for p in psutil.Process().children(recursive=True)} if self.reaper else {}
         procs = list(psutil.process_iter())
+        for proc in procs:
+            with contextlib.suppress(psutil.Error, OSError):
+                if proc.pid != os.getpid() and proc.environ().get(self.RUN_VAR) == self.token:
+                    found[proc.pid] = proc
         for group in groups:
             leader = alive({"pid": group.get("pgid"), "created": group.get("created")})
             if leader is None and psutil.pid_exists(int(group["pgid"])):
@@ -212,6 +221,7 @@ class Run:
         self.record: dict = {"evidence": str(self.evidence), "processes": []}
         self.steps: list[tuple[str, bool, str]] = []
         self.contained = Containment()
+        self.record["token"] = self.contained.token  # lets `cleanup` find this run's processes after a crash
 
     # Record -------------------------------------------------------------------------------------------------------
     def save(self) -> None:
@@ -421,6 +431,7 @@ def main(argv: list[str] | None = None) -> int:
         return Run(evidence).run(args.feature)
     run = Run(args.evidence)
     run.record = json.loads((run.evidence / "launch.json").read_text(encoding="utf-8"))
+    run.contained.token = run.record.get("token") or run.contained.token
     return 0 if run.cleanup() else 1
 
 

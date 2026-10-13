@@ -121,12 +121,18 @@ def _inside(path: str, root: Path) -> bool:
 def check_isolation(root: Path, processes: Iterable[tuple[str, dict, list[str]]]) -> Check:
     """No credential reaches the instance's processes and every data location they use is inside the instance
     directory: environment paths, the Hub's --state-dir and the daemon config's data_dir and repos_dir.
-    `processes` is (name, environment, argv) for each recorded process."""
+    `processes` is (name, environment, argv) for each recorded process; environment None means it could not be
+    inspected, which fails the check, as does a Hub or daemon with no inspected process."""
     root = root.resolve()
     problems = []
     seen = 0
+    inspected = set()
     for name, env, argv in processes:
+        if env is None:
+            problems.append(f"{name} could not be inspected")
+            continue
         seen += 1
+        inspected.add(name)
         leaked = sorted(k for k, v in env.items() if v and SECRET_NAME.search(k))
         if leaked:
             problems.append(f"{name} has credential variables {', '.join(leaked)}")
@@ -135,8 +141,7 @@ def check_isolation(root: Path, processes: Iterable[tuple[str, dict, list[str]]]
         for flag in ("--state-dir", "--config-dir", "--claim-file"):
             if flag in argv[:-1] and not _inside(argv[argv.index(flag) + 1], root):
                 problems.append(f"{name} {flag} is outside the instance")
-    if not seen:
-        problems.append("no recorded instance process could be inspected")
+    problems += [f"no {name} process was inspected" for name in ("hub", "daemon") if name not in inspected]
     try:
         config = json.loads((root / "daemon" / "config" / "harness.yaml").read_text(encoding="utf-8"))
         problems += [f"daemon {key} is outside the instance" for key in ("data_dir", "repos_dir")
@@ -185,8 +190,10 @@ def live_environments(procs) -> list[tuple[str, dict, list[str]]]:
     for name, proc in procs:
         try:
             found.append((name, proc.environ(), proc.cmdline()))
+        except psutil.NoSuchProcess:
+            continue  # exited; check_isolation still needs one inspected Hub and daemon process
         except psutil.Error:
-            continue
+            found.append((name, None, []))
     return found
 
 

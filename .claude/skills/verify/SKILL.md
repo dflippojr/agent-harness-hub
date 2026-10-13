@@ -29,8 +29,9 @@ the launcher's pid and start time, the instance directory and the log path. When
 the Hub and daemon URLs and ports. Every step's process is appended there too, with its start time, and its
 descendants as they are seen. All of them are also contained: on Windows in one kill-on-close Job Object (so they
 die even if `verify.py` itself is killed); on Linux `verify.py` is a child subreaper, so orphans, even ones in a
-new session, stay its descendants; and on POSIX each step leads its own process group, recorded in `launch.json`
-with its leader's start time. That catches children whose parent has already exited.
+new session, stay its descendants; on POSIX each step leads its own process group, recorded in `launch.json`
+with its leader's start time, and carries the run's random `VERIFY_RUN_ID` (also recorded), which finds a process
+that left both (macOS has no subreaper). That catches children whose parent has already exited.
 
 ## 2. Doctor
 
@@ -55,7 +56,7 @@ request at all unless both URLs are `127.0.0.1` on a port that is not live.
 Playwright, Chromium only, one worker, a desktop (1440×900) and a phone (Pixel 7) project:
 [`tools/ui-tests/verify/drive.spec.mjs`](../../../tools/ui-tests/verify/drive.spec.mjs) with
 [`tools/ui-tests/verify.config.mjs`](../../../tools/ui-tests/verify.config.mjs). It lives in `tools/ui-tests` so it
-reuses that package's pinned Playwright and the suite's `signedIn`, `openSection` and `errors` fixtures; the main
+reuses that package's pinned Playwright and the suite's `signIn`, `openSection` and `errors` helpers (signing in after `errors` listens); the main
 suite's config does not pick it up. There is no global setup: it drives the instance from step 1. Output: `drive.txt`.
 
 ### Feature map
