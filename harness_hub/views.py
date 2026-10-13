@@ -600,6 +600,20 @@ def pairing_request_view(row: Any, secrets: tuple[str, ...] = ()) -> dict:
             **{key: _finite(row.get(key)) for key in ("created_at", "expires_at", "approved_at", "finished_at")}}
 
 
+def pairing_attention(body: Any, now: float) -> dict | None:
+    """How many unexpired App requests wait on an owner decision. Counts only: no ids, names, origins or codes.
+
+    Hub claims are decided on the daemon host, and `claim`/`redeem` are the App's next step, so neither is counted."""
+    if not isinstance(body, list):
+        return None
+    counts = {"approve": 0, "confirm": 0}
+    for raw in body:
+        row = pairing_request_view(raw)
+        if row["kind"] == "app" and row["needs"] in counts and (row["expires_at"] or 0) > now:
+            counts[row["needs"]] += 1
+    return counts
+
+
 def pairing_view(body: Any, secrets: tuple[str, ...] = ()) -> dict:
     rows = [pairing_request_view(row, secrets) for row in body if isinstance(row, dict)] if isinstance(
         body, list) else []

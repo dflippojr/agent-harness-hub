@@ -52,6 +52,7 @@ from .views import (
     normalize_origin,
     overview,
     ownership_view,
+    pairing_attention,
     pairing_request_view,
     pairing_view,
     registry_view,
@@ -304,13 +305,56 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                                httponly=True, samesite="strict")
         return response
 
+    # Listings must not publish a new slot while its disclosures are being checked or it is being withdrawn.
+    pairing_consent_lock = asyncio.Lock()
+
+    # A bounded, process-local backstop for an observed browser claim that skipped the confirmation gate.
+    # Share observations across pages/tabs; record successful Hub confirmations under the same lock as polls.
+    browser_slot_states: dict[tuple[str, str], tuple[str, bool]] = {}
+
+    def observe_browser_slots(rows: list, key_id: str, *, confirmed_id: str = "") -> str:
+        warning = False
+        for raw in rows:
+            row = pairing_request_view(raw)
+            if not (row["id"] and row["kind"] == "app" and row["armed"] and row["browser"]):
+                continue
+            identity = (key_id, row["id"])
+            previous, bypassed = browser_slot_states.get(identity, ("", False))
+            bypassed = bypassed or (previous == "armed" and row["state"] in ("approved", "redeemed")
+                                    and row["id"] != confirmed_id)
+            if identity not in browser_slot_states and len(browser_slot_states) >= 256:
+                browser_slot_states.pop(next(iter(browser_slot_states)))
+            browser_slot_states[identity] = (row["state"], bypassed)
+            warning = warning or bypassed
+        return "This daemon approved the claim without confirmation; update the daemon." if warning else ""
+
     @app.get("/api/overview")
     async def get_overview():
-        health, ownership, error = None, None, ""
+        health, ownership, attention, error = None, None, None, ""
         key = claims.key()
-        reads = await concurrently(daemon.health(), *(
-            (daemon.admin(key["token"]), daemon.admin(key["token"], "/hub-claim")) if key else ()))
+
+        async def read_pairing() -> Any:
+            # Under the consent lock, as the other listings, so no count is published during a withdrawal.
+            async with pairing_consent_lock:
+                reply = await daemon.pairing(key["token"], "list")
+                if reply.ok and isinstance(reply.body, list):
+                    observe_browser_slots(reply.body, key["key_id"])
+                return reply
+
+        async def retained(token: str) -> str:
+            # A transient rejection must not destroy the owner's persistent key.
+            confirmation = await daemon.admin(token)
+            if confirmation.status == 401:
+                await claims.released(token)
+                return ""
+            return "the owner API rejected the key once; retained it pending confirmation"
+
+        # The pairing read can wait on the consent lock for as long as an arm request holds it, so it runs beside the
+        # other reads and is awaited only when they succeed; a refused or failed read cancels it instead.
+        pairing_task = asyncio.ensure_future(read_pairing()) if key else None
         try:
+            reads = await concurrently(daemon.health(), *(
+                (daemon.admin(key["token"]), daemon.admin(key["token"], "/hub-claim")) if key else ()))
             reply = settled(reads[0])
             if reply.ok:
                 health = health_view(reply.body)
@@ -319,20 +363,30 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if key:
                 discovery, record = settled(reads[1]), settled(reads[2])
                 if 401 in (discovery.status, record.status):
-                    # A transient rejection must not destroy the owner's persistent key.
-                    confirmation = await daemon.admin(key["token"])
-                    if confirmation.status == 401:
-                        await claims.released(key["token"])
-                    else:
-                        error = "the owner API rejected the key once; retained it pending confirmation"
+                    error = await retained(key["token"]) or error
                 elif discovery.ok and record.ok:
                     ownership = ownership_view(discovery.body, record.body, key["key_id"])
+                    [pairing] = await concurrently(pairing_task)
+                    try:
+                        pairing = settled(pairing)
+                        if pairing.status == 401:
+                            refusal = await retained(key["token"])
+                            error, ownership = (refusal, ownership) if refusal else (error, None)
+                        elif pairing.ok:
+                            attention = pairing_attention(pairing.body, time.time())
+                    except DaemonUnreachable:
+                        pass  # A missing count never changes what Overview reports about the daemon.
                 else:
                     error = f"the owner API answered HTTP {discovery.status if not discovery.ok else record.status}"
         except DaemonUnreachable:
             error = f"the daemon at {settings.daemon_url} did not answer"
+        finally:
+            if pairing_task:
+                pairing_task.cancel()
+                await concurrently(pairing_task)
         result = overview(claims, settings.daemon_url, health, ownership, error)
         result["restarting"] = restart["active"]
+        result["attention"] = attention
         return result
 
     async def refused(token: str) -> JSONResponse:
@@ -391,29 +445,6 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             shown = {"modules": module_view(good["inventory"]) if good else None}
         return {"state": state, "error": error, "stale": state != "ready" and good is not None,
                 "fetched_at": good["fetched_at"] if good else None, **shown}
-
-    # Listings must not publish a new slot while its disclosures are being checked or it is being withdrawn.
-    pairing_consent_lock = asyncio.Lock()
-
-    # A bounded, process-local backstop for an observed browser claim that skipped the confirmation gate.
-    # Share observations across pages/tabs; record successful Hub confirmations under the same lock as polls.
-    browser_slot_states: dict[tuple[str, str], tuple[str, bool]] = {}
-
-    def observe_browser_slots(rows: list, key_id: str, *, confirmed_id: str = "") -> str:
-        warning = False
-        for raw in rows:
-            row = pairing_request_view(raw)
-            if not (row["id"] and row["kind"] == "app" and row["armed"] and row["browser"]):
-                continue
-            identity = (key_id, row["id"])
-            previous, bypassed = browser_slot_states.get(identity, ("", False))
-            bypassed = bypassed or (previous == "armed" and row["state"] in ("approved", "redeemed")
-                                    and row["id"] != confirmed_id)
-            if identity not in browser_slot_states and len(browser_slot_states) >= 256:
-                browser_slot_states.pop(next(iter(browser_slot_states)))
-            browser_slot_states[identity] = (row["state"], bypassed)
-            warning = warning or bypassed
-        return "This daemon approved the claim without confirmation; update the daemon." if warning else ""
 
     # Bound to the Hub key and the entry's displayed identity, with a bounded ten-minute lifetime.
     consent_copies: dict[tuple[str, str], tuple[str, float, list[dict], bool]] = {}
