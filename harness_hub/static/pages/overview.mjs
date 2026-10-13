@@ -12,6 +12,9 @@ export function renderOverview(main) {
   let stopped = false;
   let loading = false;
   let reloadRequested = false;
+  // The owner is approving on the daemon host or waiting out a restart: keep polling in a hidden tab. A failed read
+  // keeps the last known answer, so one dropped request does not pause the wait.
+  let whileHidden = false;
   const poll = poller(load);
   const claimBox = h("div", { id: "claim" });
   const body = h("div", { class: "grid" });
@@ -29,7 +32,7 @@ export function renderOverview(main) {
     }
     loading = true;
     poll.cancel();
-    let delay = REFRESH_MS, whileHidden = false;
+    let delay = REFRESH_MS;
     try {
       const data = await api("overview");
       if (stopped || reloadRequested) return;
@@ -40,7 +43,6 @@ export function renderOverview(main) {
         await api("settings/health").catch(() => {});
         if (stopped || reloadRequested) return;
       }
-      // The owner is approving on the daemon host or waiting out a restart: keep polling in a hidden tab.
       whileHidden = waiting || data.restarting;
       delay = whileHidden ? CLAIM_POLL_MS : REFRESH_MS;
     } catch (error) {

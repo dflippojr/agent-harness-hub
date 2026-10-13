@@ -55,9 +55,9 @@ for (const [name, render, poll, interval] of PAGES) {
     const page = mount(t, render, answer);
     await page.advance(0);
     await page.visibility("hidden");
-    await page.visibility("visible");
     const seen = page.calls.length;
-    assert.deepEqual(urls(page, seen - poll.length), poll);
+    await page.visibility("visible");
+    assert.deepEqual(urls(page, seen), poll);
     assert.equal(page.timers.size, 1);
     assert.equal([...page.timers.values()][0].delay, interval);
   });
@@ -112,6 +112,21 @@ for (const [state, restarting] of [["pending", false], ["persisting", false], ["
     assert.equal(page.calls.filter((call) => call.url === "/api/overview").length, seen + 5);
   });
 }
+
+test("Overview keeps polling while hidden through a failed read during a pending claim", async (t) => {
+  let fail = false;
+  const page = mount(t, renderOverview, () =>
+    Promise.resolve(fail ? response({ detail: "offline" }, 503) : response(overview("pending"))));
+  await page.advance(0);
+  await page.visibility("hidden");
+  fail = true;
+  await page.advance(2000);
+  fail = false;
+  const seen = page.calls.length;
+  await page.advance(30000);
+  await page.advance(4000);
+  assert.equal(page.calls.length, seen + 3);
+});
 
 test("Overview pauses in a hidden tab once the claim it was waiting on settles", async (t) => {
   let state = "pending";
