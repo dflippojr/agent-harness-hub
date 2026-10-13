@@ -167,9 +167,10 @@ time.sleep(600)
 """
 
 FAILING_DRIVE = """
-import subprocess, sys, time
-subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])  # a browser the drive step left behind
-time.sleep(2)
+import pathlib, subprocess, sys
+# A browser the drive step leaves behind, then it fails at once: no sampling of its tree can see the orphan.
+orphan = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+pathlib.Path(sys.argv[1]).write_text(str(orphan.pid), encoding="utf-8")
 sys.exit(3)
 """
 
@@ -183,15 +184,17 @@ def test_cleanup_after_a_failed_drive_leaves_nothing_running(tmp_path, monkeypat
     monkeypatch.setattr(verify.tempfile, "gettempdir", lambda: str(tmp_path))
     run = verify.Run(tmp_path / "evidence", launcher=launcher)
     run.doctor_argv = lambda: [sys.executable, "-c", "print('PASS stand-in')"]
-    run.drive_argv = lambda features: [sys.executable, "-c", FAILING_DRIVE]
+    orphan_file = tmp_path / "orphan.pid"
+    run.drive_argv = lambda features: [sys.executable, "-c", FAILING_DRIVE, str(orphan_file)]
 
     assert run.run(["settings"]) == 1
 
     steps = {name: ok for name, ok, _ in run.steps}
     assert steps == {"launch": True, "doctor": True, "drive": False, "cleanup": True}
     record = json.loads((tmp_path / "evidence" / "launch.json").read_text(encoding="utf-8"))
-    names = {p["name"] for p in record["processes"]}
-    assert {"launcher", "launcher child", "drive", "drive child"} <= names
+    assert {"launcher", "doctor", "drive"} <= {p["name"] for p in record["processes"]}
+    orphan = int(orphan_file.read_text(encoding="utf-8"))
+    assert not psutil.pid_exists(orphan) or psutil.Process(orphan).status() == psutil.STATUS_ZOMBIE
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and any(psutil.pid_exists(p["pid"]) and verify.alive(p)
                                               for p in record["processes"]):
@@ -248,3 +251,14 @@ def test_a_run_missing_a_step_does_not_pass(tmp_path):
     assert not run.passed()
     run.step("drive", True, "")
     assert run.passed()
+
+
+def test_every_run_gets_its_own_evidence_folder(tmp_path, capsys):
+    verify = load("verify")
+    assert verify.run_name() != verify.run_name()
+    used = tmp_path / "used"
+    used.mkdir()
+    (used / "launch.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        verify.main(["run", "--evidence", str(used)])
+    assert "not empty" in capsys.readouterr().err

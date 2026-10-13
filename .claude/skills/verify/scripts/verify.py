@@ -16,7 +16,9 @@ import argparse
 import contextlib
 import json
 import os
+import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -36,8 +38,9 @@ STEP_SECONDS = 600
 STEPS = ("launch", "doctor", "drive", "cleanup")  # a run passes only when every one of them ran and passed
 
 
-def now() -> str:
-    return datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+def run_name() -> str:
+    """A UTC timestamp plus a random suffix: two runs started in the same second never share a folder."""
+    return datetime.now(UTC).strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3)
 
 
 def created(pid: int) -> float | None:
@@ -66,12 +69,118 @@ def port_open(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
+class Containment:
+    """Holds every process a run starts and all their descendants, including ones whose parent has already exited
+    (sampling the process tree would miss those). Windows: one Job Object with kill-on-close, so they also die if
+    this script is killed. Elsewhere: each step leads its own session, and cleanup kills by recorded group."""
+
+    def __init__(self):
+        self.job = _windows_job() if os.name == "nt" else None
+
+    def popen(self, argv: list[str], **kwargs) -> subprocess.Popen:
+        if self.job is None:
+            return subprocess.Popen(argv, start_new_session=True, **kwargs)  # noqa: S603
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP | 0x4  # CREATE_SUSPENDED: in the job before it starts anything
+        proc = subprocess.Popen(argv, creationflags=flags, **kwargs)  # noqa: S603
+        self.job.assign(int(proc._handle))  # the process handle Popen holds
+        return proc
+
+    def _members(self, groups: list[int]) -> list:
+        import psutil
+        found = []
+        for proc in psutil.process_iter():
+            with contextlib.suppress(psutil.Error, OSError):
+                if os.getpgid(proc.pid) in groups and proc.status() != psutil.STATUS_ZOMBIE:
+                    found.append(proc)
+        return found
+
+    def kill(self, groups: list[int]) -> int:
+        """Kill everything still contained; return how many processes were left."""
+        if self.job is not None:
+            left = self.job.active()
+            self.job.terminate()
+            return left
+        import psutil
+        members = self._members(groups)
+        for group in groups:
+            with contextlib.suppress(OSError):
+                os.killpg(group, signal.SIGKILL)
+        psutil.wait_procs(members, timeout=15)
+        return len(members)
+
+    def remaining(self, groups: list[int]) -> int:
+        return self.job.active() if self.job is not None else len(self._members(groups))
+
+
+def _windows_job():
+    import ctypes
+    from ctypes import wintypes
+
+    class Basic(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class Extended(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", Basic), ("IoInfo", ctypes.c_uint64 * 6),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    class Accounting(ctypes.Structure):
+        _fields_ = [("TotalUserTime", ctypes.c_int64), ("TotalKernelTime", ctypes.c_int64),
+                    ("ThisPeriodTotalUserTime", ctypes.c_int64), ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+                    ("TotalPageFaultCount", wintypes.DWORD), ("TotalProcesses", wintypes.DWORD),
+                    ("ActiveProcesses", wintypes.DWORD), ("TotalTerminatedProcesses", wintypes.DWORD)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel32.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                                                   ctypes.c_void_p]
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
+
+    class Job:
+        def __init__(self):
+            self.handle = kernel32.CreateJobObjectW(None, None)
+            info = Extended()
+            info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if not self.handle or not kernel32.SetInformationJobObject(self.handle, 9, ctypes.byref(info),
+                                                                       ctypes.sizeof(info)):
+                raise OSError(ctypes.get_last_error(), "could not create a job object")
+
+        def assign(self, process: int) -> None:
+            ok = kernel32.AssignProcessToJobObject(self.handle, process)
+            ntdll.NtResumeProcess(process)
+            if not ok:
+                raise OSError(ctypes.get_last_error(), "could not put the process in the run's job object")
+
+        def active(self) -> int:
+            info = Accounting()
+            kernel32.QueryInformationJobObject(self.handle, 1, ctypes.byref(info), ctypes.sizeof(info), None)
+            return info.ActiveProcesses
+
+        def terminate(self) -> None:
+            kernel32.TerminateJobObject(self.handle, 1)
+            deadline = time.monotonic() + 15
+            while self.active() and time.monotonic() < deadline:
+                time.sleep(0.1)
+
+    return Job()
+
+
 class Run:
     def __init__(self, evidence: Path, python: str = sys.executable, launcher: Path = LAUNCHER):
         self.evidence = evidence.resolve()
         self.python, self.launcher = python, launcher
         self.record: dict = {"evidence": str(self.evidence), "processes": []}
         self.steps: list[tuple[str, bool, str]] = []
+        self.contained = Containment()
 
     # Record -------------------------------------------------------------------------------------------------------
     def save(self) -> None:
@@ -95,15 +204,17 @@ class Run:
             pass
 
     def spawn(self, name: str, argv: list[str], log: Path, env: dict | None = None) -> subprocess.Popen:
-        flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         with log.open("w", encoding="utf-8") as out:
-            proc = subprocess.Popen(argv, cwd=REPO, stdout=out, stderr=subprocess.STDOUT,  # noqa: S603
-                                    stdin=subprocess.DEVNULL, env=env, creationflags=flags)
+            proc = self.contained.popen(argv, cwd=REPO, stdout=out, stderr=subprocess.STDOUT,
+                                        stdin=subprocess.DEVNULL, env=env)
+        if os.name != "nt":
+            self.record.setdefault("groups", []).append(proc.pid)  # it leads its own session and process group
         self.track(name, proc.pid)
         return proc
 
     def wait_tracking(self, name: str, proc: subprocess.Popen, seconds: float) -> int:
-        """Wait for a step, recording every process it starts (npm, node, browsers) while it runs."""
+        """Wait for a step, recording the processes it starts (npm, node, browsers) for the evidence. Containment,
+        not this sampling, is what makes cleanup reach all of them."""
         deadline = time.monotonic() + seconds
         while proc.poll() is None:
             self.track_tree(name, proc.pid)
@@ -173,21 +284,24 @@ class Run:
         lines = []
         instance = self.record.get("instance_dir")
         if instance:
-            result = subprocess.run([self.python, str(self.launcher), "stop", "--dir", instance],  # noqa: S603
-                                    cwd=REPO, capture_output=True, text=True, timeout=180)
-            lines.append(f"teardown: exit {result.returncode} {(result.stdout + result.stderr).strip()}")
+            lines.append("teardown: " + self.teardown(instance))
         import psutil
+        groups = self.record.get("groups", [])
+        contained = self.contained.kill(groups)
         procs = [p for p in map(alive, self.record["processes"]) if p is not None]
         for proc in procs:
             with contextlib.suppress(psutil.Error):
                 proc.kill()
         psutil.wait_procs(procs, timeout=15)
-        lines.append(f"killed {len(procs)} recorded processes still running" if procs else
-                     "no recorded process was still running")
+        lines.append(f"killed {contained} contained and {len(procs)} recorded processes still running")
+        if instance and Path(instance).exists():  # Teardown failed, or a process it could not stop held the dir
+            lines.append("teardown again: " + self.teardown(instance))
         problems = []
         left = [f"{p['name']} {p['pid']}" for p in self.record["processes"] if alive(p) is not None]
         if left:
             problems.append("still running: " + ", ".join(left))
+        if remaining := self.contained.remaining(groups):
+            problems.append(f"{remaining} processes this run started still run")
         for key in ("hub_port", "daemon_port"):
             if self.record.get(key) and port_open(self.record[key]):
                 problems.append(f"port {self.record[key]} still accepts connections")
@@ -196,6 +310,14 @@ class Run:
         lines += problems or ["no recorded process, port or instance directory is left"]
         (self.evidence / "cleanup.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
         return self.step("cleanup", not problems, "; ".join(problems) or "nothing left behind")
+
+    def teardown(self, instance: str) -> str:
+        try:
+            result = subprocess.run([self.python, str(self.launcher), "stop", "--dir", instance],  # noqa: S603
+                                    cwd=REPO, capture_output=True, text=True, timeout=180)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return f"{type(e).__name__}; the recorded processes are killed instead"
+        return f"exit {result.returncode} {(result.stdout + result.stderr).strip()}"
 
     def step(self, name: str, ok: bool, detail: str) -> bool:
         self.steps.append((name, ok, detail))
@@ -261,7 +383,10 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--evidence", type=Path, required=True)
     args = ap.parse_args(argv)
     if args.command == "run":
-        return Run(args.evidence or REPO / ".verify" / now()).run(args.feature)
+        evidence = args.evidence or REPO / ".verify" / run_name()
+        if evidence.exists() and any(evidence.iterdir()):
+            r.error(f"{evidence} is not empty: each run needs its own evidence folder")
+        return Run(evidence).run(args.feature)
     run = Run(args.evidence)
     run.record = json.loads((run.evidence / "launch.json").read_text(encoding="utf-8"))
     return 0 if run.cleanup() else 1

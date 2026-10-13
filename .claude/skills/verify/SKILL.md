@@ -26,8 +26,10 @@ requirements, including `psutil`) and with `HUB_UI_DAEMON_SRC` set.
 a fresh `--dir` under the system temp directory and `--log-dir` inside the evidence folder (so the logs survive
 Teardown, as "Start" → **Logs** explains). Before waiting for anything it writes `launch.json` in the evidence folder:
 the launcher's pid and start time, the instance directory and the log path. When the `READY` line arrives it adds
-the Hub and daemon URLs and ports. Every process a later step starts (doctor, npm, node, browsers) is appended there
-too, with its start time.
+the Hub and daemon URLs and ports. Every step's process is appended there too, with its start time, and its
+descendants as they are seen. All of them are also contained: on Windows in one kill-on-close Job Object (so they
+die even if `verify.py` itself is killed), elsewhere each step leads its own process group, recorded in
+`launch.json`. That catches children whose parent has already exited.
 
 ## 2. Doctor
 
@@ -72,7 +74,8 @@ lacks, add a tagged test to `drive.spec.mjs` and a row here; deeper journeys bel
 
 ## 4. Evidence
 
-Under `.verify/<UTC timestamp>/` (git-ignored; `--evidence <dir>` overrides):
+Under `.verify/<UTC timestamp>-<random suffix>/` (git-ignored; `--evidence <empty dir>` overrides; a used folder
+is refused):
 
 - `summary.md`: per-step result, the loopback URLs, the screenshot list and log excerpts (the fake model banner and
   any `ERROR` or `Traceback` lines). Read it first; quote it in the PR.
@@ -88,12 +91,17 @@ They die with the instance.
 Runs in a `finally`, so also after a failed launch, doctor or drive:
 
 1. The contract's **Teardown** (docs/ui-testing.md, "Teardown") on the instance directory.
-2. Every process in `launch.json` that still runs with its recorded start time is killed, by pid. Nothing is ever
-   found or killed by name or port.
-3. The contract's leftover checks: no recorded process alive, the Hub and daemon ports refuse connections, the
-   instance directory is gone. Any leftover fails the step and is listed in `cleanup.txt`.
+2. Everything still in the run's Job Object or recorded process groups, then every process in `launch.json` that
+   still runs with its recorded start time, is killed. Nothing is ever found or killed by name or port. If Teardown
+   timed out or failed, it runs once more after that.
+3. The contract's leftover checks: no recorded or contained process alive, the Hub and daemon ports refuse
+   connections, the instance directory is gone. Any leftover fails the step and is listed in `cleanup.txt`.
 
-If a run was killed before its own cleanup, repeat it from the evidence folder:
+A run passes only if launch, doctor, drive and cleanup all ran and passed. Ctrl+C or an error is recorded as a failed
+`interrupted` step, and cleanup and the summary still run.
+
+If a run was killed before its own cleanup (on Windows its processes die with it; the instance directory
+stays), repeat it from the evidence folder:
 
 ```
 python .claude/skills/verify/scripts/verify.py cleanup --evidence .verify/<timestamp>
@@ -102,5 +110,6 @@ python .claude/skills/verify/scripts/verify.py cleanup --evidence .verify/<times
 ## Tests
 
 `tests/test_verify_skill.py`: the doctor's verdicts (healthy, not ready, non-loopback, missing seed, leaked
-credentials or paths) and a full `run` with a stand-in launcher whose drive step fails, checking that cleanup still
-leaves no process, port or directory behind.
+credentials or paths); a full `run` with a stand-in launcher whose drive step leaves an orphaned process and fails,
+checking that cleanup still leaves no process, port or directory behind; an interrupted run failing; and unique
+instance and evidence folders per run.
