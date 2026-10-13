@@ -457,11 +457,19 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     return reply, observe_browser_slots(reply.body, key["key_id"])
                 return reply, ""
 
-        listed, slots_read = await concurrently(
-            read_inventory(key, lambda body: entries_view(body, secrets)), read_slots())
-        result = settled(listed)
-        if isinstance(result, JSONResponse):
-            return result
+        # Both reads run together, but a refusal from the inventory read returns at once: the slots read can wait on
+        # the consent lock for as long as another tab's arm request holds it, so it is cancelled, not awaited.
+        slots_task = asyncio.ensure_future(read_slots())
+        try:
+            result = await read_inventory(key, lambda body: entries_view(body, secrets))
+            if isinstance(result, JSONResponse):
+                return result
+            [slots_read] = await concurrently(slots_task)
+        finally:
+            if not slots_task.done():
+                slots_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await slots_task
         good, state, error = result
         # Only the daemon's validated answer, or the last one: never entries the daemon did not validate.
         entries, withheld = entries_view(good["inventory"], secrets) if good else (None, 0)
