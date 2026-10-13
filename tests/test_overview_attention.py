@@ -106,7 +106,7 @@ def test_a_confirmed_pairing_401_releases_the_key(claimed, monkeypatch):
     assert data["claim"]["state"] != "claimed" and data["error"] == ""
 
 
-@pytest.mark.parametrize("failure", ["refused", "5xx", "unreachable"])
+@pytest.mark.parametrize("failure", ["refused", "5xx", "unreachable", "health_5xx"])
 def test_a_failed_overview_read_does_not_wait_for_the_pairing_read(claimed, monkeypatch, failure):
     lock = consent_lock(claimed)
     admin = DaemonClient.admin
@@ -117,8 +117,11 @@ def test_a_failed_overview_read_does_not_wait_for_the_pairing_read(claimed, monk
         held.append(lock.locked())
         await asyncio.Event().wait()
 
+    async def unhealthy(self):
+        return Reply(503, {"detail": "synthetic outage"})
+
     async def failing(self, token, path=""):
-        if path == "/hub-claim":
+        if path == "/hub-claim" and failure != "health_5xx":
             if failure == "unreachable":
                 raise DaemonUnreachable("synthetic outage")
             return Reply(401 if failure == "refused" else 500, {"detail": "synthetic failure"})
@@ -126,6 +129,8 @@ def test_a_failed_overview_read_does_not_wait_for_the_pairing_read(claimed, monk
 
     monkeypatch.setattr(DaemonClient, "pairing", stuck)
     monkeypatch.setattr(DaemonClient, "admin", failing)
+    if failure == "health_5xx":
+        monkeypatch.setattr(DaemonClient, "health", unhealthy)
     data = overview(claimed)
     assert held == [True]
     assert data["attention"] is None and data["error"] and data["claim"]["state"] == "claimed"

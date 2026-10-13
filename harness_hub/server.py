@@ -328,6 +328,16 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             warning = warning or bypassed
         return "This daemon approved the claim without confirmation; update the daemon." if warning else ""
 
+    async def retained(token: str) -> str:
+        """The daemon answered 401: drop the key only if a second read confirms it, else say it was kept.
+
+        A transient rejection must not destroy the owner's persistent key."""
+        confirmation = await daemon.admin(token)
+        if confirmation.status == 401:
+            await claims.released(token)
+            return ""
+        return "the owner API rejected the key once; retained it pending confirmation"
+
     @app.get("/api/overview")
     async def get_overview():
         health, ownership, attention, error = None, None, None, ""
@@ -341,16 +351,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     observe_browser_slots(reply.body, key["key_id"])
                 return reply
 
-        async def retained(token: str) -> str:
-            # A transient rejection must not destroy the owner's persistent key.
-            confirmation = await daemon.admin(token)
-            if confirmation.status == 401:
-                await claims.released(token)
-                return ""
-            return "the owner API rejected the key once; retained it pending confirmation"
-
         # The pairing read can wait on the consent lock for as long as an arm request holds it, so it runs beside the
-        # other reads and is awaited only when they succeed; a refused or failed read cancels it instead.
+        # other reads and is awaited only when all of them succeed; a refused or failed read cancels it instead.
         pairing_task = asyncio.ensure_future(read_pairing()) if key else None
         try:
             reads = await concurrently(daemon.health(), *(
@@ -364,20 +366,21 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 discovery, record = settled(reads[1]), settled(reads[2])
                 if 401 in (discovery.status, record.status):
                     error = await retained(key["token"]) or error
-                elif discovery.ok and record.ok:
-                    ownership = ownership_view(discovery.body, record.body, key["key_id"])
-                    [pairing] = await concurrently(pairing_task)
-                    try:
-                        pairing = settled(pairing)
-                        if pairing.status == 401:
-                            refusal = await retained(key["token"])
-                            error, ownership = (refusal, ownership) if refusal else (error, None)
-                        elif pairing.ok:
-                            attention = pairing_attention(pairing.body, time.time())
-                    except DaemonUnreachable:
-                        pass  # A missing count never changes what Overview reports about the daemon.
-                else:
+                elif not (discovery.ok and record.ok):
                     error = f"the owner API answered HTTP {discovery.status if not discovery.ok else record.status}"
+                else:
+                    ownership = ownership_view(discovery.body, record.body, key["key_id"])
+                    if health is not None:
+                        [pairing] = await concurrently(pairing_task)
+                        try:
+                            pairing = settled(pairing)
+                            if pairing.status == 401:
+                                refusal = await retained(key["token"])
+                                error, ownership = (refusal, ownership) if refusal else (error, None)
+                            elif pairing.ok:
+                                attention = pairing_attention(pairing.body, time.time())
+                        except DaemonUnreachable:
+                            pass  # A missing count never changes what Overview reports about the daemon.
         except DaemonUnreachable:
             error = f"the daemon at {settings.daemon_url} did not answer"
         finally:
@@ -391,9 +394,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     async def refused(token: str) -> JSONResponse:
         """The daemon answered 401: drop the key only if a second read confirms it, then point to Overview."""
-        confirmation = await daemon.admin(token)
-        if confirmation.status == 401:
-            await claims.released(token)
+        await retained(token)
         return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
 
     async def read_inventory(key: dict, shown) -> tuple[dict | None, str, str] | JSONResponse:
