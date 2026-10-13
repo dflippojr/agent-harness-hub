@@ -207,6 +207,8 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         overview = first.call("GET", "/api/overview").json()
         assert overview["reachable"] and overview["error"] == ""
         assert overview["ownership"]["this_hub"] is True and overview["ownership"]["daemon_has_hub"] is True
+        # The pinned daemon (aa5a904) reports Owner API 1.24: the Hub's minimum, below the 1.26 tailnet sign-in needs.
+        assert overview["ownership"]["compatibility"] == "no_tailnet_signin"
         assert overview["capabilities"]["modules"]["hub"] is True
         assert overview["daemon"]["release"]
         first.call("GET", "/")

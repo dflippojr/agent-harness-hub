@@ -110,6 +110,24 @@ def health_view(body: Any) -> dict:
     }
 
 
+# Owner API versions the Hub relies on, each from the daemon change that introduced it.
+MIN_OWNER_API = (1, 24)  # agent-harness aa5a904, the minimum daemon in the README; harness/admin.py reports 1.24
+TAILNET_OWNER_API = (1, 26)  # agent-harness #621: the discovery root lists allowed_logins for tailnet sign-in
+
+
+def owner_api_compatibility(version: Any) -> str:
+    """How the Hub's minimum compares with a reported Owner API version. 1.24 is a floor, not proof of support."""
+    match = re.fullmatch(r"([0-9]+)\.([0-9]+)", version) if isinstance(version, str) else None
+    if match is None:
+        return "unknown"
+    parsed = (int(match[1]), int(match[2]))
+    if parsed < MIN_OWNER_API:
+        return "too_old"
+    if parsed < TAILNET_OWNER_API:
+        return "no_tailnet_signin"
+    return "supported"
+
+
 def ownership_view(discovery: Any, hub_claim: Any, key_id: str) -> dict:
     """Whether the daemon has a Hub, and whether it is this one. Only the record's display fields are kept."""
     discovery = discovery if isinstance(discovery, dict) else {}
@@ -119,8 +137,10 @@ def ownership_view(discovery: Any, hub_claim: Any, key_id: str) -> dict:
     if record:
         shown = {"name": _str(record.get("name"), 120), "kind": _str(record.get("kind"), 16),
                  "key_id": _str(record.get("key_id"), 64), "claimed_at": _num(record.get("claimed_at"))}
+    api_version = _str(discovery.get("api_version"), 16)
     return {
-        "api_version": _str(discovery.get("api_version"), 16),
+        "api_version": api_version,
+        "compatibility": owner_api_compatibility(api_version),
         "daemon_has_hub": _bool(hub_claim.get("claimed")),
         "this_hub": bool(record and key_id and record.get("key_id") == key_id),
         "record": shown,

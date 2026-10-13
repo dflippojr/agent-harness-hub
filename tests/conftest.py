@@ -51,6 +51,7 @@ class FakeDaemon:
         self.down = False
         self.sent: list[str] = []  # every URL the Hub asked for, so tests can prove what it never fetched
         self.allowed_logins: object = ["owner@example.test"]  # None: a daemon before Owner API 1.26
+        self.owner_api = "1.26"  # the discovery root's api_version
         self.app = self._build()
 
     # owner actions on the daemon host
@@ -155,7 +156,7 @@ class FakeDaemon:
             if not owner(request):
                 return JSONResponse({"detail": "requests from this machine need the local owner token"}, 401)
             # A field the Hub must not pass through: the key list's display prefix.
-            body = {"api_version": "1.26", "hub": {"claimed": self.hub is not None},
+            body = {"api_version": self.owner_api, "hub": {"claimed": self.hub is not None},
                     "operations": [{"method": "GET", "path": "/api/admin/v1/keys"}],
                     "debug_prefix": self.hub_token[:10]}
             if self.allowed_logins is not None:
