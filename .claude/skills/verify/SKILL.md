@@ -28,8 +28,9 @@ Teardown, as "Start" → **Logs** explains). Before waiting for anything it writ
 the launcher's pid and start time, the instance directory and the log path. When the `READY` line arrives it adds
 the Hub and daemon URLs and ports. Every step's process is appended there too, with its start time, and its
 descendants as they are seen. All of them are also contained: on Windows in one kill-on-close Job Object (so they
-die even if `verify.py` itself is killed), elsewhere each step leads its own process group, recorded in
-`launch.json`. That catches children whose parent has already exited.
+die even if `verify.py` itself is killed); on Linux `verify.py` is a child subreaper, so orphans, even ones in a
+new session, stay its descendants; and on POSIX each step leads its own process group, recorded in `launch.json`
+with its leader's start time. That catches children whose parent has already exited.
 
 ## 2. Doctor
 
@@ -44,9 +45,10 @@ python .claude/skills/verify/scripts/doctor.py --dir <instance-dir> [--expect-po
 | `ready` | `instance.json` says `ready` (the contract's readiness signal) and Hub `/healthz` and daemon `/health` answer 200 |
 | `loopback` | both URLs are `127.0.0.1`, neither is a live port, the Hub is on the expected port, and every socket the recorded processes listen on is bound to `127.0.0.1` |
 | `isolation` | the recorded Hub and daemon processes carry no credential variables, and their `HOME`/`USERPROFILE`/`APPDATA`/`LOCALAPPDATA`/`HARNESS_CONFIG_DIR`, `--state-dir`/`--config-dir`/`--claim-file` and the daemon's `data_dir`/`repos_dir` are inside the instance directory; the fake model marker is present |
-| `seed` | the Hub is claimed and the seed rows from docs/ui-testing.md "Seed and sign-in" are listed |
+| `seed` | (signs in only when the three checks above pass) the Hub is claimed and the seed rows from docs/ui-testing.md "Seed and sign-in" are listed |
 
-The doctor reads; it never starts or changes anything (it mints one sign-in link to read the seed).
+The doctor reads; it never starts or changes anything (it mints one sign-in link to read the seed). It makes no
+request at all unless both URLs are `127.0.0.1` on a port that is not live.
 
 ## 3. Drive
 
@@ -91,7 +93,8 @@ They die with the instance.
 Runs in a `finally`, so also after a failed launch, doctor or drive:
 
 1. The contract's **Teardown** (docs/ui-testing.md, "Teardown") on the instance directory.
-2. Everything still in the run's Job Object or recorded process groups, then every process in `launch.json` that
+2. Everything still in the run's Job Object, descendants, or recorded process groups (only while the group is
+   still the run's: its members started no earlier than its recorded leader), then every process in `launch.json` that
    still runs with its recorded start time, is killed. Nothing is ever found or killed by name or port. If Teardown
    timed out or failed, it runs once more after that.
 3. The contract's leftover checks: no recorded or contained process alive, the Hub and daemon ports refuse

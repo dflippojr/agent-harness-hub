@@ -87,6 +87,25 @@ def test_not_ready_until_the_handle_says_so_and_both_servers_answer():
     assert not gone.ok and "did not answer" in gone.detail
 
 
+@pytest.mark.parametrize("handle", [dict(HANDLE, hub="http://127.0.0.1:8100"), dict(HANDLE, daemon="http://example.ts.net")])
+def test_unsafe_urls_are_never_contacted_or_signed_in_to(tmp_path, monkeypatch, handle):
+    requests = []
+
+    def record(request):
+        requests.append(str(request.url))
+        return httpx.Response(200, json={})
+    real = httpx.Client
+    monkeypatch.setattr(doctor.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(record)))
+    monkeypatch.setattr(doctor, "recorded_processes", lambda handle: [])
+    monkeypatch.setattr(doctor, "signed_in_client", Mock(side_effect=AssertionError("signed in")))
+    (tmp_path / "instance.json").write_text(json.dumps(handle), encoding="utf-8")
+    lines = []
+    assert doctor.run(tmp_path, out=lines.append) == 1
+    assert requests == []
+    assert lines[0].startswith("FAIL ready: not contacted")
+    assert lines[-1].startswith("FAIL seed: skipped")
+
+
 def test_doctor_fails_without_an_instance_handle(tmp_path):
     lines = []
     assert doctor.run(tmp_path, out=lines.append) == 1
@@ -169,14 +188,16 @@ time.sleep(600)
 FAILING_DRIVE = """
 import pathlib, subprocess, sys
 # A browser the drive step leaves behind, then it fails at once: no sampling of its tree can see the orphan.
-orphan = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+orphan = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"],
+                          start_new_session=sys.argv[2] == "own-session")
 pathlib.Path(sys.argv[1]).write_text(str(orphan.pid), encoding="utf-8")
 sys.exit(3)
 """
 
 
 @pytest.mark.skipif(sys.version_info < (3, 12), reason="ui_instance.py needs Python 3.12")
-def test_cleanup_after_a_failed_drive_leaves_nothing_running(tmp_path, monkeypatch):
+@pytest.mark.parametrize("session", ["same-session", "own-session"])
+def test_cleanup_after_a_failed_drive_leaves_nothing_running(tmp_path, monkeypatch, session):
     psutil = pytest.importorskip("psutil")
     verify = load("verify")
     launcher = tmp_path / "launcher.py"
@@ -185,7 +206,7 @@ def test_cleanup_after_a_failed_drive_leaves_nothing_running(tmp_path, monkeypat
     run = verify.Run(tmp_path / "evidence", launcher=launcher)
     run.doctor_argv = lambda: [sys.executable, "-c", "print('PASS stand-in')"]
     orphan_file = tmp_path / "orphan.pid"
-    run.drive_argv = lambda features: [sys.executable, "-c", FAILING_DRIVE, str(orphan_file)]
+    run.drive_argv = lambda features: [sys.executable, "-c", FAILING_DRIVE, str(orphan_file), session]
 
     assert run.run(["settings"]) == 1
 
@@ -255,10 +276,31 @@ def test_a_run_missing_a_step_does_not_pass(tmp_path):
 
 def test_every_run_gets_its_own_evidence_folder(tmp_path, capsys):
     verify = load("verify")
-    assert verify.run_name() != verify.run_name()
+    names = {verify.run_name() for _ in range(5)}
+    assert len(names) == 5
     used = tmp_path / "used"
     used.mkdir()
     (used / "launch.json").write_text("{}", encoding="utf-8")
     with pytest.raises(SystemExit):
         verify.main(["run", "--evidence", str(used)])
     assert "not empty" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups: the POSIX containment")
+def test_a_reused_process_group_id_is_never_touched():
+    psutil = pytest.importorskip("psutil")
+    verify = load("verify")
+    import os
+    import subprocess
+    stranger = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+    try:
+        # The run recorded a group with this id whose leader started earlier: the id was reused since.
+        reused = {"pgid": stranger.pid, "created": psutil.Process(stranger.pid).create_time() - 100}
+        contained = verify.Containment()
+        contained.reaper = False
+        assert contained.kill([reused]) == 0
+        assert stranger.poll() is None
+        assert os.getpgid(stranger.pid) == stranger.pid
+    finally:
+        stranger.kill()
+        stranger.wait()

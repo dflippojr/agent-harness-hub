@@ -50,8 +50,22 @@ def _url_port(url: str) -> tuple[str | None, int | None]:
     return parts.hostname, parts.port
 
 
+def url_problem(handle: dict) -> str | None:
+    """Why the handle's URLs are unsafe to contact, or None: both must be 127.0.0.1 on a port that is not live."""
+    for label in ("hub", "daemon"):
+        host, port = _url_port(handle.get(label, ""))
+        if host != LOOPBACK or port is None:
+            return f"{label} URL {handle.get(label)!r} is not http://{LOOPBACK}:<port>"
+        if port in LIVE_PORTS:
+            return f"{label} uses live port {port}"
+    return None
+
+
 def check_ready(handle: dict, http: httpx.Client) -> Check:
-    """Ready means the handle says so (the contract's readiness signal) and both servers answer their health URLs."""
+    """Ready means the handle says so (the contract's readiness signal) and both servers answer their health URLs.
+    Unsafe URLs are refused before any request."""
+    if problem := url_problem(handle):
+        return Check("ready", False, f"not contacted: {problem}")
     if handle.get("status") != "ready":
         return Check("ready", False, f"instance.json status is {handle.get('status')!r}, not 'ready'")
     for label, url in (("Hub", f"{handle.get('hub')}/healthz"), ("daemon", f"{handle.get('daemon')}/health")):
@@ -67,14 +81,9 @@ def check_ready(handle: dict, http: httpx.Client) -> Check:
 def check_loopback(handle: dict, listeners: Iterable[tuple[str, int]], expect_port: int | None = None) -> Check:
     """Both URLs are 127.0.0.1 on non-live ports, the Hub on the expected port, and every socket the instance's
     processes listen on is bound to 127.0.0.1. `listeners` is (ip, port) for each listening socket they own."""
-    ports = []
-    for label in ("hub", "daemon"):
-        host, port = _url_port(handle.get(label, ""))
-        if host != LOOPBACK or port is None:
-            return Check("loopback", False, f"{label} URL {handle.get(label)!r} is not http://{LOOPBACK}:<port>")
-        if port in LIVE_PORTS:
-            return Check("loopback", False, f"{label} uses live port {port}")
-        ports.append(port)
+    if problem := url_problem(handle):
+        return Check("loopback", False, problem)
+    ports = [_url_port(handle[label])[1] for label in ("hub", "daemon")]
     if expect_port is not None and ports[0] != expect_port:
         return Check("loopback", False, f"Hub is on port {ports[0]}, expected {expect_port}")
     bound = list(listeners)
@@ -198,16 +207,18 @@ def run(root: Path, expect_port: int | None = None, out: Callable[[str], None] =
     except (OSError, ValueError) as e:
         out(f"FAIL ready: no readable instance.json in {root} ({type(e).__name__})")
         return 1
+    # The checks that make no request come first: nothing is contacted unless the URLs are safe, and the seed
+    # check signs in only to an instance that is ready, loopback-only and isolated.
     checks = []
-    with httpx.Client(timeout=5, trust_env=False) as http:
-        checks.append(check_ready(handle, http))
     try:
         procs = recorded_processes(handle)
         checks.append(check_loopback(handle, live_listeners(procs), expect_port))
         checks.append(check_isolation(root, live_environments(procs)))
     except ImportError:
         checks += [Check(n, False, "psutil is needed to inspect the instance") for n in ("loopback", "isolation")]
-    if checks[0].ok:
+    with httpx.Client(timeout=5, trust_env=False) as http:
+        checks.insert(0, check_ready(handle, http))
+    if all(c.ok for c in checks):
         http = signed_in_client(root, handle["hub"])
         try:
             checks.append(check_seed(http))
@@ -216,7 +227,7 @@ def run(root: Path, expect_port: int | None = None, out: Callable[[str], None] =
         finally:
             http.close()
     else:
-        checks.append(Check("seed", False, "skipped: the instance is not ready"))
+        checks.append(Check("seed", False, "skipped: no sign-in unless ready, loopback and isolation pass"))
     for check in checks:
         out(check.line())
     return 0 if all(c.ok for c in checks) else 1
