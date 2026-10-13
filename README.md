@@ -337,6 +337,8 @@ Pairing requests lists the App pairing requests of the last day ([agent-harness 
 newest first and grouped by state, with each one's name, scopes, catalog app id, origin (or "native app"), expiry
 countdown and next step. The Hub never projects or renders an App request's match code. Every scope shows the daemon's
 disclosure text exactly as given, as text, with its `standard` or `elevated` badge. The page polls every 5 seconds.
+Overview shows a **Waiting for you** card, with a link here, counting the unexpired App requests that need you to
+approve or confirm; it shows counts only, never the requests themselves, and leaves out Hub claims.
 Started from distinguishes owner-armed slots from App-initiated requests. App-initiated origin and catalog ids are
 stated by the requester, not verified; only the match code on your App's screen proves this is your App. For an armed
 slot, the page explains that you set the origin and catalog id when arming it.
