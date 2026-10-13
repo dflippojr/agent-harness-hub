@@ -3,7 +3,7 @@
 // `--grep @settings` drives just that area. Screenshots go to VERIFY_EVIDENCE_DIR/screenshots.
 import path from "node:path";
 // Sign-in happens in each test body, after the `errors` fixture is listening, so startup errors count too.
-import { expect, openSection, signIn, test } from "../tests/fixtures.mjs";
+import { confirmRollback, expect, openSection, saveMaxTurns, settingsControls, signIn, test } from "../tests/fixtures.mjs";
 
 const shots = path.join(process.env.VERIFY_EVIDENCE_DIR || "test-results/verify", "screenshots");
 
@@ -31,26 +31,14 @@ for (const feature of ["overview", "apps", "modules", "pairing"]) {
 test("edit one setting and roll it back @settings", async ({ page, errors }, testInfo) => {
   await signIn(page);
   await openSection(page, "settings");
-  const turns = page.getByRole("spinbutton", { name: "Maximum turns" });
-  const status = page.locator("main p.notice[aria-live]").first();
+  const { turns } = settingsControls(page);
   const original = Number(await turns.inputValue());
 
-  await turns.fill(String(original + 1));
-  await page.getByRole("button", { name: "Validate", exact: true }).click();
-  await expect(status).toContainText("Validated.");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(status).toContainText("Saved.");
-  await page.reload();
-  await expect(turns).toHaveValue(String(original + 1));
+  await saveMaxTurns(page, original, original + 1);
   await turns.scrollIntoViewIfNeeded();
   await capture(page, testInfo, "settings-edited");
 
-  await page.getByRole("button", { name: "Roll back", exact: true }).click();
-  await page.getByRole("alert").filter({ hasText: "Roll back settings?" })
-    .getByRole("button", { name: "Confirm rollback" }).click();
-  await expect(status).toContainText("Rolled back to revision");
-  await page.reload();
-  await expect(turns).toHaveValue(String(original));
+  await confirmRollback(page, original);
   await turns.scrollIntoViewIfNeeded();
   await capture(page, testInfo, "settings");
   expect(errors).toEqual([]);

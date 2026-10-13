@@ -50,6 +50,34 @@ export async function appAsksToPair(request, name, scopes = ["sessions"]) {
   return asked.json();
 }
 
+// HUB-04's save and rollback of Maximum turns, shared by settings.spec.mjs and the verify skill's drive step.
+export const settingsControls = (page) => ({
+  turns: page.getByRole("spinbutton", { name: "Maximum turns" }),
+  status: page.locator("main p.notice[aria-live]").first(),
+});
+
+export async function saveMaxTurns(page, from, to) {
+  const { turns, status } = settingsControls(page);
+  await turns.fill(String(to));
+  await page.getByRole("button", { name: "Validate", exact: true }).click();
+  await expect(status).toContainText(`sessions.max_turns: ${from} → ${to}`);
+  await expect(status).toContainText("Validated.");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(status).toContainText("Saved.");
+  await page.reload();
+  await expect(turns).toHaveValue(String(to));
+}
+
+export async function confirmRollback(page, to) {
+  const { turns, status } = settingsControls(page);
+  await page.getByRole("button", { name: "Roll back", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "Roll back settings?" })
+    .getByRole("button", { name: "Confirm rollback" }).click();
+  await expect(status).toContainText("Rolled back to revision");
+  await page.reload();
+  await expect(turns).toHaveValue(String(to));
+}
+
 export const test = base.extend({
   // Page errors and console errors, apart from the known 404 the Settings page logs for an absent memory module
   // (#41) and WebKit's report of a fetch that a reload cancelled in the old document ("... due to access control

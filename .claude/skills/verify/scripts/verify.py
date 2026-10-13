@@ -182,6 +182,7 @@ def _windows_job():
                                                    ctypes.c_void_p]
     kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
     kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
     ntdll = ctypes.WinDLL("ntdll")
     ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
 
@@ -195,10 +196,11 @@ def _windows_job():
                 raise OSError(ctypes.get_last_error(), "could not create a job object")
 
         def assign(self, process: int) -> None:
-            ok = kernel32.AssignProcessToJobObject(self.handle, process)
+            if not kernel32.AssignProcessToJobObject(self.handle, process):
+                error = ctypes.get_last_error()
+                kernel32.TerminateProcess(process, 1)  # still suspended: it never ran, so nothing escaped
+                raise OSError(error, "could not put the process in the run's job object")
             ntdll.NtResumeProcess(process)
-            if not ok:
-                raise OSError(ctypes.get_last_error(), "could not put the process in the run's job object")
 
         def active(self) -> int:
             info = Accounting()
@@ -245,6 +247,7 @@ class Run:
             pass
 
     def spawn(self, name: str, argv: list[str], log: Path, env: dict | None = None) -> subprocess.Popen:
+        env = dict(env or os.environ, PYTHONUTF8="1")  # the logs are read back as UTF-8 whatever the code page
         with log.open("w", encoding="utf-8") as out:
             proc = self.contained.popen(argv, cwd=REPO, stdout=out, stderr=subprocess.STDOUT,
                                         stdin=subprocess.DEVNULL, env=env)
@@ -302,7 +305,8 @@ class Run:
     def doctor(self) -> bool:
         out = self.evidence / "doctor.txt"
         code = self.wait_tracking("doctor", self.spawn("doctor", self.doctor_argv(), out), STEP_SECONDS)
-        failed = [line for line in out.read_text(encoding="utf-8").splitlines() if line.startswith("FAIL")]
+        failed = [line for line in out.read_text(encoding="utf-8", errors="replace").splitlines()
+                  if line.startswith("FAIL")]
         return self.step("doctor", code == 0, "all checks pass" if code == 0 else "; ".join(failed) or f"exit {code}")
 
     def drive_argv(self, features: list[str]) -> list[str]:
@@ -356,7 +360,8 @@ class Run:
     def teardown(self, instance: str) -> str:
         try:
             result = subprocess.run([self.python, str(self.launcher), "stop", "--dir", instance],  # noqa: S603
-                                    cwd=REPO, capture_output=True, text=True, timeout=180)
+                                    cwd=REPO, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                    env=dict(os.environ, PYTHONUTF8="1"), timeout=180)
         except (subprocess.TimeoutExpired, OSError) as e:
             return f"{type(e).__name__}; the recorded processes are killed instead"
         return f"exit {result.returncode} {(result.stdout + result.stderr).strip()}"
