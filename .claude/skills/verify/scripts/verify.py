@@ -18,6 +18,7 @@ import json
 import os
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -60,6 +61,16 @@ def alive(entry: dict):
         return None if proc.status() == psutil.STATUS_ZOMBIE else proc
     except (psutil.Error, KeyError, TypeError, ValueError):
         return None
+
+
+@contextlib.contextmanager
+def uninterruptible():
+    """Ctrl+C is ignored while cleanup runs (each of its waits has a timeout), so it always finishes."""
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 def port_open(port: int) -> bool:
@@ -398,8 +409,9 @@ class Run:
             interrupted = e
             self.step("interrupted", False, f"{type(e).__name__} stopped the run before it finished")
         finally:
-            self.cleanup()
-            print(f"evidence: {self.summary(features)}", flush=True)
+            with uninterruptible():
+                self.cleanup()
+                print(f"evidence: {self.summary(features)}", flush=True)
         if interrupted is not None and not isinstance(interrupted, KeyboardInterrupt):
             raise interrupted
         return 0 if self.passed() else 1
@@ -423,7 +435,8 @@ def main(argv: list[str] | None = None) -> int:
     run = Run(args.evidence)
     run.record = json.loads((run.evidence / "launch.json").read_text(encoding="utf-8"))
     run.contained.token = run.record.get("token") or run.contained.token
-    return 0 if run.cleanup() else 1
+    with uninterruptible():
+        return 0 if run.cleanup() else 1
 
 
 if __name__ == "__main__":

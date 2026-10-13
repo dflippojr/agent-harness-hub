@@ -323,3 +323,21 @@ def test_isolation_fails_when_a_process_cannot_be_inspected(instance):
     assert not blocked.ok and "daemon could not be inspected" in blocked.detail
     hub_only = doctor.check_isolation(instance, [("hub", isolated_env(instance), [])])
     assert not hub_only.ok and "no daemon process was inspected" in hub_only.detail
+
+
+def test_ctrl_c_during_cleanup_does_not_stop_it(tmp_path):
+    import signal
+    verify = load("verify")
+    run = verify.Run(tmp_path / "evidence")
+    run.launch = lambda: run.step("launch", False, "stand-in")
+    finished = []
+
+    def cleanup():
+        signal.raise_signal(signal.SIGINT)  # Ctrl+C while Teardown waits
+        finished.append(True)
+        return run.step("cleanup", True, "stand-in")
+    run.cleanup = cleanup
+    assert run.run([]) == 1
+    assert finished
+    assert (tmp_path / "evidence" / "summary.md").is_file()
+    assert signal.getsignal(signal.SIGINT) is signal.default_int_handler

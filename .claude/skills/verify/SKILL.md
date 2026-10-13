@@ -100,7 +100,8 @@ Runs in a `finally`, so also after a failed launch, doctor or drive:
    connections, the instance directory is gone. Any leftover fails the step and is listed in `cleanup.txt`.
 
 A run passes only if launch, doctor, drive and cleanup all ran and passed. Ctrl+C or an error is recorded as a failed
-`interrupted` step, and cleanup and the summary still run.
+`interrupted` step, and cleanup and the summary still run; Ctrl+C is ignored while they do (every wait in
+them has a timeout).
 
 If a run was killed before its own cleanup (on Windows its processes die with it; the instance directory
 stays), repeat it from the evidence folder:
