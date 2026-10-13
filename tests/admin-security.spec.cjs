@@ -238,3 +238,23 @@ test("only a fully visible scan candidate gets a promotion control", async ({ pa
   await expect(page.getByRole("button", { name: "Add folder bad", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Add folder good", exact: true })).toBeEnabled();
 });
+
+for (const scheme of ["light", "dark"]) {
+  test(`the chosen area button looks selected in the ${scheme} theme`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme: scheme });
+    const { errors } = await mount(page);
+    await page.getByRole("button", { name: "Audit", exact: true }).click();
+    const pressed = page.locator('.btn[aria-pressed="true"]');
+    await expect(pressed).toHaveText("Audit");
+    const ratio = await page.evaluate(() => {
+      const rgb = el => getComputedStyle(el).backgroundColor.match(/\d+(\.\d+)?/g).slice(0, 3).map(Number);
+      const lum = ([r, g, b]) => [r, g, b].map(v => v / 255).map(v => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
+        .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+      const [on, off] = [document.querySelector('.btn[aria-pressed="true"]'), document.querySelector('.btn[aria-pressed="false"]')]
+        .map(el => lum(rgb(el)));
+      return (Math.max(on, off) + 0.05) / (Math.min(on, off) + 0.05);
+    });
+    expect(ratio).toBeGreaterThanOrEqual(3);
+    expect(errors).toEqual([]);
+  });
+}

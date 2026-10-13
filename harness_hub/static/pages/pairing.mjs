@@ -2,7 +2,7 @@
 // then hands each App its own token; this page never sees one. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { clear, command, h, when } from "../lib/dom.mjs";
+import { clear, command, emphasis, h, reveal, when } from "../lib/dom.mjs";
 import { pairingRecovery } from "../lib/pairing.mjs";
 
 const GROUPS = [
@@ -147,7 +147,7 @@ export function renderPairing(main) {
         h("li", { "data-scope": item.scope },
           h("p", { class: "disclosure-head" }, h("span", { class: "pill " + (item.tier === "elevated" ? "bad" : "off") },
             item.tier), " ", h("code", {}, item.scope)),
-          h("p", { class: "disclosure-text" }, item.text || "The daemon supplied no description for this scope.")))));
+          h("p", { class: "disclosure-text" }, emphasis(item.text || "The daemon supplied no description for this scope."))))));
     }
     if (row.kind === "hub") {
       if (ACTIVE.includes(row.state)) {
@@ -233,10 +233,12 @@ export function renderPairing(main) {
     clearTimeout(timer);
     for (const control of groups.querySelectorAll("button,input")) control.disabled = true;
     clear(confirmation);
+    let refused = false;
     try {
       await action();
     } catch (error) {
       if (stopped) return;
+      refused = true;
       if (error.status === 409) message("That request changed state before your decision. The list was refreshed; check it again.", true);
       else if (error.status === 404) message("That request no longer exists. The list was refreshed.", true);
       else message(error.message, true);
@@ -244,6 +246,7 @@ export function renderPairing(main) {
     if (stopped) return;
     busy = false;
     await load(true);
+    if (refused && !stopped) reveal(notice);
   }
   ticker = setInterval(tick, 1000);
   load(true);

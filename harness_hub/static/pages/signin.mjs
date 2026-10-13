@@ -3,9 +3,14 @@
 
 import { clear, command, h } from "../lib/dom.mjs";
 
-export function signinCodeFromHash() {
-  const match = /^#signin=([A-Za-z0-9_-]{20,128})$/.exec(location.hash);
-  return match ? match[1] : "";
+export const INVALID_LINK = "that sign-in link is not valid; links work once, for ten minutes";
+
+// `link` is true for any #signin= fragment, so a truncated or mangled link is refused instead of ignored; `code` is
+// set only for a well-formed one, the only kind ever sent to the server.
+export function signinFromHash(hash) {
+  if (!hash.startsWith("#signin=")) return { link: false, code: "" };
+  const match = /^#signin=([A-Za-z0-9_-]{20,128})$/.exec(hash);
+  return { link: true, code: match ? match[1] : "" };
 }
 
 function tailnetSignin(login, onTailnet) {

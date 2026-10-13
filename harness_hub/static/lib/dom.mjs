@@ -46,3 +46,17 @@ export function command(text) {
   });
   return h("div", { class: "command" }, h("code", {}, text), copy);
 }
+
+// Daemon disclosure text marks key phrases as **bold**. Only that pair becomes <strong>, built as DOM nodes; every
+// other character, markup included, stays text.
+export function emphasis(text) {
+  return String(text).split(/\*\*([^*]+)\*\*/).map((part, i) => i % 2 ? h("strong", {}, part) : part).filter(Boolean);
+}
+
+// Bring a message the owner must read (a refused action) into view and move focus to it, so neither the scroll
+// position nor a re-render that disabled the clicked control leaves it unseen with focus on <body>.
+export function reveal(el) {
+  el.setAttribute("tabindex", "-1");
+  el.scrollIntoView({ block: "center" });
+  el.focus({ preventScroll: true });
+}

@@ -1,5 +1,5 @@
 import { api } from "../lib/api.mjs";
-import { clear, command, h, when } from "../lib/dom.mjs";
+import { clear, command, h, reveal, when } from "../lib/dom.mjs";
 
 const text = (value) => value === null || value === undefined ? "Unavailable" : String(value);
 const revoked = (row) => row.revoked_at !== null || ["revoked", "erasure_pending"].includes(row.state);
@@ -160,11 +160,16 @@ export function renderApps(main) {
     busy = true; clearTimeout(timer);
     for (const control of main.querySelectorAll("button,input")) control.disabled = true;
     clear(confirmation);
+    let refused = false;
     try { await action(); }
-    catch (error) { if (!stopped) message(error.message + " Refresh and review the state before trying again.", true); }
+    catch (error) {
+      if (!stopped) message(error.message + " Refresh and review the state before trying again.", true);
+      refused = true;
+    }
     if (stopped) return;
     busy = false;
     await load();
+    if (refused && !stopped) reveal(notice);
   }
   async function manageApp(row) {
     if (stopped || busy || inventory?.state !== "ready") return;
@@ -197,7 +202,7 @@ export function renderApps(main) {
         command("harness apps retention " + row.id + " --set retention_days=null"),
         button("Close app details", () => { clear(detail); clear(confirmation); schedule(); })));
       detail.querySelector("h2").setAttribute("tabindex", "-1"); detail.querySelector("h2").focus();
-    } catch (error) { if (!stopped) { message(error.message, true); schedule(); } }
+    } catch (error) { if (!stopped) { message(error.message, true); reveal(notice); schedule(); } }
     finally { busy = false; }
   }
   function numberField(label, value, max, step = "1") {

@@ -9,7 +9,7 @@ import { renderApps } from "./pages/apps.mjs";
 import { renderMarketplace } from "./pages/marketplace.mjs";
 import { renderModules } from "./pages/modules.mjs";
 import { renderPairing } from "./pages/pairing.mjs";
-import { renderSignin, signinCodeFromHash } from "./pages/signin.mjs";
+import { INVALID_LINK, renderSignin, signinFromHash } from "./pages/signin.mjs";
 
 const SECTIONS = [
   { id: "overview", label: "Overview", render: renderOverview },
@@ -65,16 +65,21 @@ async function route() {
 }
 
 async function signedIn() {
-  const code = signinCodeFromHash();
-  if (code) {
+  const { link, code } = signinFromHash(location.hash);
+  let error = null;
+  if (link) {
     history.replaceState(null, "", location.pathname + "#/overview");
-    try {
-      await api("session", { method: "POST", body: { code } });
-    } catch (error) {
-      return { signedIn: false, error };
+    if (!code) error = new Error(INVALID_LINK);
+    else {
+      try {
+        await api("session", { method: "POST", body: { code } });
+      } catch (refused) {
+        return { signedIn: false, error: refused };
+      }
     }
   }
   const session = await api("session");
+  if (error && !session.signed_in) return { signedIn: false, session, error };
   return { signedIn: session.signed_in, session };
 }
 
@@ -88,6 +93,12 @@ async function boot() {
   window.addEventListener("hub:signed-out", () => location.reload());
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") setMenu(false);
+  });
+  // The drawer's backdrop (body.menu-open::after) blocks the page, so a tap or click outside the drawer closes it.
+  document.addEventListener("click", (event) => {
+    if (!document.body.classList.contains("menu-open") || nav.contains(event.target) || menu.contains(event.target)) return;
+    setMenu(false);
+    menu.focus();
   });
 
   let state;

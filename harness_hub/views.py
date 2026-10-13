@@ -225,7 +225,13 @@ def backend_view(value: Any) -> dict:
                                for row in models if isinstance(row, dict)]}
 
 
-def control_view(operation: str, body: Any) -> Any:
+def memory_route_absent(body: Any) -> bool:
+    """The daemon serves `/memory` only while its memory_library module is installed and switched on; otherwise the
+    route is absent and the daemon answers its generic 404, which the page shows as a module state, not a fault."""
+    return isinstance(body, dict) and body.get("detail") == "Not Found"
+
+
+def control_view(operation: str, body: Any, installed: bool = True) -> Any:
     if operation == "backends":
         return [backend_view(row) for row in body] if isinstance(body, list) else []
     if operation == "backend_save":
@@ -236,7 +242,7 @@ def control_view(operation: str, body: Any) -> Any:
                 "configured": _bool(body.get("configured")), "secret_ref": _str(body.get("secret_ref"), 4000)}
     if operation in ("memory", "memory_save"):
         commit = body.get("last_commit") if isinstance(body.get("last_commit"), dict) else {}
-        return {"enabled": _bool(body.get("enabled")),
+        return {"installed": installed, "enabled": _bool(body.get("enabled")),
                 "profile": body.get("profile") if isinstance(body.get("profile"), str) else "",
                 "profile_max_chars": _num(body.get("profile_max_chars")),
                 "last_commit": {"head": _str(commit.get("head"), 64), "path": _str(commit.get("path"), 4000),
