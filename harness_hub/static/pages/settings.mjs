@@ -1,13 +1,15 @@
 import { api } from "../lib/api.mjs";
 import { clear, command, h } from "../lib/dom.mjs";
+import { poller } from "../lib/poll.mjs";
 
 const POLL_MS = 1000;
 const valueText = (value) => value === null || value === undefined ? "" :
   Array.isArray(value) ? value.join("\n") : String(value);
 
 export function renderSettings(main) {
-  let stopped = false, timer, config, schema, busy = false, restarting = false;
+  let stopped = false, config, schema, busy = false, restarting = false;
   const fields = new Map();
+  const poll = poller(() => pollHealth());
   const status = h("p", { "aria-live": "polite", class: "notice" });
   const health = h("p", { "aria-live": "polite", class: "muted" });
   const registry = h("div", { class: "settings-registry" });
@@ -167,8 +169,7 @@ export function renderSettings(main) {
         if (action === "restart" && answer.accepted) {
           restarting = true;
           message("Daemon restarting. Waiting for health and confirmed settings revision " + answer.target_revision + ".");
-          clearTimeout(timer);
-          timer = setTimeout(pollHealth, POLL_MS);
+          poll.schedule(POLL_MS, { whileHidden: true });
         } else { message("Rolled back to revision " + answer.revision + (answer.restart_required ? ". Restart needed." : ".")); await load(); }
       } catch (error) { await showError(error); }
     }));
@@ -269,8 +270,9 @@ export function renderSettings(main) {
         for (const b of main.querySelectorAll("button")) b.disabled = false;
       }
     } catch (error) { if (!stopped) health.textContent = error.message; }
-    if (!stopped) timer = setTimeout(pollHealth, restarting ? POLL_MS : 5000);
+    // A restart keeps its 1 s poll in a hidden tab; the idle health poll pauses there.
+    if (!stopped) poll.schedule(restarting ? POLL_MS : 5000, { whileHidden: restarting });
   }
   load(); pollHealth();
-  return () => { stopped = true; clearTimeout(timer); };
+  return () => { stopped = true; poll.stop(); };
 }

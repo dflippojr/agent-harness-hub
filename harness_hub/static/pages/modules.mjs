@@ -1,5 +1,6 @@
 import { api } from "../lib/api.mjs";
 import { clear, command, h, when } from "../lib/dom.mjs";
+import { poller } from "../lib/poll.mjs";
 
 // Registry relationships handle module names that differ from setting names.
 export function switchFor(name, schema) {
@@ -9,7 +10,8 @@ export function switchFor(name, schema) {
 }
 
 export function renderModules(main) {
-  let stopped = false, busy = false, timer, inventory, schema, config;
+  let stopped = false, busy = false, inventory, schema, config;
+  const poll = poller(() => load());
   const notice = h("p", { class: "notice", "aria-live": "polite" });
   const inventoryError = h("p", { class: "notice bad", role: "alert" });
   const summary = h("section", { class: "card" });
@@ -31,7 +33,7 @@ export function renderModules(main) {
   }
   async function load(afterWrite = false) {
     if (stopped || busy && !afterWrite) return;
-    clearTimeout(timer);
+    poll.cancel();
     if (!afterWrite) busy = true;
     reload.disabled = true;
     const results = await Promise.allSettled([api("modules"), api("settings/schema"), api("settings/config")]);
@@ -49,7 +51,7 @@ export function renderModules(main) {
     busy = false;
     draw();
     for (const b of main.querySelectorAll("button")) b.disabled = false;
-    timer = setTimeout(load, 30000);
+    poll.schedule(30000);
   }
   function draw() {
     clear(summary, h("h2", {}, "Module switches"), h("p", {}, config ? "Settings revision " + config.revision :
@@ -98,7 +100,7 @@ export function renderModules(main) {
   async function save(spec, enabled) {
     if (stopped || busy || !config) return;
     busy = true;
-    clearTimeout(timer);
+    poll.cancel();
     for (const b of main.querySelectorAll("button")) b.disabled = true;
     try {
       const answer = await api("settings/config", { method: "PATCH",
@@ -116,5 +118,5 @@ export function renderModules(main) {
     await load(true);
   }
   load();
-  return () => { stopped = true; clearTimeout(timer); };
+  return () => { stopped = true; poll.stop(); };
 }
