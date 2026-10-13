@@ -28,8 +28,8 @@ The agent-ops `ui-testing-pass` skill reads this file. The commands and the safe
 - **How isolation is enforced.**
   - The daemon runs fake model mode only because the launcher writes the daemon's `fake-model-instance` marker into
     the instance's own `data_dir`. The daemon refuses `HARNESS_FAKE_MODEL` anywhere else.
-  - Both children get an **allowlisted environment** (`PATH`, temp and locale variables, and the few that Windows
-    needs). `HOME`, `USERPROFILE`, `APPDATA` and `LOCALAPPDATA` point inside the instance directory. Owner tokens,
+  - Both children get an **allowlisted environment** (`PATH`, temp and locale variables, the few that Windows
+    needs, and the verify skill's random `VERIFY_RUN_ID`, which its cleanup finds processes by). `HOME`, `USERPROFILE`, `APPDATA` and `LOCALAPPDATA` point inside the instance directory. Owner tokens,
     provider keys, GitHub and Tailscale credentials, and proxies never reach them.
   - Start refuses an occupied port and a non-empty `--dir`, so it never attaches to or reuses another server.
   - `stop` deletes only a directory that holds the launcher's `hub-ui-instance` marker, and kills only the processes
@@ -175,6 +175,8 @@ theme case when they run one at a time, apart from the pairing request limit abo
 - **Package.** npm, self-contained in `tools/ui-tests`: `package.json` pins `@playwright/test` exactly, with
   `package-lock.json`. Config `tools/ui-tests/playwright.config.mjs`; tests `tools/ui-tests/tests/*.spec.mjs`.
   (`tests/*.spec.cjs` are older single-page specs on intercepted synthetic responses.)
+  `tools/ui-tests/verify/` and `verify.config.mjs` are the verify skill's drive step
+  ([.claude/skills/verify](../.claude/skills/verify/SKILL.md)); the suite's config does not run them.
 - **Commands.**
 
   ```
