@@ -97,6 +97,9 @@ the daemon accepts, with the same rules:
   userspace proxy, say) and a `tailscaled.exe` elsewhere. If the service is missing or stopped, or its process can't
   be looked up, no identity is trusted. Sign-in always looks the connection up again rather than reuse a verdict
   cached for an earlier connection.
+- serve adds the headers to every request, but only `/api/session` reads them: `GET` to show your login, `POST` to
+  sign in. So the Hub verifies them only on those two requests and removes them from every other one (pages, static
+  files, the rest of the API) without a lookup.
 - The node's `tailscale serve` config is part of that boundary: a raw TCP forward (`tailscale serve --tcp` or
   `--tls-terminated-tcp`) carries a client's own headers through the service unchanged. So at sign-in the Hub reads
   the serve config through the Tailscale CLI, foreground sessions and services included, and refuses tailnet sign-in
@@ -116,7 +119,8 @@ the daemon accepts, with the same rules:
   own serve address arrives as this node, which Tailscale resolves to the owner. So on a connection verified as
   tailscaled, and only there, the Hub reads the source address serve puts in `X-Forwarded-For` (serve replaces any
   value a client sent). The identity is ignored when that header is missing, lists more than one address, or names
-  any address of this machine, its Tailscale IPs included. Tailnet sign-in therefore works only from another device;
+  any address of this machine, its Tailscale IPs included. Showing your login reuses this machine's address list for
+  up to five seconds; sign-in lists the addresses again. Tailnet sign-in therefore works only from another device;
   on the Hub's own machine, use a sign-in link. `X-Forwarded-*` and `Forwarded` headers are read nowhere else.
 - The peer check is implemented for Windows only, like the daemon's. Elsewhere the headers are always removed unless
   you start the Hub with `--trust-unverified-identity-headers`, the counterpart of the daemon's

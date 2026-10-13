@@ -34,6 +34,11 @@ listening on `0.0.0.0` or a LAN address that the route covers, a tailnet device 
 and pass every check above. `tailscale serve` proxies to the Hub's loopback listener, so the identity headers count
 only on a connection whose server address is loopback; a missing or non-loopback one refuses them.
 
+serve adds the identity headers to every request it proxies, static files included, and only `/api/session` reads
+them (GET shows the caller's login, POST signs in). So the check runs only for those two requests; every other
+request loses the headers without a lookup. A GET may reuse this machine's address list for `CACHE_SECONDS`; sign-in
+lists it afresh, as it looks the peer up afresh.
+
 A trusted login is still not the owner: `POST /api/session` accepts it only if the daemon lists it in
 `allowed_logins` (server.py).
 """
@@ -211,6 +216,7 @@ class PeerCheck:
         self.own_addresses, self.service, self.serve, self.server_ok = own_addresses, service, serve, server_ok
         self.size, self.ttl = size, ttl
         self._cache: OrderedDict[tuple[str, int], tuple[float, bool]] = OrderedDict()
+        self._addresses: tuple[float, set[str]] | None = None  # (expiry, this machine's addresses)
         self._lock = threading.Lock()
         self.lookups = 0
 
@@ -252,18 +258,30 @@ class PeerCheck:
         self._remember(key, verdict)
         return verdict
 
-    def remote(self, source: str) -> bool:
-        """Whether the tailnet source tailscaled reported is another node: not empty, not this machine."""
+    def _own(self, fresh: bool) -> set[str]:
+        """This machine's addresses, normalised. Listing them takes tens of milliseconds on Windows, so a list is
+        reused for `ttl` seconds, except by sign-in (`fresh`). A failed listing raises and is not cached."""
+        if not fresh:
+            with self._lock:
+                if self._addresses is not None and self.clock() < self._addresses[0]:
+                    return self._addresses[1]
+        own = {str(ip) for ip in map(_ip, self.own_addresses()) if ip}
+        with self._lock:
+            self._addresses = (self.clock() + self.ttl, own)
+        return own
+
+    def remote(self, source: str, *, fresh: bool = False) -> bool:
+        """Whether the tailnet source tailscaled reported is another node: not empty, not this machine. Sign-in
+        lists this machine's addresses afresh (`fresh`): an address it gained since must not pass as remote."""
         ip = _ip(source) if source else None
         if ip is None or ip.is_loopback or ip.is_unspecified:
             return False
         try:
-            own = {str(_ip(a)) for a in self.own_addresses() if _ip(a)}
+            own = self._own(fresh)
         except Exception as exc:  # noqa: BLE001 - without this machine's addresses, no source can be cleared
             log.warning("could not list this machine's addresses to check a tailnet request's source: %s", exc)
             return False
         return str(ip) not in own
-
 
     def raw_forward_to(self, port: int | None) -> bool:
         """Whether a raw TCP forward in this node's serve config could reach the Hub's `port`, so tailscaled might
@@ -298,8 +316,16 @@ def login(headers) -> str:
     return value if 0 < len(value) <= 320 and value.isprintable() else ""
 
 
+def reads_identity(scope: Scope) -> bool:
+    """Whether a request goes to the only route that reads the identity headers: `/api/session`, to show the
+    caller's login (GET) or to sign in with it (POST)."""
+    return scope["type"] == "http" and scope.get("method") in ("GET", "POST") and scope.get("path") == SIGN_IN_PATH
+
+
 class TailnetIdentity:
-    """Strip `Tailscale-*` headers unless tailscaled sent them. It runs before anything else reads a header."""
+    """Strip `Tailscale-*` headers unless tailscaled sent them. It runs before anything else reads a header. serve
+    adds them to every request, static files included, and only `/api/session` reads them, so every other request
+    loses them without a lookup."""
 
     def __init__(self, app: ASGIApp, *, check: PeerCheck | None = None, trust_unverified: bool = False):
         self.app = app
@@ -320,7 +346,7 @@ class TailnetIdentity:
         if not verified:
             return False
         source = forwarded_source(scope)
-        if await asyncio.to_thread(check.remote, source):
+        if await asyncio.to_thread(check.remote, source, fresh=fresh):
             return True
         # Every request from a browser on this machine lands here, so only a sign-in attempt is worth a warning.
         log.log(logging.WARNING if fresh else logging.DEBUG, "ignored a tailnet identity from tailscaled whose "
@@ -328,7 +354,8 @@ class TailnetIdentity:
         return False
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] in ("http", "websocket") and has_identity(scope) and not await self.trusted(scope):
+        if (scope["type"] in ("http", "websocket") and has_identity(scope)
+                and not (reads_identity(scope) and await self.trusted(scope))):
             scope = dict(scope)
             strip_identity(scope)
         await self.app(scope, receive, send)
