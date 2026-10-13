@@ -5,6 +5,7 @@
 import { api } from "../lib/api.mjs";
 import { clear, command, emphasis, h, when } from "../lib/dom.mjs";
 import { pairingRecovery } from "../lib/pairing.mjs";
+import { poller } from "../lib/poll.mjs";
 
 const POLL_MS = 5000;
 const STATES = { paired: ["Paired", "ok"], not_paired: ["Not paired", "off"], pending: ["Pending", "wait"] };
@@ -21,8 +22,9 @@ function armCommand(entry, origin) {
 }
 
 export function renderMarketplace(main) {
-  let stopped = false, busy = false, timer, ticker, data = null, offset = 0, signature = "";
+  let stopped = false, busy = false, ticker, data = null, offset = 0, signature = "";
   const drafts = new Map();
+  const poll = poller(() => load());
   const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true });
   const problem = h("p", { class: "notice bad", role: "alert", hidden: true });
   const panel = h("div");
@@ -45,12 +47,11 @@ export function renderMarketplace(main) {
   }
   function now() { return Date.now() / 1000 + offset; }
   function schedule() {
-    clearTimeout(timer);
-    if (!stopped) timer = setTimeout(() => load(), POLL_MS);
+    poll.schedule(POLL_MS);
   }
   async function load(force = false) {
     if (stopped || busy && !force) return;
-    clearTimeout(timer);
+    poll.cancel();
     let failure = "";
     try {
       const result = await api("marketplace");
@@ -303,7 +304,7 @@ export function renderMarketplace(main) {
   async function perform(action, keepPanel = false) {
     if (busy || stopped) return;
     busy = true;
-    clearTimeout(timer);
+    poll.cancel();
     for (const control of main.querySelectorAll(".market-list button:not(.copy), .market-list input, " +
       ".market-consent button, .pairing-confirm button")) control.disabled = true;
     if (!keepPanel) clear(panel);
@@ -334,5 +335,5 @@ export function renderMarketplace(main) {
   }
   ticker = setInterval(tick, 1000);
   load(true);
-  return () => { stopped = true; clearTimeout(timer); clearInterval(ticker); };
+  return () => { stopped = true; poll.stop(); clearInterval(ticker); };
 }

@@ -4,6 +4,7 @@
 import { api } from "../lib/api.mjs";
 import { clear, command, emphasis, h, reveal, when } from "../lib/dom.mjs";
 import { pairingRecovery } from "../lib/pairing.mjs";
+import { poller } from "../lib/poll.mjs";
 
 const GROUPS = [
   ["pending", "Waiting for approval"], ["armed", "Armed slots"], ["claimed", "Claimed slots to confirm"],
@@ -38,8 +39,9 @@ function countdown(seconds) {
 }
 
 export function renderPairing(main) {
-  let stopped = false, busy = false, timer, ticker, data = null, offset = 0, signature = "";
+  let stopped = false, busy = false, ticker, data = null, offset = 0, signature = "";
   const drafts = new Map();
+  const poll = poller(() => load());
   const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true });
   const problem = h("p", { class: "notice bad", role: "alert", hidden: true });
   const groups = h("div", { class: "pairing-groups" });
@@ -64,12 +66,11 @@ export function renderPairing(main) {
   }
   function now() { return Date.now() / 1000 + offset; }
   function schedule() {
-    clearTimeout(timer);
-    if (!stopped) timer = setTimeout(() => load(), POLL_MS);
+    poll.schedule(POLL_MS);
   }
   async function load(force = false) {
     if (stopped || busy && !force) return;
-    clearTimeout(timer);
+    poll.cancel();
     try {
       const result = await api("pairing");
       if (stopped) return;
@@ -230,7 +231,7 @@ export function renderPairing(main) {
   async function perform(action) {
     if (busy || stopped) return;
     busy = true;
-    clearTimeout(timer);
+    poll.cancel();
     for (const control of groups.querySelectorAll("button,input")) control.disabled = true;
     clear(confirmation);
     let refused = false;
@@ -250,5 +251,5 @@ export function renderPairing(main) {
   }
   ticker = setInterval(tick, 1000);
   load(true);
-  return () => { stopped = true; clearTimeout(timer); clearInterval(ticker); };
+  return () => { stopped = true; poll.stop(); clearInterval(ticker); };
 }

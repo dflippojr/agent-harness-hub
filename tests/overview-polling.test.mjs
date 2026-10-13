@@ -1,66 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderOverview } from "../harness_hub/static/pages/overview.mjs";
-
-function deferred() {
-  let resolve, reject;
-  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
-  return { promise, resolve, reject };
-}
-
-class Element {
-  constructor(tag) {
-    this.tag = tag;
-    this.children = [];
-    this.listeners = new Map();
-    this.attrs = new Map();
-    this.text = "";
-  }
-  append(child) { this.children.push(child); }
-  replaceChildren() { this.children = []; this.text = ""; }
-  setAttribute(name, value) { this.attrs.set(name, value); }
-  addEventListener(name, fn) { this.listeners.set(name, fn); }
-  set textContent(value) { this.text = value; this.children = []; }
-  get textContent() { return this.text + this.children.map((child) => child.textContent).join(""); }
-}
+import { deferred, mount as mountPage, response, settle } from "./page-fake.mjs";
 
 function mount(t, fetcher) {
-  const names = ["document", "Node", "sessionStorage", "fetch", "setTimeout", "clearTimeout"];
-  const originals = names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]);
-  t.after(() => {
-    for (const [name, descriptor] of originals) {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-      else delete globalThis[name];
-    }
-  });
-  const timers = new Map();
-  const calls = [];
-  let next = 0;
-  Object.assign(globalThis, {
-    Node: Element,
-    document: {
-      createElement: (tag) => new Element(tag),
-      createTextNode: (text) => Object.assign(new Element("text"), { text }),
-    },
-    sessionStorage: { getItem: () => null },
-    fetch: (url, options) => { calls.push({ url, method: options.method }); return fetcher(url, options); },
-    setTimeout: (callback, delay) => { const id = ++next; timers.set(id, { callback, delay }); return id; },
-    clearTimeout: (id) => timers.delete(id),
-  });
-  const main = new Element("main");
-  const stop = renderOverview(main);
-  const refresh = main.children[0].children[1].listeners.get("click");
-  t.after(stop);
-  return { main, stop, refresh, timers, calls };
+  const page = mountPage(t, renderOverview, fetcher);
+  return { ...page, refresh: page.main.children[0].children[1].listeners.get("click") };
 }
 
-const response = (data) => new Response(JSON.stringify(data), { status: 200 });
 const overview = (state = "unclaimed", restarting = false) => ({
   reachable: false, restarting,
   claim: { state, message: state, match_code: "123456", expires_at: 900, approve_command: "approve", release_command: "release" },
 });
-// A turn of the event loop drains promise continuations; no wall-clock waits or real timers.
-const settle = () => new Promise(setImmediate);
 
 for (const failure of [false, true]) {
   test("Overview teardown during restart health " + (failure ? "rejection" : "success") + " cannot rearm polling", async (t) => {
@@ -79,6 +30,7 @@ for (const failure of [false, true]) {
     await settle();
     await page.refresh();
     assert.equal(page.timers.size, 0);
+    assert.equal(page.listeners.size, 0);
     assert.equal(page.main.textContent, drawn);
     assert.deepEqual(page.calls.map((call) => call.url), ["/api/overview", "/api/settings/health"]);
   });
@@ -96,6 +48,7 @@ for (const failure of [false, true]) {
     assert.equal(page.main.textContent, drawn);
     assert.equal(page.calls.length, 1);
     assert.equal(page.timers.size, 0);
+    assert.equal(page.listeners.size, 0);
   });
 }
 

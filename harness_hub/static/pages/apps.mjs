@@ -1,5 +1,6 @@
 import { api } from "../lib/api.mjs";
 import { clear, command, h, reveal, when } from "../lib/dom.mjs";
+import { poller } from "../lib/poll.mjs";
 
 const text = (value) => value === null || value === undefined ? "Unavailable" : String(value);
 const revoked = (row) => row.revoked_at !== null || ["revoked", "erasure_pending"].includes(row.state);
@@ -7,7 +8,8 @@ const hasAppData = (row) => ["app", "device"].includes(row.kind);
 const canRevoke = (row) => Boolean(row.id) && !row.this_hub && row.role !== "hub" && hasAppData(row) && !revoked(row);
 
 export function renderApps(main) {
-  let stopped = false, busy = false, timer, inventory;
+  let stopped = false, busy = false, inventory;
+  const poll = poller(() => load());
   const notice = h("p", { class: "notice", "aria-live": "polite" });
   const problem = h("p", { class: "notice bad", role: "alert" });
   const entries = h("div", { class: "grid apps-list" });
@@ -32,13 +34,12 @@ export function renderApps(main) {
       [h("dt", {}, key), h("dd", {}, value)]));
   }
   function schedule() {
-    clearTimeout(timer);
-    if (!stopped) timer = setTimeout(load, 30000);
+    poll.schedule(30000);
   }
   async function load() {
     if (stopped || busy) return;
     busy = true;
-    clearTimeout(timer);
+    poll.cancel();
     refresh.disabled = true;
     clear(detail); clear(confirmation);
     const results = await Promise.allSettled([api("apps"), api("apps/erasures")]);
@@ -136,7 +137,7 @@ export function renderApps(main) {
     if (!result.value.length) erasures.append(h("p", { class: "muted" }, "No apps are waiting to be erased."));
   }
   function confirmAction(title, explanation, action, identity = null) {
-    clearTimeout(timer);
+    poll.cancel();
     const cancel = button("Cancel", () => { clear(confirmation); schedule(); });
     const ok = button("Confirm " + title, () => perform(action));
     clear(confirmation, h("section", { class: "card warn", role: "alert" }, h("h2", {}, title + "?"),
@@ -157,7 +158,7 @@ export function renderApps(main) {
   }
   async function perform(action) {
     if (busy || stopped || inventory?.state !== "ready") return;
-    busy = true; clearTimeout(timer);
+    busy = true; poll.cancel();
     for (const control of main.querySelectorAll("button,input")) control.disabled = true;
     clear(confirmation);
     let refused = false;
@@ -173,7 +174,7 @@ export function renderApps(main) {
   }
   async function manageApp(row) {
     if (stopped || busy || inventory?.state !== "ready") return;
-    clearTimeout(timer); busy = true;
+    poll.cancel(); busy = true;
     try {
       const data = await api("apps/" + row.id + "/limits");
       if (stopped) return;
@@ -212,5 +213,5 @@ export function renderApps(main) {
   }
   function numberValue(input) { return input.value.trim() === "" ? null : Number(input.value); }
   load();
-  return () => { stopped = true; clearTimeout(timer); };
+  return () => { stopped = true; poll.stop(); };
 }

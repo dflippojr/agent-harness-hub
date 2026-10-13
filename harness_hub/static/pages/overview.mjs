@@ -2,6 +2,7 @@
 
 import { api, ApiError } from "../lib/api.mjs";
 import { clear, command, h, when } from "../lib/dom.mjs";
+import { poller } from "../lib/poll.mjs";
 
 const REFRESH_MS = 30000;
 const CLAIM_POLL_MS = 2000;
@@ -9,9 +10,9 @@ let lastGood = null; // the last overview that reached the daemon, shown with an
 
 export function renderOverview(main) {
   let stopped = false;
-  let timer = null;
   let loading = false;
   let reloadRequested = false;
+  const poll = poller(load);
   const claimBox = h("div", { id: "claim" });
   const body = h("div", { class: "grid" });
   const status = h("p", { class: "muted refreshed", "aria-live": "polite" });
@@ -27,9 +28,8 @@ export function renderOverview(main) {
       return;
     }
     loading = true;
-    clearTimeout(timer);
-    timer = null;
-    let delay = REFRESH_MS;
+    poll.cancel();
+    let delay = REFRESH_MS, whileHidden = false;
     try {
       const data = await api("overview");
       if (stopped || reloadRequested) return;
@@ -40,7 +40,9 @@ export function renderOverview(main) {
         await api("settings/health").catch(() => {});
         if (stopped || reloadRequested) return;
       }
-      delay = waiting || data.restarting ? CLAIM_POLL_MS : REFRESH_MS;
+      // The owner is approving on the daemon host or waiting out a restart: keep polling in a hidden tab.
+      whileHidden = waiting || data.restarting;
+      delay = whileHidden ? CLAIM_POLL_MS : REFRESH_MS;
     } catch (error) {
       if (stopped || reloadRequested) return;
       clear(body, h("section", { class: "card bad", role: "alert" }, h("h2", {}, "Could not load the overview"), h("p", {}, error.message)));
@@ -51,7 +53,7 @@ export function renderOverview(main) {
           reloadRequested = false;
           load();
         } else {
-          timer = setTimeout(load, delay);
+          poll.schedule(delay, { whileHidden });
         }
       }
     }
@@ -76,7 +78,7 @@ export function renderOverview(main) {
   load();
   return () => {
     stopped = true;
-    clearTimeout(timer);
+    poll.stop();
   };
 }
 
