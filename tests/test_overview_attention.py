@@ -73,26 +73,29 @@ def test_a_failed_pairing_read_only_nulls_attention(claimed, fake_daemon, monkey
 def refuse_pairing(monkeypatch, *, confirmed):
     """The pairing read answers 401; the confirmation read answers 401 too only when `confirmed`."""
     admin = DaemonClient.admin
-    refused = []
+    refused, discovery_reads = [], []
 
     async def pairing(self, token, operation, *args, **kwargs):
         refused.append(operation)
         return Reply(401, {"detail": "synthetic refusal"})
 
     async def confirming(self, token, path=""):
-        if refused and confirmed and path == "":
-            return Reply(401, {"detail": "synthetic refusal"})
+        # The first discovery read is Overview's own and succeeds; only the follow-up confirmation read is refused.
+        if path == "":
+            discovery_reads.append(path)
+            if confirmed and len(discovery_reads) > 1:
+                return Reply(401, {"detail": "synthetic refusal"})
         return await admin(self, token, path)
 
     monkeypatch.setattr(DaemonClient, "pairing", pairing)
     monkeypatch.setattr(DaemonClient, "admin", confirming)
-    return refused
+    return refused, discovery_reads
 
 
 def test_a_single_pairing_401_keeps_the_key(claimed, fake_daemon, monkeypatch):
-    refused = refuse_pairing(monkeypatch, confirmed=False)
+    refused, discovery_reads = refuse_pairing(monkeypatch, confirmed=False)
     data = overview(claimed)
-    assert refused == ["list"]
+    assert refused == ["list"] and len(discovery_reads) == 2
     assert data["attention"] is None and data["claim"]["state"] == "claimed"
     assert data["error"] == "the owner API rejected the key once; retained it pending confirmation"
     assert data["ownership"]["this_hub"] is True
@@ -100,8 +103,9 @@ def test_a_single_pairing_401_keeps_the_key(claimed, fake_daemon, monkeypatch):
 
 
 def test_a_confirmed_pairing_401_releases_the_key(claimed, monkeypatch):
-    refuse_pairing(monkeypatch, confirmed=True)
+    refused, discovery_reads = refuse_pairing(monkeypatch, confirmed=True)
     data = overview(claimed)
+    assert refused == ["list"] and len(discovery_reads) == 2
     assert data["attention"] is None and data["ownership"] is None
     assert data["claim"]["state"] != "claimed" and data["error"] == ""
 
