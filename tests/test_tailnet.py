@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import socket
 import subprocess
@@ -14,7 +15,9 @@ from starlette.testclient import TestClient
 from harness_hub import __main__ as cli
 from harness_hub import auth
 from harness_hub.tailnet import (
+    CACHE_SECONDS,
     PeerCheck,
+    TailnetIdentity,
     connection_owner,
     install_dirs,
     is_loopback,
@@ -43,11 +46,18 @@ class FakePeers:
                                      "Web": {"node.example.ts.net:443": {"Handlers": {"/": {
                                          "Proxy": f"http://127.0.0.1:{HUB_PORT}"}}}}}
         self.asked: list[tuple[tuple, tuple]] = []
+        self.addresses = set(OWN_ADDRESSES)
+        self.address_lookups = 0
+        self.now = 0.0
 
     def check(self) -> PeerCheck:
         return PeerCheck(owner=self.owner, exe=lambda pid: self.exe_path, dirs=lambda: [INSTALL],
                          service=lambda: self.service_pid, platform_ok=lambda: self.windows,
-                         own_addresses=lambda: OWN_ADDRESSES, serve=self.serve)
+                         own_addresses=self.own_addresses, serve=self.serve, clock=lambda: self.now)
+
+    def own_addresses(self):
+        self.address_lookups += 1
+        return set(self.addresses)
 
     def serve(self):
         if isinstance(self.serve_config, Exception):
@@ -170,6 +180,68 @@ def test_tailscaled_requests_from_this_machine_get_no_identity(tailnet_hub, forw
                                        headers=[("X-Hub-Request", "1"), *headers])
     assert response.status_code == 401 and "set-cookie" not in response.headers
     assert tailnet_hub.get("/api/overview").status_code == 401
+
+
+STATIC = Path(__file__).resolve().parents[1] / "harness_hub" / "static"
+
+
+def test_only_the_session_route_looks_the_identity_up(tailnet_hub, peers):
+    """serve adds the headers to every request; a page load must not list interfaces once per asset (#54)."""
+    tailnet_hub.sign_in()
+    paths = ["/", "/api/overview", *(f"/static/{f.relative_to(STATIC).as_posix()}" for f in STATIC.rglob("*")
+                                     if f.is_file())]
+    assert len(paths) > 10
+    for path in paths:
+        assert tailnet_hub.get(path, headers=identity()).status_code == 200, path
+    assert not peers.asked and peers.address_lookups == 0
+
+
+@pytest.mark.parametrize("windows", [True, False])
+@pytest.mark.parametrize(("kind", "method", "path"), [
+    ("http", "GET", "/"), ("http", "GET", "/static/app.mjs"), ("http", "GET", "/api/overview"),
+    ("http", "POST", "/api/claim"), ("http", "DELETE", "/api/session"), ("http", "HEAD", "/api/session"),
+    ("http", "GET", "/api/session/"), ("websocket", "GET", "/api/session"),
+])
+def test_other_requests_lose_the_identity_headers_unchecked(windows, kind, method, path):
+    def refuse(*args, **kwargs):
+        raise AssertionError("looked up a request that does not read the identity")
+
+    seen = []
+
+    async def app(scope, receive, send):
+        seen.append(scope)
+
+    check = PeerCheck(owner=refuse, exe=refuse, dirs=refuse, service=refuse, platform_ok=lambda: windows,
+                      own_addresses=refuse, serve=refuse)
+    middleware = TailnetIdentity(app, check=check, trust_unverified=True)
+    headers = [(b"tailscale-user-login", OWNER.encode()), (b"x-forwarded-for", REMOTE.encode()), (b"accept", b"*/*")]
+    scope = {"type": kind, "method": method, "path": path, "headers": headers, "client": ("127.0.0.1", 50000),
+             "server": ("127.0.0.1", HUB_PORT)}
+    asyncio.run(middleware(scope, None, None))
+    assert seen[0]["headers"] == [(b"x-forwarded-for", REMOTE.encode()), (b"accept", b"*/*")]
+
+
+def test_session_reads_reuse_the_address_list_briefly(tailnet_hub, peers):
+    assert tailnet_hub.get("/api/session", headers=identity()).json()["tailnet_login"] == OWNER
+    assert tailnet_hub.get("/api/session", headers=identity()).json()["tailnet_login"] == OWNER
+    assert peers.address_lookups == 1
+    peers.now += CACHE_SECONDS
+    assert tailnet_hub.get("/api/session", headers=identity()).json()["tailnet_login"] == OWNER
+    assert peers.address_lookups == 2
+
+
+def test_sign_in_never_uses_a_cached_address_list(tailnet_hub, peers):
+    assert tailnet_hub.get("/api/session", headers=identity()).json()["tailnet_login"] == OWNER
+    asked, listed = len(peers.asked), peers.address_lookups
+    assert tailnet_sign_in(tailnet_hub).status_code == 204
+    assert len(peers.asked) == asked + 1 and peers.address_lookups == listed + 1
+    assert tailnet_sign_in(tailnet_hub).status_code == 204
+    assert len(peers.asked) == asked + 2 and peers.address_lookups == listed + 2
+    # This machine has since gained the source's address: the cached list still clears it for display, not sign-in.
+    assert tailnet_hub.get("/api/session", headers=identity()).json()["tailnet_login"] == OWNER
+    peers.addresses.add(REMOTE)
+    response = tailnet_sign_in(tailnet_hub)
+    assert response.status_code == 401 and peers.address_lookups == listed + 3
 
 
 def test_unknown_own_addresses_admit_no_source(make_hub):
