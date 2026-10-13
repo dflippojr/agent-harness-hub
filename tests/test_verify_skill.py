@@ -286,21 +286,18 @@ def test_every_run_gets_its_own_evidence_folder(tmp_path, capsys):
     assert "not empty" in capsys.readouterr().err
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="process groups: the POSIX containment")
-def test_a_reused_process_group_id_is_never_touched():
-    psutil = pytest.importorskip("psutil")
+@pytest.mark.skipif(sys.platform == "win32", reason="the run token: the POSIX containment")
+def test_a_process_without_the_run_token_is_never_touched():
     verify = load("verify")
-    import os
     import subprocess
+    # Not this run's: not its descendant (no subreaper here) and without its token, like a process that reused an id.
     stranger = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
     try:
-        # The run recorded a group with this id whose leader started earlier: the id was reused since.
-        reused = {"pgid": stranger.pid, "created": psutil.Process(stranger.pid).create_time() - 100}
         contained = verify.Containment()
         contained.reaper = False
-        assert contained.kill([reused]) == 0
+        assert stranger.pid not in {p.pid for p in contained._members()}
+        assert contained.kill() == 0
         assert stranger.poll() is None
-        assert os.getpgid(stranger.pid) == stranger.pid
     finally:
         stranger.kill()
         stranger.wait()
@@ -316,7 +313,7 @@ def test_an_orphan_outside_the_tree_and_group_is_found_by_the_run_token(tmp_path
     step = contained.popen([sys.executable, "-c", FAILING_DRIVE, str(orphan_file), "own-session"])
     step.wait(timeout=30)
     orphan = int(orphan_file.read_text(encoding="utf-8"))
-    assert contained.kill([]) >= 1  # no recorded group: only the token finds it
+    assert contained.kill() >= 1  # not a descendant any more: only the token finds it
     assert not psutil.pid_exists(orphan) or psutil.Process(orphan).status() == psutil.STATUS_ZOMBIE
 
 

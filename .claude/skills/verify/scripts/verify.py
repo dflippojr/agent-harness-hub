@@ -74,12 +74,11 @@ class Containment:
 
     - Windows: one Job Object with kill-on-close, so they also die if this script is killed.
     - Linux: this script becomes a child subreaper, so an orphan, even one that started its own session, is
-      re-parented here and stays its descendant. Each step also leads its own process group.
+      re-parented here and stays its descendant.
     - Everywhere but Windows: every step's environment carries this run's random token, so a process that left
-      both the tree and the group (macOS has no subreaper) is still found by it.
+      the tree (macOS has no subreaper, and a later `cleanup` is not the parent) is still found by it.
 
-    A recorded group counts only while its members started no earlier than its leader did, so a group id reused
-    after the run is never touched."""
+    Nothing is selected by process group, name or port: an id another process reused is never touched."""
 
     RUN_VAR = "VERIFY_RUN_ID"  # the variable holding the run token
 
@@ -91,30 +90,21 @@ class Containment:
     def popen(self, argv: list[str], **kwargs) -> subprocess.Popen:
         if self.job is None:
             kwargs["env"] = dict(kwargs.get("env") or os.environ, **{self.RUN_VAR: self.token})
-            return subprocess.Popen(argv, start_new_session=True, **kwargs)  # noqa: S603
+            return subprocess.Popen(argv, **kwargs)  # noqa: S603
         flags = subprocess.CREATE_NEW_PROCESS_GROUP | 0x4  # CREATE_SUSPENDED: in the job before it starts anything
         proc = subprocess.Popen(argv, creationflags=flags, **kwargs)  # noqa: S603
         self.job.assign(int(proc._handle))  # the process handle Popen holds
         return proc
 
-    def _members(self, groups: list[dict]) -> list:
-        """POSIX: this script's own descendants (with the subreaper, every orphan of the run), plus the members of
-        each recorded group that is still the run's own."""
+    def _members(self) -> list:
+        """POSIX: this script's own descendants (with the subreaper, every orphan of the run), plus every process
+        that carries this run's token."""
         import psutil
         found = {p.pid: p for p in psutil.Process().children(recursive=True)} if self.reaper else {}
-        procs = list(psutil.process_iter())
-        for proc in procs:
+        for proc in psutil.process_iter():
             with contextlib.suppress(psutil.Error, OSError):
                 if proc.pid != os.getpid() and proc.environ().get(self.RUN_VAR) == self.token:
                     found[proc.pid] = proc
-        for group in groups:
-            leader = alive({"pid": group.get("pgid"), "created": group.get("created")})
-            if leader is None and psutil.pid_exists(int(group["pgid"])):
-                continue  # the id now belongs to another process: not this run's group any more
-            for proc in procs:
-                with contextlib.suppress(psutil.Error, OSError):
-                    if os.getpgid(proc.pid) == group["pgid"] and proc.create_time() >= group["created"] - 0.01:
-                        found[proc.pid] = proc
         live = []
         for proc in found.values():
             with contextlib.suppress(psutil.Error):
@@ -122,14 +112,14 @@ class Containment:
                     live.append(proc)
         return live
 
-    def kill(self, groups: list[dict]) -> int:
+    def kill(self) -> int:
         """Kill everything still contained, each process by pid; return how many there were."""
         if self.job is not None:
             left = self.job.active()
             self.job.terminate()
             return left
         import psutil
-        members = self._members(groups)
+        members = self._members()
         for proc in members:
             with contextlib.suppress(psutil.Error):
                 proc.kill()
@@ -138,8 +128,8 @@ class Containment:
             psutil.wait_procs(psutil.Process().children(), timeout=1)
         return len(members)
 
-    def remaining(self, groups: list[dict]) -> int:
-        return self.job.active() if self.job is not None else len(self._members(groups))
+    def remaining(self) -> int:
+        return self.job.active() if self.job is not None else len(self._members())
 
 
 def _become_subreaper() -> bool:
@@ -252,9 +242,6 @@ class Run:
             proc = self.contained.popen(argv, cwd=REPO, stdout=out, stderr=subprocess.STDOUT,
                                         stdin=subprocess.DEVNULL, env=env)
         self.track(name, proc.pid)
-        if os.name != "nt":  # it leads its own session and process group
-            self.record.setdefault("groups", []).append({"pgid": proc.pid, "created": created(proc.pid)})
-            self.save()
         return proc
 
     def wait_tracking(self, name: str, proc: subprocess.Popen, seconds: float) -> int:
@@ -332,8 +319,7 @@ class Run:
         if instance:
             lines.append("teardown: " + self.teardown(instance))
         import psutil
-        groups = self.record.get("groups", [])
-        contained = self.contained.kill(groups)
+        contained = self.contained.kill()
         procs = [p for p in map(alive, self.record["processes"]) if p is not None]
         for proc in procs:
             with contextlib.suppress(psutil.Error):
@@ -346,7 +332,7 @@ class Run:
         left = [f"{p['name']} {p['pid']}" for p in self.record["processes"] if alive(p) is not None]
         if left:
             problems.append("still running: " + ", ".join(left))
-        if remaining := self.contained.remaining(groups):
+        if remaining := self.contained.remaining():
             problems.append(f"{remaining} processes this run started still run")
         for key in ("hub_port", "daemon_port"):
             if self.record.get(key) and port_open(self.record[key]):

@@ -29,9 +29,8 @@ the launcher's pid and start time, the instance directory and the log path. When
 the Hub and daemon URLs and ports. Every step's process is appended there too, with its start time, and its
 descendants as they are seen. All of them are also contained: on Windows in one kill-on-close Job Object (so they
 die even if `verify.py` itself is killed); on Linux `verify.py` is a child subreaper, so orphans, even ones in a
-new session, stay its descendants; on POSIX each step leads its own process group, recorded in `launch.json`
-with its leader's start time, and carries the run's random `VERIFY_RUN_ID` (also recorded), which finds a process
-that left both (macOS has no subreaper). That catches children whose parent has already exited.
+new session, stay its descendants; and on POSIX each step carries the run's random `VERIFY_RUN_ID` (also recorded),
+which finds a process that left the tree (macOS has no subreaper, and a later `cleanup` is no one's parent). That catches children whose parent has already exited.
 
 ## 2. Doctor
 
@@ -94,8 +93,7 @@ They die with the instance.
 Runs in a `finally`, so also after a failed launch, doctor or drive:
 
 1. The contract's **Teardown** (docs/ui-testing.md, "Teardown") on the instance directory.
-2. Everything still in the run's Job Object, descendants, or recorded process groups (only while the group is
-   still the run's: its members started no earlier than its recorded leader), then every process in `launch.json` that
+2. Everything still in the run's Job Object, among its descendants or carrying its `VERIFY_RUN_ID`, then every process in `launch.json` that
    still runs with its recorded start time, is killed. Nothing is ever found or killed by name or port. If Teardown
    timed out or failed, it runs once more after that.
 3. The contract's leftover checks: no recorded or contained process alive, the Hub and daemon ports refuse
