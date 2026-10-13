@@ -176,3 +176,41 @@ test("Overview reload after Stop waiting supersedes the in-flight poll", async (
   assert.match(page.main.textContent, /Claimed/);
   assert.equal(page.calls.filter((call) => call.url === "/api/overview").length, 3);
 });
+
+const reachableOverview = (ownership) => ({
+  reachable: true, restarting: false, error: "", fetched_at: 1,
+  hub: { version: "0.0.0", daemon_url: "https://daemon.test" },
+  claim: { state: "claimed", message: "claimed", key_id: "k-1", claimed_at: 1 },
+  daemon: { release: "0.9.0", build_id: "2026.09.17.1", profile: "service", protocols: {} },
+  health: { ok: true, config_revision: 1, config_confirmed: true, supervised_restart: true, recovery: null },
+  capabilities: { profile: "service", required: {}, modules: {}, hosted_backends: [], config_registry: true },
+  ownership,
+});
+const ownershipFor = (api_version, compatibility) => ({ api_version, compatibility, daemon_has_hub: true, this_hub: true, record: null });
+const OWNER_API_NOTICES = [
+  ["too_old", "1.23", "This daemon's Owner API (1.23) is older than the Hub supports (1.24, agent-harness aa5a904). Update the daemon; some pages will fail until you do.", "notice bad"],
+  ["no_tailnet_signin", "1.25", "Tailnet sign-in needs Owner API 1.26 or later; sign-in links still work.", "notice"],
+  ["unknown", "", "This daemon did not report its Owner API version.", "notice"],
+];
+
+for (const [compatibility, version, notice, className] of OWNER_API_NOTICES) {
+  test("Overview words the " + compatibility + " Owner API notice", async (t) => {
+    const page = mount(t, (url) => Promise.resolve(response(url === "/api/overview"
+      ? reachableOverview(ownershipFor(version, compatibility)) : { ok: true })));
+    await settle();
+    const shown = (function find(element) {
+      if (element.tag === "p" && element.textContent === notice) return element;
+      return element.children.map(find).find(Boolean) ?? null;
+    })(page.main);
+    assert.ok(shown, notice);
+    assert.equal(shown.className, className);
+  });
+}
+
+test("Overview shows no Owner API notice for a supported daemon", async (t) => {
+  const page = mount(t, (url) => Promise.resolve(response(url === "/api/overview"
+    ? reachableOverview(ownershipFor("1.27", "supported")) : { ok: true })));
+  await settle();
+  assert.match(page.main.textContent, /Owner API/);
+  assert.doesNotMatch(page.main.textContent, /older than the Hub supports|Tailnet sign-in needs|did not report its Owner API/);
+});

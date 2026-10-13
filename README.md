@@ -31,7 +31,8 @@ and read-only. Every action includes its daemon CLI equivalent. When the daemon 
 Requires Python 3.12+ and a running Agent Harness daemon on the same machine, at
 [agent-harness #606](https://github.com/dflippojr/agent-harness/pull/606), merge commit
 `aa5a9047dbe4bcba6b7ec3348d0cd529c00ebe2b` (`aa5a904`), or later. This minimum daemon enforces
-typed-code confirmation for browser claims as well as native claims.
+typed-code confirmation for browser claims as well as native claims. Overview warns when the daemon is
+older than this minimum.
 
 ```bash
 pip install git+https://github.com/dflippojr/agent-harness-hub
