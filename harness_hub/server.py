@@ -117,6 +117,22 @@ def _error(status: int, detail: str, **extra: Any) -> JSONResponse:
     return JSONResponse({"detail": detail, **extra}, status_code=status)
 
 
+async def concurrently(*reads: Any) -> list[Any]:
+    """Await independent daemon reads together, so a slow daemon costs one round trip instead of one per read.
+
+    Each item is the read's reply or the exception it raised, and every read has finished when this returns. A caller
+    passes each item through `settled` in the order the reads used to run, so the first failure it raises is the
+    same one a sequential route raised."""
+    return await asyncio.gather(*reads, return_exceptions=True)
+
+
+def settled(result: Any) -> Any:
+    """One item from `concurrently`: the reply, or the exception the read raised, re-raised here."""
+    if isinstance(result, BaseException):
+        raise result
+    return result
+
+
 def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None,
                peer_check: PeerCheck | None = None) -> HostCheck:
     store = StateStore(settings.state_dir)
@@ -291,16 +307,17 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     @app.get("/api/overview")
     async def get_overview():
         health, ownership, error = None, None, ""
+        key = claims.key()
+        reads = await concurrently(daemon.health(), *(
+            (daemon.admin(key["token"]), daemon.admin(key["token"], "/hub-claim")) if key else ()))
         try:
-            reply = await daemon.health()
+            reply = settled(reads[0])
             if reply.ok:
                 health = health_view(reply.body)
             else:
                 error = f"the daemon's /health answered HTTP {reply.status}"
-            key = claims.key()
             if key:
-                discovery = await daemon.admin(key["token"])
-                record = await daemon.admin(key["token"], "/hub-claim")
+                discovery, record = settled(reads[1]), settled(reads[2])
                 if 401 in (discovery.status, record.status):
                     # A transient rejection must not destroy the owner's persistent key.
                     confirmation = await daemon.admin(key["token"])
@@ -431,7 +448,18 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         if key is None:
             return _error(409, "Claim this Hub on Overview before reading the Marketplace.")
         secrets = tuple(store.secrets())
-        result = await read_inventory(key, lambda body: entries_view(body, secrets))
+
+        async def read_slots() -> tuple[Any, str]:
+            # Only the pairing read and what it observes hold the consent lock; the inventory read never waits on it.
+            async with pairing_consent_lock:
+                reply = await daemon.pairing(key["token"], "list")
+                if reply.ok and isinstance(reply.body, list):
+                    return reply, observe_browser_slots(reply.body, key["key_id"])
+                return reply, ""
+
+        listed, slots_read = await concurrently(
+            read_inventory(key, lambda body: entries_view(body, secrets)), read_slots())
+        result = settled(listed)
         if isinstance(result, JSONResponse):
             return result
         good, state, error = result
@@ -439,10 +467,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         entries, withheld = entries_view(good["inventory"], secrets) if good else (None, 0)
         slots, slots_error, confirmation_warning = {}, "", ""
         try:
-            async with pairing_consent_lock:
-                reply = await daemon.pairing(key["token"], "list")
-                if reply.ok and isinstance(reply.body, list):
-                    confirmation_warning = observe_browser_slots(reply.body, key["key_id"])
+            reply, confirmation_warning = settled(slots_read)
             if reply.status == 401:
                 return await refused(key["token"])
             if reply.ok and isinstance(reply.body, list):
@@ -628,7 +653,13 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return _error(409, "This Hub is released only on the daemon host: harness hub release --confirm",
                               release_command="harness hub release --confirm")
         try:
-            reply = await daemon.apps(key["token"], operation, app_id, body)
+            if operation == "limits":
+                # /hub does not carry retention, so the detail also needs the token-free key list: read both at once.
+                reply, keys = await concurrently(daemon.apps(key["token"], "limits", app_id),
+                                                 daemon.apps(key["token"], "keys"))
+                reply = settled(reply)
+            else:
+                reply, keys = await daemon.apps(key["token"], operation, app_id, body), None
             if reply.status == 401:
                 return await refused(key["token"])
             if not reply.ok:
@@ -645,8 +676,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 shown = limits_view(reply.body)
                 if operation == "limits_save":
                     return shown
-                # /hub does not carry retention; read only the token-free key list for this detail.
-                keys = await daemon.apps(key["token"], "keys")
+                keys = settled(keys)
                 if keys.status == 401:
                     return await refused(key["token"])
                 if not keys.ok:

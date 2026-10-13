@@ -246,4 +246,5 @@ def test_invalid_limits_reply_is_an_error_before_loading_caps(claimed, fake_daem
     reply = claimed.get("/api/apps/k-minute/limits") if method == "GET" else write(
         claimed, "PUT", "k-minute/limits", {"max_running": 3})
     assert reply.status_code == 502 and "configured" not in reply.json()
-    assert len(fake_daemon.apps_calls) == 1  # No key read or repeated write after the invalid answer.
+    # The detail reads the key list alongside the limits (#56), but nothing repeats after the invalid answer.
+    assert len(fake_daemon.apps_calls) == (2 if method == "GET" else 1)
