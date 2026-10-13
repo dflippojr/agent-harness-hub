@@ -234,6 +234,8 @@ For browser testing, `python scripts/ui_instance.py start --dir <dir>` starts a 
 daemon from an agent-harness checkout (`HUB_UI_DAEMON_SRC`), on loopback with synthetic data, and
 `npm --prefix tools/ui-tests test -- --workers=1` runs the Playwright journeys against one.
 [docs/ui-testing.md](docs/ui-testing.md) is the contract: start, sign-in, journeys and teardown.
+To check a change end to end (launch, doctor, drive, evidence, cleanup), agents use the
+[verify skill](.claude/skills/verify/SKILL.md): `python .claude/skills/verify/scripts/verify.py run`.
 
 Dependency versions and artifact hashes are reviewed in `requirements*.lock`; CI also pins the daemon fixture,
 Actions commits, and the Docker base digest. Update locks deliberately with uv:

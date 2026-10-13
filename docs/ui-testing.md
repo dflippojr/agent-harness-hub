@@ -175,6 +175,8 @@ theme case when they run one at a time, apart from the pairing request limit abo
 - **Package.** npm, self-contained in `tools/ui-tests`: `package.json` pins `@playwright/test` exactly, with
   `package-lock.json`. Config `tools/ui-tests/playwright.config.mjs`; tests `tools/ui-tests/tests/*.spec.mjs`.
   (`tests/*.spec.cjs` are older single-page specs on intercepted synthetic responses.)
+  `tools/ui-tests/verify/` and `verify.config.mjs` are the verify skill's drive step
+  ([.claude/skills/verify](../.claude/skills/verify/SKILL.md)); the suite's config does not run them.
 - **Commands.**
 
   ```
