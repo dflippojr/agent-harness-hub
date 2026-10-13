@@ -43,7 +43,7 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
 # Checked on the groups, not the elevated token: a non-elevated administrator still belongs to Administrators.
 $inAdministrators = [bool]($identity.Groups | Where-Object { $_.Value -eq 'S-1-5-32-544' })
 if ($inAdministrators -and -not $OwnerAccount) {
-    throw 'this account is a member of Administrators: use a dedicated standard account, or pass -OwnerAccount for the non-elevated owner account'
+    throw 'this account is in Administrators: use a dedicated standard account, or pass -OwnerAccount'
 }
 $InstallDir = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
 $HookDir = [IO.Path]::GetFullPath($HookDir).TrimEnd('\')
