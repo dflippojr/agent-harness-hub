@@ -29,15 +29,16 @@ def register_pairing(app, fake, owner):
     fake.pairing_deny_error = None
     fake.before_pairing_deny = None
 
-    def add(name, scopes, state="pending", origin="https://app.test", catalog_app_id="", text=None):
+    def add(name, scopes, state="pending", origin="https://app.test", catalog_app_id="", text=None, kind="app",
+            expires_in=600):
         """A request as the App made it (or as the owner armed it). Returns its id; the code is on the row."""
         now = time.time()
         rid = "pr-" + secrets.token_hex(12)
         fake.pairing_rows[rid] = {
-            "id": rid, "kind": "app", "name": name, "scopes": list(scopes), "catalog_app_id": catalog_app_id,
+            "id": rid, "kind": kind, "name": name, "scopes": list(scopes), "catalog_app_id": catalog_app_id,
             "origin": origin, "armed": state in ("armed", "claimed"), "state": state,
             "match_code": f"{secrets.randbelow(10**6):06d}" if state in ("pending", "claimed") else "",
-            "created_at": now, "expires_at": now + 600, "approved_at": None, "finished_at": None, "key_id": "",
+            "created_at": now, "expires_at": now + expires_in, "approved_at": None, "finished_at": None, "key_id": "",
             "text": text or {}}
         return rid
 

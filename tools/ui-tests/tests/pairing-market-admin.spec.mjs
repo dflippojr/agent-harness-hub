@@ -15,7 +15,12 @@ test("approve a request with the app's code; a wrong code is refused", async ({ 
   pairingProject(testInfo);
   const name = unique(testInfo, "Paired notes");
   const asked = await appAsksToPair(request, name);
-  await openSection(page, "pairing");
+  // Overview counts the waiting request (other projects' requests may be counted too) and links to the list.
+  await openSection(page, "overview");
+  const waiting = page.getByRole("status").filter({ has: page.getByRole("heading", { name: "Waiting for you" }) });
+  await expect(waiting).toContainText(/\d+ to approve/);
+  await waiting.getByRole("link", { name: "Open Pairing requests" }).click();
+  await expect(page).toHaveURL(/#\/pairing$/);
   const request_ = card(page, name);
   await expect(group(page, "Waiting for approval").filter({ has: request_ })).toHaveCount(1);
   await expect(request_).toContainText("This app can start agent tasks on your harness");

@@ -1,4 +1,5 @@
-// Overview: this Hub's claim on the daemon, the daemon's version, health and capabilities.
+// Overview: this Hub's claim on the daemon, pairing requests waiting for the owner, the daemon's version, health and
+// capabilities.
 
 import { api, ApiError } from "../lib/api.mjs";
 import { clear, command, h, when } from "../lib/dom.mjs";
@@ -71,6 +72,7 @@ export function renderOverview(main) {
         h("h2", {}, "The daemon did not answer"),
         h("p", {}, data.error),
         shown ? h("p", { class: "muted" }, `Showing what the Hub last saw, at ${when(shown.fetched_at)}.`) : null) : null,
+      attentionCard(data.attention),
       shown ? daemonCard(shown) : null,
       shown ? capabilitiesCard(shown) : null);
     status.textContent = `Updated ${new Date().toLocaleTimeString()}`;
@@ -178,6 +180,18 @@ function compatibilityNotice(ownership) {
     default:
       return null;
   }
+}
+
+// App pairing requests the owner must decide, counted on the server. A request expires unseen if nobody looks.
+function attentionCard(attention) {
+  const parts = attention ? [[attention.approve, "to approve"], [attention.confirm, "to confirm"]].filter(([n]) => n > 0) : [];
+  const total = parts.reduce((sum, [n]) => sum + n, 0);
+  if (!total) return null;
+  return h("section", { class: "card warn span", role: "status", "aria-labelledby": "attention-title" },
+    h("h2", { id: "attention-title" }, "Waiting for you"),
+    h("p", { class: "lead" }, `${total} pairing ${total === 1 ? "request needs" : "requests need"} you: `,
+      parts.map(([n, label]) => `${n} ${label}`).join(", ")),
+    h("p", {}, h("a", { href: "#/pairing", class: "btn primary" }, "Open Pairing requests")));
 }
 
 function daemonCard(data) {

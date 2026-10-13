@@ -33,11 +33,13 @@ def assert_in_flight_together(events, *calls):
         assert events.index(("start", *call)) < first_end, (call, events)
 
 
-def test_overview_reads_health_discovery_and_claim_record_together(claimed, recorded):
+def test_overview_reads_health_discovery_claim_record_and_pairing_requests_together(claimed, recorded):
     recorded.clear()
     reply = claimed.get("/api/overview")
     assert reply.status_code == 200 and reply.json()["error"] == "", reply.text
-    assert_in_flight_together(recorded, ("GET", "/health"), ("GET", ADMIN), ("GET", ADMIN + "/hub-claim"))
+    assert reply.json()["attention"] == {"approve": 0, "confirm": 0}
+    assert_in_flight_together(recorded, ("GET", "/health"), ("GET", ADMIN), ("GET", ADMIN + "/hub-claim"),
+                              ("GET", ADMIN + "/pairing-requests"))
 
 
 def test_marketplace_reads_inventory_and_pairing_requests_together(claimed, fake_daemon, recorded):
