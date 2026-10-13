@@ -75,8 +75,10 @@ def test_children_get_no_tokens_and_a_home_inside_the_instance(tmp_path, monkeyp
     for name in ("HARNESS_TOKEN", "HARNESS_LOCAL_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "ANTHROPIC_API_KEY",
                  "OPENAI_API_KEY", "TS_AUTHKEY", "HTTPS_PROXY", "HARNESS_FAKE_MODEL"):
         monkeypatch.setenv(name, "real-secret")
+    monkeypatch.setenv("VERIFY_RUN_ID", "a-random-run-id")
     env = ui.child_env(tmp_path, HARNESS_URL="http://127.0.0.1:18100")
     assert "real-secret" not in env.values()
+    assert env["VERIFY_RUN_ID"] == "a-random-run-id"  # the verify skill's cleanup finds the children by it
     assert Path(env["HOME"]).is_relative_to(tmp_path) and Path(env["USERPROFILE"]).is_relative_to(tmp_path)
     assert env["HARNESS_URL"] == "http://127.0.0.1:18100"
     assert ui.cli_config(tmp_path).parent == tmp_path / "home" / ".agent-harness"

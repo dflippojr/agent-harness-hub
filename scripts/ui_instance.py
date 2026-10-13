@@ -44,8 +44,9 @@ FAKE_ENV = "HARNESS_FAKE_MODEL"
 LIVE_PORTS = {8100: "the live daemon's port", 8120: "the live Hub's default port"}
 START_SECONDS = 90
 # The variables a child process needs to run, and nothing else: tokens, provider keys and proxies stay out.
+# VERIFY_RUN_ID is the verify skill's random run id (.claude/skills/verify), which its cleanup finds processes by.
 ENV_ALLOW = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR",
-             "LANG", "LC_ALL", "TZ", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "VIRTUAL_ENV")
+             "LANG", "LC_ALL", "TZ", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "VIRTUAL_ENV", "VERIFY_RUN_ID")
 SYNTHETIC_PAIRINGS = (("Synthetic notes", ["sessions"]), ("Synthetic approver", ["sessions", "approvals"]))
 SYNTHETIC_MEMBER = {"login": "member@example.test", "display_name": "Synthetic member"}
 

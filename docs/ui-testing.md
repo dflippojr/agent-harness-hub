@@ -28,8 +28,8 @@ The agent-ops `ui-testing-pass` skill reads this file. The commands and the safe
 - **How isolation is enforced.**
   - The daemon runs fake model mode only because the launcher writes the daemon's `fake-model-instance` marker into
     the instance's own `data_dir`. The daemon refuses `HARNESS_FAKE_MODEL` anywhere else.
-  - Both children get an **allowlisted environment** (`PATH`, temp and locale variables, and the few that Windows
-    needs). `HOME`, `USERPROFILE`, `APPDATA` and `LOCALAPPDATA` point inside the instance directory. Owner tokens,
+  - Both children get an **allowlisted environment** (`PATH`, temp and locale variables, the few that Windows
+    needs, and the verify skill's random `VERIFY_RUN_ID`, which its cleanup finds processes by). `HOME`, `USERPROFILE`, `APPDATA` and `LOCALAPPDATA` point inside the instance directory. Owner tokens,
     provider keys, GitHub and Tailscale credentials, and proxies never reach them.
   - Start refuses an occupied port and a non-empty `--dir`, so it never attaches to or reuses another server.
   - `stop` deletes only a directory that holds the launcher's `hub-ui-instance` marker, and kills only the processes

@@ -288,6 +288,7 @@ def test_every_run_gets_its_own_evidence_folder(tmp_path, capsys):
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the run token: the POSIX containment")
 def test_a_process_without_the_run_token_is_never_touched():
+    pytest.importorskip("psutil")
     verify = load("verify")
     import subprocess
     # Not this run's: not its descendant (no subreaper here) and without its token, like a process that reused an id.
