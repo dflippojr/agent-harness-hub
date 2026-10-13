@@ -69,6 +69,7 @@ REQUEST_HEADER = "x-hub-request"
 SESSION_HEADER = "x-hub-session"
 MAX_SIGNIN_BODY = 1024
 ALLOWED_LOGINS_SECONDS = 5.0  # how long a tailnet sign-in reuses the daemon's allowed_logins answer
+PAIRING_COUNT_SECONDS = 5.0  # how long Overview waits for its optional pairing count, consent lock included
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 SECURITY_HEADERS = [
@@ -352,8 +353,10 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return reply
 
         # The pairing read can wait on the consent lock for as long as an arm request holds it, so it runs beside the
-        # other reads and is awaited only when all of them succeed; a refused or failed read cancels it instead.
+        # other reads and is awaited only when all of them succeed, and then only until its deadline; a refused or
+        # failed read, or the deadline, cancels it instead.
         pairing_task = asyncio.ensure_future(read_pairing()) if key else None
+        deadline = asyncio.get_running_loop().time() + PAIRING_COUNT_SECONDS
         try:
             reads = await concurrently(daemon.health(), *(
                 (daemon.admin(key["token"]), daemon.admin(key["token"], "/hub-claim")) if key else ()))
@@ -371,17 +374,21 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 else:
                     ownership = ownership_view(discovery.body, record.body, key["key_id"])
                     if health is not None:
-                        [pairing] = await concurrently(pairing_task)
-                        try:
-                            pairing = settled(pairing)
-                            if pairing.status == 401:
-                                refusal = await retained(key["token"])
-                                error, ownership = (refusal, ownership) if refusal else (error, None)
-                            elif pairing.ok:
-                                attention = pairing_attention(pairing.body, time.time())
-                        except DaemonUnreachable:
-                            pass  # A missing count never changes what Overview reports about the daemon.
+                        remaining = deadline - asyncio.get_running_loop().time()
+                        await asyncio.wait({pairing_task}, timeout=max(0.0, remaining))
+                        pairing = None
+                        # A missing count never changes what Overview reports about the daemon.
+                        with contextlib.suppress(DaemonUnreachable):
+                            pairing = pairing_task.result() if pairing_task.done() else None
+                        if pairing is not None and pairing.status == 401:
+                            # Outside the suppress above: an unanswered confirmation is the daemon not answering.
+                            refusal = await retained(key["token"])
+                            error, ownership = (refusal, ownership) if refusal else (error, None)
+                        elif pairing is not None and pairing.ok:
+                            attention = pairing_attention(pairing.body, time.time())
         except DaemonUnreachable:
+            # As after a discovery refusal, ownership the daemon refused once is not shown when it cannot confirm it.
+            ownership = None
             error = f"the daemon at {settings.daemon_url} did not answer"
         finally:
             if pairing_task:

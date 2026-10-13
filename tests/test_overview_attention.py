@@ -3,6 +3,7 @@ import asyncio
 
 import pytest
 
+from harness_hub import server
 from harness_hub.daemon import ADMIN, DaemonClient, DaemonUnreachable, Reply
 
 from .conftest import assert_no_secrets
@@ -108,6 +109,50 @@ def test_a_confirmed_pairing_401_releases_the_key(claimed, monkeypatch):
     assert refused == ["list"] and len(discovery_reads) == 2
     assert data["attention"] is None and data["ownership"] is None
     assert data["claim"]["state"] != "claimed" and data["error"] == ""
+
+
+def test_an_unanswered_401_confirmation_is_the_daemon_not_answering(claimed, fake_daemon, monkeypatch):
+    refused, discovery_reads = refuse_pairing(monkeypatch, confirmed=False)
+    confirming = DaemonClient.admin
+
+    async def unanswered(self, token, path=""):
+        if path == "" and discovery_reads:
+            discovery_reads.append(path)
+            raise DaemonUnreachable("synthetic outage")
+        return await confirming(self, token, path)
+
+    monkeypatch.setattr(DaemonClient, "admin", unanswered)
+    data = overview(claimed)
+    assert refused == ["list"] and len(discovery_reads) == 2
+    # Reported as after a refused discovery read: no count, no ownership, and the key is kept.
+    assert data["error"] == f"the daemon at {data['hub']['daemon_url']} did not answer"
+    assert data["attention"] is None and data["ownership"] is None and data["reachable"] is True
+    assert data["claim"]["state"] == "claimed" and fake_daemon.hub_token in fake_daemon.live_tokens
+
+
+def test_a_held_consent_lock_does_not_hold_up_overview(claimed, fake_daemon, monkeypatch):
+    lock = consent_lock(claimed)
+    pairing_reads = []
+
+    async def pairing(self, token, operation, *args, **kwargs):
+        pairing_reads.append(operation)
+        return Reply(200, [])
+
+    monkeypatch.setattr(DaemonClient, "pairing", pairing)
+    monkeypatch.setattr(server, "PAIRING_COUNT_SECONDS", 0.2)
+    before = overview(claimed)
+    assert before["attention"] == {"approve": 0, "confirm": 0} and pairing_reads == ["list"]
+    # An arm request in another tab holds the lock and never finishes; the three primary reads all succeed.
+    asyncio.run(lock.acquire())
+    try:
+        after = overview(claimed)
+        assert pairing_reads == ["list"] and lock.locked()
+    finally:
+        lock.release()
+    assert after["attention"] is None and after["error"] == "" and after["ownership"]["this_hub"] is True
+    assert without_volatile(after) == without_volatile(before)
+    # The abandoned read was cancelled while waiting, so the next Overview counts again.
+    assert overview(claimed)["attention"] == {"approve": 0, "confirm": 0} and pairing_reads == ["list", "list"]
 
 
 @pytest.mark.parametrize("failure", ["refused", "5xx", "unreachable", "health_5xx"])
