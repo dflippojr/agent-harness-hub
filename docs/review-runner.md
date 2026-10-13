@@ -4,8 +4,18 @@ The owner applies these host changes. A repository change does not update an
 already running runner. Do not run this installer against the live runner or
 restart it as part of an issue implementation.
 
+The review runner uses the owner-account persistent setup described under
+**Owner-account persistent runner**. The stricter setup, a dedicated standard
+account with one job per registration, is documented under **Stricter option**.
+
 ## Controls
 
+- **Interaction limits.** The repository's interaction limit is set to
+  **collaborators only** and expires on **2027-04-12**. The same limit applies
+  to agent-harness. Outside accounts cannot open issues, pull requests, or
+  comments, so no text from outside the repository reaches the reviewer. A limit
+  lasts six months at most. When it expires, the restriction ends, so the owner
+  must renew it before that date.
 - In GitHub **Settings → Actions → General → Fork pull request workflows**, keep
   **Require approval for all external contributors** selected. The API reports
   this as `all_external_contributors`.
@@ -23,29 +33,42 @@ restart it as part of an issue implementation.
 
 The hook is defense in depth, not a sandbox. Labels route jobs; they do not
 provide authorization. The reviewer reads untrusted PR text with shell access.
-A compromised host or permitted review job could alter files accessible to its
-account. Keep the runner separate from production data, Docker administration,
-and the owner's credentials. If the default branch changes, the owner must
-update the hook's explicit `main` allow-list before provisioning replacements.
+If the default branch changes, the owner must update the hook's explicit `main`
+allow-list before provisioning replacements.
 
 Each repository has its own hook and runner. Do not register this runner with
 another repository's installer (or Agent Harness's `install-runner.ps1`, which
 installs no hook), and do not widen another repository's hook to cover this one:
 a runner without this hook in its `.env` runs any job that requests its label.
 
-## Owner installation
+## Residual risk
 
-1. Create a dedicated **standard (non-administrator)** Windows account for
-   reviews. Sign in as that account and provision only the review tools and
-   credentials it needs. Do not copy the owner's profile or other private data.
-   Restrict the runner and hook directories' ACLs to this account and operators;
-   other local users must not be able to replace the hook.
-2. Copy these scripts from the trusted default branch. Use a new, empty runner
+The owner-account persistent runner accepts that a review job can reach what
+the owner's Windows account can reach: its profile, files, and credentials.
+The runner is not ephemeral, so its state and work directory persist from one
+job to the next, and a job that changes them can affect later jobs. The
+interaction limit and fork approval reduce who can supply untrusted text. They
+do not make a permitted review safe. The owner accepts this risk for
+`dflippojr/agent-harness-hub`. The interaction limit must be renewed before
+2027-04-12, or the review runner is again exposed to text from outside accounts.
+
+## Owner-account persistent runner
+
+This is the default setup. The current runner is registered as
+`dflippotower-agent-harness-hub-review` with label `agent-harness-hub-review`,
+installed in `D:\Agents\agent-harness-hub-review`. It runs from the logon task
+`AgentHarnessHub-GitHubRunner-Review` under the owner's own Windows account and
+is **not** ephemeral.
+
+1. Sign in as the owner's account and open a non-elevated PowerShell. Never run
+   the installer elevated: it refuses an elevated token. It also refuses a
+   member of Administrators unless `-OwnerAccount` is passed, so add that switch
+   only when the owner's account is in Administrators.
+2. Copy the scripts from the trusted default branch. Use a new, empty runner
    directory and a separate hook directory outside the checkout. The installer
    refuses a runner directory that is not empty, including one with a `.runner`
    file from an earlier registration. It verifies the pinned runner archive's
-   SHA-256 and refuses an elevated administrator token; the account must still
-   be a standard account even when not elevated.
+   SHA-256.
 3. Obtain a fresh repository registration token through an authorized operator.
    Supply it in memory to the account running the installer; never save it in
    source, shell history, task arguments, or logs. For example, where that account
@@ -53,9 +76,13 @@ a runner without this hook in its `.env` runs any job that requests its label.
 
    ```powershell
    $token = gh api -X POST repos/dflippojr/agent-harness-hub/actions/runners/registration-token --jq .token
-   .\ops\github\install-runner.ps1 -Token $token
+   .\ops\github\install-runner.ps1 -Token $token -Persistent
    Remove-Variable token
    ```
+
+   `-Persistent` leaves out `--ephemeral`, so the runner stays registered and
+   takes each review job as it arrives. Add `-OwnerAccount` to that command only
+   when the owner's account is in Administrators.
 
    Defaults are `D:\Agents\agent-harness-hub-review`, runner name and label
    `agent-harness-hub-review`, and task `AgentHarnessHub-GitHubRunner-Review`.
@@ -67,8 +94,30 @@ a runner without this hook in its `.env` runs any job that requests its label.
 4. The hidden task starts immediately and at logon under this same account,
    with `RunLevel Limited` and an interactive logon. It does not install a
    system service or run as SYSTEM. The account must remain signed in.
+5. Restrict the runner and hook directories' ACLs to the owner's account and
+   operators. Other local users must not be able to replace the hook.
 
-## One-job lifecycle
+Do not copy other private data into the runner's directories. The runner keeps
+its registration and work directory under the owner's account, so keep the
+review tools and credentials it needs to the minimum.
+
+## Stricter option: dedicated account and one job
+
+Use this where the review runner must be kept apart from the owner's own
+account. It is the installer's default when `-Persistent` and `-OwnerAccount`
+are omitted.
+
+1. Create a dedicated **standard (non-administrator)** Windows account for
+   reviews. Sign in as that account and provision only the review tools and
+   credentials it needs. Do not copy the owner's profile or other private data.
+   Restrict the runner and hook directories' ACLs to this account and operators;
+   other local users must not be able to replace the hook.
+2. Follow the steps above with the same scripts, directories and token rules,
+   but without `-Persistent` or `-OwnerAccount`. The installer refuses an
+   elevated token and any member of Administrators, so the account must be a
+   standard account. The installer then registers with `--ephemeral`.
+3. The hidden task starts immediately and at logon under this account, with
+   `RunLevel Limited` and an interactive logon, as above.
 
 Registration uses `--ephemeral`: GitHub assigns one job, then deregisters the
 runner. The logon task cannot register it again and no token is stored for
@@ -93,8 +142,11 @@ Run `python -m pytest tests/test_review_runner.py -q` with PowerShell available
 (`pwsh`, or `powershell.exe` on Windows). The tests exercise accepted and rejected
 synthetic event contexts and mock download, registration, and scheduled-task
 operations; they never change the live runner. These script tests skip on hosts
-without PowerShell. Verify the deployed `.env`, hook ACLs, limited task identity,
-and the **Set up runner** hook log when the owner applies the change.
+without PowerShell. The administrator-account refusal test runs only on a
+non-elevated account that is a member of Administrators; elsewhere it is skipped.
+Verify the deployed `.env`, hook ACLs, limited task identity, the registration's
+ephemeral or persistent mode, and the **Set up runner** hook log when the owner
+applies the change.
 
 References: [GitHub job hooks](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/run-scripts)
 and [ephemeral registration](https://docs.github.com/en/actions/reference/runners/self-hosted-runners#ephemeral-runners-for-autoscaling).

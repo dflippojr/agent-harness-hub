@@ -22,6 +22,27 @@ ELEVATED = os.name == "nt" and bool(ctypes.windll.shell32.IsUserAnAdmin())
 needs_standard_user = pytest.mark.skipif(ELEVATED, reason="installer refuses an elevated token")
 
 
+def _in_administrators_group(shell):
+    script = "([Security.Principal.WindowsIdentity]::GetCurrent()).Groups.Value -contains 'S-1-5-32-544'"
+    result = subprocess.run(
+        [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result.stdout.strip() == "True"
+
+
+# The installer refuses Administrators-group accounts unless -OwnerAccount is passed. Tests on such a
+# non-elevated account pass the switch, and the refusal test runs only there.
+ADMIN_ACCOUNT = (
+    os.name == "nt" and not ELEVATED and POWERSHELL is not None and _in_administrators_group(POWERSHELL)
+)
+needs_administrator_account = pytest.mark.skipif(
+    not ADMIN_ACCOUNT, reason="needs a non-elevated Administrators account"
+)
+
+
 def _process_env():
     # Pass only platform setup, so fixture failures cannot print inherited tokens.
     keys = {
@@ -217,7 +238,7 @@ function New-ScheduledTaskPrincipal { param($UserId, $LogonType, $RunLevel)
 }
 function Register-ScheduledTask {
     param($TaskName, $Action, $Trigger, $Settings, $Principal, $Description, [switch]$Force)
-    @{ TaskName = $TaskName; Action = $Action; Principal = $Principal } |
+    @{ TaskName = $TaskName; Action = $Action; Principal = $Principal; Description = $Description } |
         ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $env:INSTALL_TEST_TASK
 }
 function Start-ScheduledTask { param($TaskName)
@@ -226,16 +247,19 @@ function Start-ScheduledTask { param($TaskName)
 function Get-ScheduledTask { param($TaskName) [PSCustomObject]@{ TaskName = $TaskName; State = 'Mock' } }
 """
 
-    def execute(*, configured=False, registration_exit=0, inside_hook=False):
+    def execute(
+        *, configured=False, registration_exit=0, inside_hook=False, persistent=False, owner_account=ADMIN_ACCOUNT
+    ):
         if configured:
             install_dir.mkdir()
             (install_dir / ".runner").write_text("synthetic registration", encoding="utf-8")
         env["INSTALL_TEST_EXIT"] = str(registration_exit)
         chosen_hook = install_dir / "hooks" if inside_hook else hook_dir
+        switches = (" -Persistent" if persistent else "") + (" -OwnerAccount" if owner_account else "")
         command = (
             f"& {_ps_literal(INSTALLER)} -Token 'synthetic-token' "
             f"-InstallDir {_ps_literal(install_dir)} -HookDir {_ps_literal(chosen_hook)} "
-            "-Version 'synthetic-version' -Sha256 'synthetic-hash'\n"
+            f"-Version 'synthetic-version' -Sha256 'synthetic-hash'{switches}\n"
         )
         wrapper.write_text(mocks + command, encoding="utf-8")
         return _powershell(wrapper, env)
@@ -269,6 +293,50 @@ def test_installer_sets_hook_ephemeral_registration_and_limited_task(mock_instal
     assert task["Principal"]["UserId"]
     assert "-WindowStyle Hidden" in task["Action"]["Argument"]
     assert Path(env["INSTALL_TEST_STARTED"]).read_text().strip() == "AgentHarnessHub-GitHubRunner-Review"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="installer uses Windows identity and config.cmd")
+@needs_standard_user
+def test_installer_persistent_registration_omits_ephemeral(mock_installation):
+    execute, install_dir, hook_dir, env = mock_installation
+    result = execute(persistent=True)
+    assert result.returncode == 0, result.stderr
+    args = Path(env["INSTALL_TEST_LOG"]).read_text()
+    assert "--ephemeral" not in args
+    assert f"--url https://github.com/{REPO}" in args
+    assert (hook_dir / HOOK.name).read_bytes() == HOOK.read_bytes()
+    assert (install_dir / ".env").read_text(encoding="utf-8").splitlines() == [
+        f"ACTIONS_RUNNER_HOOK_JOB_STARTED={hook_dir / HOOK.name}"
+    ]
+    task = json.loads(Path(env["INSTALL_TEST_TASK"]).read_text(encoding="utf-8-sig"))
+    assert task["Description"].startswith("Persistent GitHub Actions review runner")
+    assert task["Principal"]["RunLevel"] == "Limited"
+    assert task["Principal"]["LogonType"] == "Interactive"
+    assert Path(env["INSTALL_TEST_STARTED"]).read_text().strip() == "AgentHarnessHub-GitHubRunner-Review"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="installer uses Windows identity and config.cmd")
+@needs_standard_user
+def test_installer_owner_account_switch_keeps_ephemeral_default(mock_installation):
+    execute, _, _, env = mock_installation
+    result = execute(owner_account=True)
+    assert result.returncode == 0, result.stderr
+    assert "--ephemeral" in Path(env["INSTALL_TEST_LOG"]).read_text()
+    task = json.loads(Path(env["INSTALL_TEST_TASK"]).read_text(encoding="utf-8-sig"))
+    assert task["Description"].startswith("Ephemeral GitHub Actions review runner")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="installer uses Windows identity and config.cmd")
+@needs_administrator_account
+def test_installer_refuses_administrator_account_without_owner_switch(mock_installation):
+    execute, install_dir, hook_dir, env = mock_installation
+    result = execute(owner_account=False)
+    assert result.returncode != 0
+    assert "-OwnerAccount" in result.stderr
+    assert not install_dir.exists()
+    assert not hook_dir.exists()
+    assert not Path(env["INSTALL_TEST_LOG"]).exists()
+    assert not Path(env["INSTALL_TEST_TASK"]).exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="installer uses Windows identity and config.cmd")
@@ -313,7 +381,7 @@ def test_installer_refuses_elevated_token_without_installing(mock_installation):
     execute, install_dir, hook_dir, env = mock_installation
     result = execute()
     assert result.returncode != 0
-    assert "non-administrator" in result.stderr
+    assert "elevated" in result.stderr
     assert not install_dir.exists()
     assert not hook_dir.exists()
     assert not Path(env["INSTALL_TEST_LOG"]).exists()
