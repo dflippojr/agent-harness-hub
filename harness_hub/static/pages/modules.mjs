@@ -160,7 +160,14 @@ export function renderModules(main) {
           command("bash install/install.sh --enable-modules <name>")))];
   }
   async function save(spec, enabled) {
-    if (stopped || busy || !config) return;
+    if (stopped) return;
+    if (busy || !config) {
+      // A refresh or another save is under way: redraw from the saved values, so the switch the owner moved goes back
+      // instead of showing a change nobody saved.
+      drawn = "";
+      draw();
+      return;
+    }
     busy = true;
     poll.cancel();
     for (const input of main.querySelectorAll("button, input[role=switch]")) input.disabled = true;
