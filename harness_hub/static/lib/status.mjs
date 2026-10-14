@@ -2,6 +2,7 @@
 // head), worked out from answers the pages already read: Overview's last answer, the Pairing list, the Settings
 // revision, the Settings health poll, and any error the Hub marks with whether the daemon answered. For each piece of
 // state the newest evidence wins, by when its request started. It is held in memory only and makes no calls of its own.
+// "Not answering" means the Hub could not reach the daemon; a daemon that answers with an error is answering.
 
 // Mirrors MIN_OWNER_API in views.py; the server classifies the reported version as ownership.compatibility.
 export const MIN_OWNER_API = "1.24";
@@ -13,6 +14,7 @@ let config = null; // the last Settings read: { revision, pending_revision, rest
 let running = null; // the settings revision the daemon reported in its last health answer
 let confirmed = null; // { revision, recovery, idle, started }: the newest health answer with a confirmed revision
 let silent = null; // whether the latest evidence says the daemon is not answering; null before any
+let unhealthy = false; // whether the latest evidence is the daemon answering /health with an error (a 503 mid-restart)
 let ownerError = ""; // Overview's owner API failure behind a healthy /health, until an owner API read answers
 let restarting = false; // whether a restart the Hub started is still under way
 let restartSeen = 0; // when the newest request that found a Hub restart under way started, in whatever order it came
@@ -48,11 +50,11 @@ export function noteRead(path, status, data, started = ++reads) {
     // the daemon, true on an error the daemon answered with (whatever its status, 503 included). Any other refusal
     // (signed out, unclaimed, a bad request) says nothing about the daemon.
     const reached = data && typeof data === "object" ? data.reachable : undefined;
-    if (typeof reached === "boolean" && newer("reach", started)) silent = !reached;
+    if (typeof reached === "boolean") answered(reached, true, started);
   } else if (path === "overview" && body) {
     if (newer("overview", started)) overview = body;
     if (body.reachable && newer("lastGood", started)) lastGood = body;
-    if (newer("reach", started)) silent = !body.reachable;
+    answered(answeredHealth(body), body.reachable, started);
     // Owner API evidence has its own order: a health poll says nothing about the owner API, so it cannot hide this.
     if (newer("owner", started)) ownerError = body.reachable ? body.error || "" : "";
     restart(body.restarting === true, started);
@@ -62,16 +64,16 @@ export function noteRead(path, status, data, started = ++reads) {
     // Settings polls health around a restart; the Hub answers 200 even when the daemon does not. A healthy /health
     // says nothing about the owner API, so it leaves an owner API failure standing.
     if (typeof body.reachable === "boolean") {
-      if (newer("reach", started)) silent = !body.reachable;
+      answered(answeredHealth(body), body.reachable, started);
       restart(body.restarting === true, started);
       if (body.reachable) health(body.health, body.restarting === true, started);
     }
   } else if (INVENTORY.has(path) && body) {
-    if (typeof body.reachable === "boolean" && newer("reach", started)) silent = !body.reachable;
+    if (typeof body.reachable === "boolean") answered(body.reachable, true, started);
     // Only an inventory the daemon served ("ready") shows its owner API answering; an HTTP error from it does not.
     if (body.state === "ready" && newer("owner", started)) ownerError = "";
   } else if (ok && daemonAnswered(path)) {
-    if (newer("reach", started)) silent = false;
+    answered(true, true, started);
     if (newer("owner", started)) ownerError = "";
   }
   if (body && path === "pairing" && Array.isArray(body.requests) && newer("attention", started)) {
@@ -82,6 +84,20 @@ export function noteRead(path, status, data, started = ++reads) {
     settle();
   }
   for (const listener of listeners) listener();
+}
+
+// Overview and the health poll carry both: reachable when the Hub read a health answer, answered when the daemon
+// replied to /health at all, whatever its status. A Hub without `answered` meant the two to be the same.
+function answeredHealth(body) {
+  return typeof body.answered === "boolean" ? body.answered : body.reachable === true;
+}
+
+// Whether the daemon answered (the Hub reached it) and, if it did, whether its answer was healthy, as of a reply to a
+// request that started at `started`. Either way the newest evidence about reaching the daemon wins.
+function answered(reached, healthy, started) {
+  if (!newer("reach", started)) return;
+  silent = !reached;
+  unhealthy = reached && !healthy;
 }
 
 // Whether a restart the Hub started is under way, as of a reply to a request that started at `started`.
@@ -136,6 +152,7 @@ export function subscribe(listener) {
 // Forget everything (tests).
 export function resetStatus() {
   overview = lastGood = attention = config = running = confirmed = silent = null;
+  unhealthy = false;
   ownerError = "";
   restarting = false;
   restartSeen = 0;
@@ -162,6 +179,9 @@ export function pairingCount() {
 // The rail's chip: null until Overview has answered or a read found the daemon silent.
 export function daemonChip() {
   if (silent) return { tone: "bad", text: "Daemon not answering" };
+  if (unhealthy) {
+    return restarting ? { tone: "warn", text: "Daemon restarting" } : { tone: "bad", text: "Daemon unhealthy" };
+  }
   if (!overview) return null;
   // Ownership as of the newest Overview answer that reached the daemon: an unreachable one reports none.
   const version = lastGood && lastGood.ownership && lastGood.ownership.api_version;
@@ -185,6 +205,11 @@ export function daemonBanner() {
         ? `The Hub last reached it at ${clockTime(lastGood.fetched_at)}. Repeat a change only once it answers.`
         : "Repeat a change only once it answers.",
     };
+  }
+  if (unhealthy && !restarting) {
+    // The daemon answered /health with an error and no Hub restart explains it.
+    return { tone: "bad", title: "The daemon answered, but its health check failed.",
+      detail: "It may still be starting. Repeat a change only once it reports healthy." };
   }
   const ownership = lastGood ? lastGood.ownership : null;
   const compatibility = ownership ? ownership.compatibility : null;

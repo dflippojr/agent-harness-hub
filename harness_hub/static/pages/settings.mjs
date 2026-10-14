@@ -262,7 +262,8 @@ export function renderSettings(main) {
       const wasRestarting = restarting;
       restarting = data.restarting;
       health.textContent = restarting ? "Daemon restarting…" : data.reachable ?
-        "Daemon healthy; revision " + data.health.config_revision : "Daemon did not answer.";
+        "Daemon healthy; revision " + data.health.config_revision
+        : data.answered ? "Daemon answered its health check with HTTP " + data.status + "." : "Daemon did not answer.";
       if (data.health?.recovery) health.textContent += " Recovery: " + JSON.stringify(data.health.recovery);
       if (wasRestarting && !restarting) {
         message(data.reachable ? "Daemon is back. Settings reloaded." : "Restart has not completed. Check the daemon before repeating any action.", !data.reachable);

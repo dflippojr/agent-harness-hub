@@ -358,7 +358,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     @app.get("/api/overview")
     async def get_overview():
-        health, ownership, attention, error = None, None, None, ""
+        health, ownership, attention, error, answered = None, None, None, "", False
         key = claims.key()
 
         async def read_pairing() -> Any:
@@ -378,6 +378,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             reads = await concurrently(daemon.health(), *(
                 (daemon.admin(key["token"]), daemon.admin(key["token"], "/hub-claim")) if key else ()))
             reply = settled(reads[0])
+            answered = True
             if reply.ok:
                 health = health_view(reply.body)
             else:
@@ -413,6 +414,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 await concurrently(pairing_task)
         result = overview(claims, settings.daemon_url, health, ownership, error)
         observe_restart(health["health"] if health else None)
+        result["answered"] = answered
         result["restarting"] = restart["active"]
         result["attention"] = attention
         return result
@@ -920,10 +922,12 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         try:
             reply = await daemon.health()
         except DaemonUnreachable:
-            return {"reachable": False, "restarting": restart["active"], "health": None}
+            return {"reachable": False, "answered": False, "restarting": restart["active"], "health": None}
         shown = health_view(reply.body)["health"] if reply.ok else None
         observe_restart(shown)
-        return {"reachable": reply.ok, "restarting": restart["active"], "health": shown}
+        # reachable: a health answer was read; answered: the daemon replied at all, a 503 mid-restart included.
+        return {"reachable": reply.ok, "answered": True, "status": reply.status, "restarting": restart["active"],
+                "health": shown}
 
     @app.api_route("/api/settings/{resource:path}", methods=["GET", "POST", "PUT", "PATCH"])
     async def settings_action(resource: str, request: Request):

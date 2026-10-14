@@ -365,3 +365,26 @@ test("a Hub restart that began after the Settings read and has ended settles it,
   noteRead("overview", 200, answer({ health: { config_revision: 3, config_confirmed: true } }), 4);
   assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
 });
+
+test("a daemon that answers /health with an error is answering: a restart shows its banner, not an outage", () => {
+  resetStatus();
+  noteRead("overview", 200, answer());
+  // Mid-restart the daemon answers /health with 503: the Hub read no health answer, but the daemon answered.
+  noteRead("settings/health", 200, { reachable: false, answered: true, status: 503, restarting: true, health: null });
+  assert.deepEqual(daemonChip(), { tone: "warn", text: "Daemon restarting" });
+  assert.equal(daemonBanner().title, "The daemon is restarting.");
+  noteRead("overview", 200, answer({ reachable: false, answered: true, restarting: true, ownership: null,
+    error: "the daemon's /health answered HTTP 503" }));
+  assert.deepEqual(daemonChip(), { tone: "warn", text: "Daemon restarting" });
+  assert.equal(daemonBanner().title, "The daemon is restarting.");
+  // With no restart under way, the error is the daemon's own, still not silence.
+  noteRead("settings/health", 200, { reachable: false, answered: true, status: 503, restarting: false, health: null });
+  assert.deepEqual(daemonChip(), { tone: "bad", text: "Daemon unhealthy" });
+  assert.equal(daemonBanner().title, "The daemon answered, but its health check failed.");
+  // Only the Hub failing to reach the daemon is not answering.
+  noteRead("settings/health", 200, { reachable: false, answered: false, restarting: true, health: null });
+  assert.deepEqual(daemonChip(), { tone: "bad", text: "Daemon not answering" });
+  noteRead("settings/health", 200, { reachable: true, answered: true, restarting: false, health: { ok: true } });
+  assert.deepEqual(daemonChip(), { tone: "ok", text: "Daemon live · API 1.27" });
+  assert.equal(daemonBanner(), null);
+});

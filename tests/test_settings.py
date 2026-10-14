@@ -162,3 +162,21 @@ def test_overview_ends_a_restart_that_recovery_resolved_at_a_lower_revision(clai
     shown = claimed.get("/api/overview").json()
     assert shown["restarting"] is False
     assert claimed.get("/api/settings/health").json()["restarting"] is False
+
+
+def test_a_health_error_is_the_daemon_answering_not_silence(claimed, fake_daemon):
+    # A daemon that answers /health with 503 mid-restart is answering: the shell shows the restart, not an outage.
+    started = write(claimed, "POST", "restart", {"revision": 3, "confirm": True})
+    assert started.status_code == 202
+    fake_daemon.restart_polls = 2
+    health = claimed.get("/api/settings/health").json()
+    assert health["answered"] is True and health["reachable"] is False and health["status"] == 503
+    assert health["restarting"] is True and health["health"] is None
+    shown = claimed.get("/api/overview").json()
+    assert shown["answered"] is True and shown["reachable"] is False and shown["restarting"] is True
+    # Only a daemon the Hub could not reach is not answering.
+    fake_daemon.down = True
+    assert claimed.get("/api/settings/health").json()["answered"] is False
+    assert claimed.get("/api/overview").json()["answered"] is False
+    fake_daemon.down = False
+    assert claimed.get("/api/settings/health").json()["answered"] is True
