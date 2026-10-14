@@ -179,3 +179,38 @@ def test_transient_key_rejection_withholds_inventory_but_retains_claim(claimed, 
     assert reply.status_code == 409 and "modules" not in reply.json()
     assert claimed.get("/api/claim").json()["state"] == "claimed"
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
+
+
+LEAK = "auth failed for ha-" + "A1b2C3d4" * 6
+LEAKING_MODULES = [{"name": "hub", "state": "present", "status": {"last_error": LEAK}}]
+
+
+@pytest.mark.parametrize("writer", ["/api/apps", "/api/marketplace"])
+def test_other_pages_never_cache_a_snapshot_modules_would_leak(claimed, fake_daemon, writer):
+    from .apps_fake import inventory_apps
+    good = claimed.get("/api/modules").json()
+    stored = (claimed.state_dir / INVENTORY_FILE).read_bytes()
+    fake_daemon.inventory_override = {"modules": LEAKING_MODULES, "apps": inventory_apps(fake_daemon), "entries": []}
+    for path in ("/api/modules", writer, "/api/modules", writer):
+        reply = claimed.get(path)
+        assert reply.status_code == 200
+        # Only Modules would show the string; the other page's own view is clean, and neither caches the snapshot.
+        assert reply.json()["state"] == ("error" if path == "/api/modules" else "ready")
+        assert path != "/api/modules" or "Inventory withheld" in reply.json()["error"]
+    result = claimed.get("/api/modules").json()
+    assert result["modules"] == good["modules"] and result["fetched_at"] == good["fetched_at"]
+    assert (claimed.state_dir / INVENTORY_FILE).read_bytes() == stored
+    assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
+
+
+def test_modules_page_never_caches_a_snapshot_apps_would_leak(claimed, fake_daemon):
+    good = claimed.get("/api/apps").json()
+    stored = (claimed.state_dir / INVENTORY_FILE).read_bytes()
+    fake_daemon.apps_rows[0]["name"] = "x" * 220 + fake_daemon.hub_token
+    for path in ("/api/modules", "/api/apps", "/api/modules", "/api/apps"):
+        reply = claimed.get(path).json()
+        assert reply["state"] == ("ready" if path == "/api/modules" else "error")
+    assert (claimed.state_dir / INVENTORY_FILE).read_bytes() == stored
+    fake_daemon.apps_rows[0]["name"] = good["apps"][0]["name"]
+    assert claimed.get("/api/apps").json()["state"] == "ready"
+    assert_no_secrets(claimed.bodies, fake_daemon.hub_token)

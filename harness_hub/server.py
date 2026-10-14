@@ -452,11 +452,19 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         await retained(token)
         return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
 
+    def cacheable(body: Any, key_id: str) -> bool:
+        """Whether no page that reads the shared cache would show a credential-like string from this snapshot."""
+        secrets = tuple(store.secrets())
+        views = (module_view(body), apps_view(body, key_id, secrets), entries_view(body, secrets))
+        return not leaks(json.dumps(views).encode(), store.secrets())
+
     async def read_inventory(key: dict, shown) -> tuple[dict | None, str, str, bool] | JSONResponse:
         """The last good inventory (refreshed when the daemon answers with a valid one), its state, any error, and
         whether the daemon answered at all (the shell's status reads that instead of the error text).
 
-        `shown` projects an inventory into its browser view, so a snapshot whose view would leak is never cached."""
+        `shown` projects an inventory into the asking page's browser view; a snapshot whose view would leak is not
+        shown. Modules, Apps and Marketplace share the cache, so a snapshot that would leak on any of them is never
+        cached either: the page whose own view is clean shows it once, and the earlier last-good stays."""
         good = inventory.get(key["key_id"])
         state, error, reachable = "ready", "", True
         try:
@@ -468,8 +476,10 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     state, error = "error", "The daemon returned an invalid inventory."
                 elif leaks(json.dumps(shown(reply.body)).encode(), store.secrets()):
                     state, error = "error", "Inventory withheld: it contained a credential-like string."
-                else:
+                elif cacheable(reply.body, key["key_id"]):
                     good = inventory.save(reply.body, key["key_id"])
+                else:
+                    good = {"inventory": reply.body, "fetched_at": time.time()}
             elif reply.status == 404:
                 state, error = "absent", "The Hub inventory module is not installed."
             elif reply.status == 400 and "disabled" in reply.detail.lower():
