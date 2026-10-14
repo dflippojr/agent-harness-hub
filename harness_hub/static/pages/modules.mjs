@@ -121,7 +121,8 @@ export function renderModules(main) {
   }
   function tableRow({ row, spec, value, pending, writable }) {
     const [label, tone] = moduleStatus(row);
-    const apply = APPLY[spec?.apply];
+    // A switch the Hub cannot change has nothing to apply.
+    const apply = writable ? APPLY[spec.apply] : null;
     let control;
     if (writable) {
       control = toggle(row.name, { checked: value, disabled: busy, onchange: (on) => save(spec, on) });
@@ -134,7 +135,7 @@ export function renderModules(main) {
       spec?.label && spec.label !== spec.key ? h("span", {}, spec.label) : null,
       words ? h("span", { class: "muted" }, words) : null,
       spec && !writable ? h("span", { class: "muted" },
-        sentence(spec.guidance) || "The settings registry offers no switch the Hub can change.") : null,
+        sentence(spec.guidance) || "The daemon does not let the Hub change this switch.") : null,
     ].filter(Boolean);
     return h("tr", { "data-module": row.name },
       h("td", { class: "modules-name" }, row.name),
@@ -149,8 +150,9 @@ export function renderModules(main) {
         h("summary", {}, icon("chevron", "icon chevron"), h("span", { class: "modules-absent-names" }, names.join(", ")),
           h("span", { class: "muted modules-absent-hint" }, "Add with the daemon installer")),
         h("div", { class: "troubleshoot-body" },
-          h("p", {}, "Add a module on the daemon host with the daemon installer's --enable-modules option, then restart the daemon."),
-          names.map((name) => command("bash install/install.sh --enable-modules " + name))))];
+          h("p", {}, "Add one on the daemon host with the daemon installer, naming it (or a comma-separated list) " +
+            "in place of <name>, then restart the daemon."),
+          command("bash install/install.sh --enable-modules <name>")))];
   }
   async function save(spec, enabled) {
     if (stopped || busy || !config) return;

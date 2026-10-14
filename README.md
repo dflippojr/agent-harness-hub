@@ -194,7 +194,7 @@ check failed), its switch, whether a change applies live or after a restart, and
 words. Switches come from the settings schema and save with the current revision. A saved switch that waits for a
 restart reads **On after restart** (or **Off after restart**) until the daemon restarts, and the banner under the
 page head offers **Restart in Settings**, which opens the existing confirmation and health recovery flow. Modules that
-are not installed fold into one closed row with the daemon installer's `--enable-modules` command for each.
+are not installed fold into one closed row with the daemon installer's `--enable-modules` command.
 
 When inventory is disabled, Modules offers its registry switch. If the package is absent, the page points to the
 daemon installer's `--enable-modules` option. Inventory errors, including a named entries-file error, appear beside

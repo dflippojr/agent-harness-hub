@@ -1042,7 +1042,7 @@ body.signed-out .topbar { display: none; }
 .card.modules-absent { margin-top: 0; }
 .modules-absent summary { flex-wrap: wrap; padding: 6px 16px; }
 .modules-absent-names { flex: 1 1 20em; min-width: 0; overflow-wrap: anywhere; }
-.modules-absent-hint { font-size: .85rem; font-weight: 500; }
+.modules-absent-hint { margin-left: 26px; font-size: .85rem; font-weight: 500; }
 .modules-absent .troubleshoot-body > p { margin-bottom: 8px; }
 
 @media (max-width: 699px) {
