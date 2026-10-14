@@ -23,8 +23,8 @@ def test_every_app_with_usage_caps_and_backend_windows(claimed, fake_daemon):
     assert rows["k-minute"]["usage"] == {"requests": 7, "prompt_tokens": 100, "completion_tokens": 40,
                                          "cost_usd": 0.5}
     # The fake counts running 2, queued 0 and parked 1; parked sessions count toward both caps.
-    assert rows["k-minute"]["caps"] == {"max_running": 2, "max_queued": 10, "running": 3, "queued": 1, "parked": 1,
-                                        "share": 1.5, "near": True}
+    assert rows["k-minute"]["caps"] == {"max_running": 2, "max_queued": 10, "running_used": 3, "queued_used": 1,
+                                        "parked": 1, "share": 1.5, "near": True}
     assert rows["k-twenty"]["caps"]["near"] is False and rows["k-twenty"]["caps"]["share"] == 0.3
     assert rows["k-revoked"]["caps"] is None and rows["k-pending"]["caps"] is None  # revoked: no cap read
     assert data["backends"] == [{"name": "sample", "billing": "api", "local": False,
@@ -151,3 +151,23 @@ def test_every_live_app_gets_its_caps_with_bounded_concurrency(claimed, fake_dae
     rows = {row["id"]: row for row in claimed.get("/api/spend").json()["apps"]}
     assert all(rows[f"k-extra-{n}"]["caps"] is not None for n in range(60))
     assert 1 < peak[0] <= SPEND_CAP_READS
+
+
+def test_an_unanswered_refusal_confirmation_is_a_503_not_a_crash(claimed, fake_daemon, monkeypatch):
+    from harness_hub.daemon import DaemonClient, DaemonUnreachable, Reply
+
+    original = DaemonClient.apps
+
+    async def rejected(self, token, action, app_id="", body=None):
+        if action == "limits":
+            return Reply(401, {"detail": "synthetic rejection"})
+        return await original(self, token, action, app_id, body)
+
+    async def unanswered(self, token, path=""):
+        raise DaemonUnreachable("synthetic outage")
+
+    monkeypatch.setattr(DaemonClient, "apps", rejected)
+    monkeypatch.setattr(DaemonClient, "admin", unanswered)
+    reply = claimed.get("/api/spend")
+    assert reply.status_code == 503 and "apps" not in reply.json()
+    assert claimed.get("/api/claim").json()["state"] == "claimed"

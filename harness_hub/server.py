@@ -456,6 +456,13 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         return {"state": state, "error": error, "stale": state != "ready" and good is not None,
                 "fetched_at": good["fetched_at"] if good else None, **shown}
 
+    async def refused_spend(token: str) -> JSONResponse:
+        """A 401 during a Spend read; the refusal's own confirmation read may also go unanswered."""
+        try:
+            return await refused(token)
+        except DaemonUnreachable:
+            return _error(503, "The daemon did not answer. Spend is unavailable until it does.")
+
     @app.get("/api/spend")
     async def get_spend():
         """Read-only: each App's usage and session-cap use, and each backend's windows. It writes nothing, not even
@@ -472,7 +479,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if isinstance(result, BaseException) and not isinstance(result, DaemonUnreachable):
                 raise result
         if 401 in (getattr(reply, "status", None), getattr(backends, "status", None)):
-            return await refused(key["token"])
+            return await refused_spend(key["token"])
         if isinstance(reply, DaemonUnreachable):
             error = "The daemon did not answer."
         elif reply.ok and valid_inventory(reply.body):
@@ -494,7 +501,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if isinstance(result, BaseException) and not isinstance(result, DaemonUnreachable):
                 raise result
         if any(getattr(result, "status", None) == 401 for result in replies):
-            return await refused(key["token"])
+            return await refused_spend(key["token"])
         limits = {app_id: result.body for app_id, result in zip(live, replies, strict=True)
                   if getattr(result, "ok", False)}
         backend_rows = backends.body if getattr(backends, "ok", False) else None

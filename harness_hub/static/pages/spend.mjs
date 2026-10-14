@@ -28,7 +28,7 @@ const COLUMNS = [
     cell: (row) => usd(row.usage.cost_usd) },
   { key: "caps", label: "Session caps", numeric: true, value: (row) => row.caps ? row.caps.share : null,
     cell: (row) => row.caps ? [
-      `Running ${row.caps.running}/${row.caps.max_running} · queued ${row.caps.queued}/${row.caps.max_queued}`,
+      `Running ${row.caps.running_used}/${row.caps.max_running} · queued ${row.caps.queued_used}/${row.caps.max_queued}`,
       row.caps.near ? [" ", h("span", { class: "pill bad" }, "Near cap")] : null] : "—" },
 ];
 

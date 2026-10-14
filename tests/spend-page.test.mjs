@@ -4,7 +4,7 @@ import { renderSpend } from "../harness_hub/static/pages/spend.mjs";
 import { mount, response, settle } from "./page-fake.mjs";
 
 const usage = (requests, cost) => ({ requests, prompt_tokens: requests * 10, completion_tokens: requests, cost_usd: cost });
-const caps = (share, near) => ({ max_running: 2, max_queued: 10, running: 1, queued: 0, parked: 0, share, near });
+const caps = (share, near) => ({ max_running: 2, max_queued: 10, running_used: 1, queued_used: 0, parked: 0, share, near });
 const SPEND = {
   error: "", stale: false, fetched_at: 1, backends_error: "",
   apps: [

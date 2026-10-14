@@ -427,10 +427,10 @@ def cap_use(limits: Any) -> dict | None:
     shown = limits_view(limits)
     running, queued, parked = (shown[key] or 0 for key in ("running", "queued", "parked"))
     caps = shown["effective"]
-    used = {"running": running + parked, "queued": queued + parked}
-    share = max(used["running"] / caps["max_running"], used["queued"] / caps["max_queued"])
-    return {"max_running": caps["max_running"], "max_queued": caps["max_queued"], "running": used["running"],
-            "queued": used["queued"], "parked": parked, "share": round(share, 4), "near": share >= SPEND_NEAR}
+    running_used, queued_used = running + parked, queued + parked
+    share = max(running_used / caps["max_running"], queued_used / caps["max_queued"])
+    return {"max_running": caps["max_running"], "max_queued": caps["max_queued"], "running_used": running_used,
+            "queued_used": queued_used, "parked": parked, "share": round(share, 4), "near": share >= SPEND_NEAR}
 
 
 def spend_view(inventory: Any, backends: Any, limits: dict, key_id: str, secrets: tuple[str, ...] = ()) -> dict:
