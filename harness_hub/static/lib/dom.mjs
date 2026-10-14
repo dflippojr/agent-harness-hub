@@ -46,17 +46,19 @@ export function command(text, { parity = false, key } = {}) {
   const lines = [text].flat();
   const id = `host-command-${++hostCommandCount}`;
   const name = key ?? lines.join("\n");
-  const open = openCommands.has(name);
+  let open = openCommands.has(name);
   const button = h("button", { type: "button", class: "btn host-command-toggle", "aria-expanded": String(open),
     "aria-controls": id }, lines.length > 1 ? "Host commands" : "Host command");
   const box = h("div", { class: open ? "host-command open" : "host-command" }, button,
     h("div", { class: "host-command-lines", id }, lines.map(commandLine)));
+  // Each button toggles what it shows itself: the same command can sit under two controls at once (a card's Deny and
+  // its confirmation), and opening one must not make the other's next press a close.
   button.addEventListener("click", () => {
-    const opening = !openCommands.has(name);
-    if (opening) openCommands.add(name);
+    open = !open;
+    if (open) openCommands.add(name);
     else openCommands.delete(name);
-    box.className = opening ? "host-command open" : "host-command";
-    button.setAttribute("aria-expanded", String(opening));
+    box.className = open ? "host-command open" : "host-command";
+    button.setAttribute("aria-expanded", String(open));
   });
   return box;
 }

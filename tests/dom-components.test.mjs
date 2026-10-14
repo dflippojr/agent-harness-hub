@@ -127,6 +127,19 @@ test("a parity command waits behind a Host command button that controls its line
   assert.equal(dom.command("harness keys revoke k-parity", { parity: true }).className, "host-command");
 });
 
+test("two controls for the same command each open on their own press", () => {
+  // A card's Deny command, and its confirmation's, built while the card's is still closed.
+  const card = dom.command("harness pairing-requests deny pr-both", { parity: true });
+  const confirmation = dom.command("harness pairing-requests deny pr-both", { parity: true });
+  find(card, "button").listeners.get("click")();
+  find(confirmation, "button").listeners.get("click")();
+  assert.equal(card.className, "host-command open");
+  assert.equal(confirmation.className, "host-command open");
+  assert.equal(find(confirmation, "button").attrs.get("aria-expanded"), "true");
+  find(card, "button").listeners.get("click")();
+  find(confirmation, "button").listeners.get("click")();
+});
+
 test("one Host commands button reveals an action's several commands; key keeps a changing command open", () => {
   const box = dom.command(["harness config schema", "harness config show"], { parity: true });
   assert.equal(find(box, "button").textContent, "Host commands");
