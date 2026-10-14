@@ -6,9 +6,13 @@ import asyncio
 import json
 import os
 import re
+import socket
+import ssl
 import subprocess
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
@@ -16,7 +20,7 @@ import pytest
 from harness_hub import auth
 from harness_hub.auth import Sessions, create_signin_code
 from harness_hub.config import Settings, normalize_daemon_url, normalize_public_url
-from harness_hub.daemon import DaemonUnreachable, Reply
+from harness_hub.daemon import DaemonClient, DaemonUnreachable, Reply
 from harness_hub.server import MAX_SIGNIN_BODY, create_app
 from harness_hub.state import StateStore, prepare_dir, read_json, write_private
 
@@ -97,6 +101,95 @@ def test_signin_link_rejects_invalid_port(tmp_path):
     assert "Traceback" not in result.stderr
 
 
+class _Daemon(BaseHTTPRequestHandler):
+    def _reply(self):
+        self.server.seen.append((self.command, self.path, self.headers.get("Authorization", "")))
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        body = b"{}"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = do_POST = _reply
+
+    def log_message(self, *args):
+        pass
+
+
+def test_daemon_client_ignores_proxy_settings(monkeypatch):
+    proxy = socket.create_server(("127.0.0.1", 0))
+    proxy.settimeout(0.2)
+    proxied = []
+    stop = threading.Event()
+
+    def accept():
+        while not stop.is_set():
+            try:
+                conn, _ = proxy.accept()
+            except TimeoutError:
+                continue
+            with conn:
+                conn.settimeout(1)
+                proxied.append(conn.recv(4096))
+                conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+
+    daemon = ThreadingHTTPServer(("127.0.0.1", 0), _Daemon)
+    daemon.seen = []
+    threads = [threading.Thread(target=accept, daemon=True),
+               threading.Thread(target=daemon.serve_forever, daemon=True)]
+    for thread in threads:
+        thread.start()
+    proxy_url = f"http://127.0.0.1:{proxy.getsockname()[1]}"
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.setenv(name, proxy_url)
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+
+    async def calls():
+        client = DaemonClient(f"http://127.0.0.1:{daemon.server_address[1]}")
+        try:
+            return [await client.health(), await client.admin("ho-SECRETHUBKEY"),
+                    await client.start_hub_claim("Hub", "challenge"),
+                    await client.redeem_hub_claim("req-1", "SECRETVERIFIER")]
+        finally:
+            await client.aclose()
+
+    try:
+        replies = asyncio.run(calls())
+    finally:
+        stop.set()
+        daemon.shutdown()
+        daemon.server_close()
+        for thread in threads:
+            thread.join(5)
+        proxy.close()
+    assert proxied == []
+    assert [reply.status for reply in replies] == [200, 200, 200, 200]
+    assert [(method, path.split("/")[-1]) for method, path, _ in daemon.seen] == [
+        ("GET", "health"), ("GET", "v1"), ("POST", "requests"), ("POST", "token")]
+    assert daemon.seen[1][2] == "Bearer ho-SECRETHUBKEY"
+
+
+@pytest.mark.parametrize(("variable", "argument"), [("SSL_CERT_FILE", "cafile"), ("SSL_CERT_DIR", "capath")])
+def test_daemon_client_keeps_ssl_cert_environment(monkeypatch, tmp_path, variable, argument):
+    # Ignoring proxy settings must not also drop a private CA configured for an HTTPS daemon.
+    for name in ("SSL_CERT_FILE", "SSL_CERT_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(variable, str(tmp_path / "private-ca"))
+    calls = []
+    real = ssl.create_default_context
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs)
+        return real()
+
+    monkeypatch.setattr(ssl, "create_default_context", spy)
+    asyncio.run(DaemonClient("https://daemon.example").aclose())
+    assert calls == [{argument: str(tmp_path / "private-ca")}]
+
+
 def test_signin_body_limit_does_not_spend_code(hub):
     code = create_signin_code(hub.state_dir)
     oversized = json.dumps({"code": code, "padding": "x" * MAX_SIGNIN_BODY})
@@ -148,9 +241,73 @@ def test_cookie_alone_cannot_use_or_end_a_session(hub):
 
 def test_session_binding_cannot_be_swapped_between_sessions(hub):
     first = hub.sign_in().headers["x-hub-session"]
+    hub.client.cookies.clear()  # another browser: its own cookie, so its own session
     hub.sign_in()
     hub.client.headers["X-Hub-Session"] = first
     assert hub.get("/api/overview").status_code == 401
+
+
+def test_signing_in_a_second_tab_keeps_the_first_signed_in(hub):
+    first = hub.sign_in().headers["x-hub-session"]  # tab 1's binding
+    second = hub.post("/api/session", json={"code": create_signin_code(hub.state_dir)})  # tab 2, same cookie jar
+    assert second.status_code == 204
+    assert "set-cookie" not in second.headers  # the cookie and its expiry stay as tab 1 got them
+    for binding in (first, second.headers["x-hub-session"]):
+        hub.client.headers["X-Hub-Session"] = binding
+        assert hub.get("/api/overview").status_code == 200
+    assert first != second.headers["x-hub-session"]
+
+
+def test_a_tab_binding_alone_or_without_its_cookie_authorizes_nothing(hub):
+    hub.sign_in()
+    second = hub.post("/api/session", json={"code": create_signin_code(hub.state_dir)}).headers["x-hub-session"]
+    hub.client.headers["X-Hub-Session"] = second
+    cookies = dict(hub.client.cookies)
+    hub.client.cookies.clear()
+    assert hub.get("/api/overview").status_code == 401  # a binding without the cookie
+    hub.client.cookies.update(cookies)
+    del hub.client.headers["X-Hub-Session"]
+    assert hub.get("/api/overview").status_code == 401  # the cookie without a binding
+
+
+def test_signing_out_ends_every_tab_of_the_session(hub):
+    first = hub.sign_in().headers["x-hub-session"]
+    second = hub.post("/api/session", json={"code": create_signin_code(hub.state_dir)}).headers["x-hub-session"]
+    cookie = dict(hub.client.cookies)
+    assert hub.delete("/api/session").status_code == 204
+    hub.client.cookies.update(cookie)  # a browser that kept sending the old cookie
+    for binding in (first, second):
+        hub.client.headers["X-Hub-Session"] = binding
+        assert hub.get("/api/overview").status_code == 401
+
+
+def test_a_stale_cookie_does_not_make_a_new_sign_in_join_it(tmp_path):
+    now = [1000.0]
+    sessions = Sessions(tmp_path, clock=lambda: now[0])
+    old = sessions.redeem_code(create_signin_code(tmp_path, now=now[0]))
+    now[0] += auth.SESSION_TTL_SECONDS + 1
+    fresh = sessions.redeem_code(create_signin_code(tmp_path, now=now[0]), old[0])
+    assert fresh[0] != old[0]
+    assert sessions.valid(*fresh) and not sessions.valid(*old)
+
+
+def test_a_joined_session_keeps_its_expiry(tmp_path):
+    now = [1000.0]
+    sessions = Sessions(tmp_path, clock=lambda: now[0])
+    session, first = sessions.redeem_code(create_signin_code(tmp_path, now=now[0]))
+    now[0] += auth.SESSION_TTL_SECONDS - 10
+    joined = sessions.redeem_code(create_signin_code(tmp_path, now=now[0]), session)
+    assert joined[0] == session and sessions.valid(*joined) and sessions.valid(session, first)
+    now[0] += 11
+    assert not sessions.valid(*joined) and not sessions.valid(session, first)
+
+
+def test_a_session_keeps_only_its_newest_tab_bindings(tmp_path):
+    sessions = Sessions(tmp_path)
+    session, first = sessions.create()
+    bindings = [sessions.create(session)[1] for _ in range(auth.MAX_BINDINGS)]
+    assert not sessions.valid(session, first)
+    assert all(sessions.valid(session, binding) for binding in bindings)
 
 
 def test_https_cookie_prefix_and_origin_scheme(make_hub):

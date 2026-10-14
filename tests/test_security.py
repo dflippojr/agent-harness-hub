@@ -103,10 +103,21 @@ def test_overview_drops_fields_it_does_not_know(hub, fake_daemon):
 
 
 @pytest.mark.parametrize("text, leaked", [
-    ('{"token": "ho-AbCdEfGhIjKlMnOp"}', True),
-    ('{"prefix": "ho-LW5TqUX"}', True),
-    ('"ha-1234abcd"', True),
-    ('"code hp-9f8e7d6c"', True),
+    ('{"token": "ho-' + "AbCdEfGh" * 5 + 'Ijk"}', True),
+    ('"ha-' + "1234abcd_-" * 5 + '"', True),
+    ('"hk-' + "Z" * 43 + '"', True),
+    ('"code hp-9f8e7d6c9f8e7d6c9f8e7d6c"', True),
+    ('"code hrp-9f8e7d6c9f8e7d6c9f8e7d6c"', True),
+    # Display prefixes and ordinary words are redacted field by field in views.py, not by the guard.
+    ('{"prefix": "ho-LW5TqUX"}', False),
+    ('"ha-1234abcd"', False),
+    ('"code hp-9f8e7d6c"', False),
+    ('{"login": "ha-jung.kim@example.test", "model": "hp-instruct-7b", "labels": ["ha-core", "hp-laserjet"]}', False),
+    ('"ha-' + "x" * 42 + '"', False),
+    # JSON escapes put a letter before the token in the raw body; the decoded string still counts.
+    ('{"model": "padding\\nha-' + "S" * 43 + '"}', True),
+    ('{"model": "padding\\tho-' + "S" * 43 + '"}', True),
+    ('{"padding\\nhp-' + "c" * 24 + '": 1}', True),
     ('{"name": "echo-server", "id": "k-5a433700", "photo-album": 1}', False),
     ('{"cmd": "harness hub approve pr-8921239e4d65160ca49d00ec --match 763647"}', False),
 ])
@@ -123,7 +134,7 @@ def test_guard_withholds_a_leaking_response():
 
     @app.get("/api/token-shaped")
     async def token_shaped():
-        return {"value": "ho-abcdefgh"}
+        return {"value": "ho-" + "abcdefgh" * 6}
 
     @app.get("/api/fine")
     async def fine():

@@ -170,6 +170,14 @@ def test_hash_and_phrase_are_forwarded_exactly_with_stale_refusal(claimed, fake_
     )
 
 
+def test_audit_rows_keep_the_daemons_time_and_detail(claimed, fake_daemon):
+    audit = call(claimed, "audit").json()["items"][0]
+    household = call(claimed, "account_audit").json()[0]
+    for row in (audit, household):
+        assert row["ts"] == 1700000000.5 and row["detail"] == "added member"
+    assert set(audit["metadata"]) == {"fields", "new_max_running"}
+
+
 def test_audit_cursor_filters_and_bounded_queries(claimed, fake_daemon):
     filters = {
         "limit": 10,
@@ -353,3 +361,37 @@ def test_project_allowlist_requires_confirmation_and_forwards_empty_scope(claime
     row = call(claimed, "skills").json()["installed"][0]
     assert row["projects_complete"] is False
     assert row["projects"] == ["[withheld: token-shaped]"]
+
+
+LINK_CODES = (
+    "ahg-ha-Q1w2E3r4T5y6U7i8O9p0AsDfGhJkLzXcVbNm1234567",
+    "ahg-ho-" + "s" * 43,
+    "ahg-" + "x" * 8 + "_hp-" + "c0de" * 6,
+    "ahg-" + "x" * 8 + "-hrp-" + "C0DE" * 6,
+    "ahg-hk-" + "S1" * 22,
+)
+
+
+@pytest.mark.parametrize("code", LINK_CODES)
+def test_google_link_code_with_a_token_shaped_substring_is_shown_whole(claimed, fake_daemon, code):
+    created = call(claimed, "account_add", INPUTS["account_add"]).json()
+    fake_daemon.invitation_code = code
+    reply = call(claimed, "google_invite", {}, targets={"user_id": created["user_id"]})
+    assert reply.status_code == 201, reply.text
+    assert reply.json() == {"code": code, "expires_at": 4102444800}
+    assert fake_daemon.hub_token not in reply.text
+
+
+@pytest.mark.parametrize("code", ["ho-" + "s" * 43, "hk-" + "S1" * 22, "xahg-" + "s" * 30])
+def test_a_token_in_the_code_field_is_not_a_link_code_and_is_never_shown(claimed, fake_daemon, code):
+    created = call(claimed, "account_add", INPUTS["account_add"]).json()
+    fake_daemon.invitation_code = code
+    reply = call(claimed, "google_invite", {}, targets={"user_id": created["user_id"]})
+    assert reply.status_code == 502 and code not in reply.text
+
+
+def test_the_hub_key_inside_a_link_code_shaped_value_is_still_withheld(claimed, fake_daemon):
+    created = call(claimed, "account_add", INPUTS["account_add"]).json()
+    fake_daemon.invitation_code = "ahg-" + fake_daemon.hub_token
+    reply = call(claimed, "google_invite", {}, targets={"user_id": created["user_id"]})
+    assert reply.status_code == 502 and fake_daemon.hub_token not in reply.text

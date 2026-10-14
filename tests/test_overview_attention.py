@@ -188,6 +188,7 @@ def test_a_failed_overview_read_does_not_wait_for_the_pairing_read(claimed, monk
 
 
 def test_overview_observes_browser_slots_for_the_confirmation_warning(claimed, fake_daemon):
+    fake_daemon.owner_api = "1.23"  # the warning is only for a daemon that does not enforce confirmation
     rid = fake_daemon.add_pairing("Armed browser slot", ["sessions"], state="armed",
                                   origin="https://notes.example.test")
     assert overview(claimed)["attention"] == {"approve": 0, "confirm": 0}

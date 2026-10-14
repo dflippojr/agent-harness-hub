@@ -56,6 +56,7 @@ def arm(claimed, body, headers=None):
 def test_entries_show_display_fields_state_and_unverified_origin_only(claimed, fake_daemon, entries):
     data = market(claimed)
     assert data["state"] == "ready" and data["error"] == "" and not data["stale"] and data["withheld"] == 0
+    assert data["reachable"] is True
     assert data["daemon_url"] == "https://daemon.test"
     shown = by_id(data)
     notes, native, ops = shown["test.example.notes"], shown["test.example.native"], shown["test.example.ops"]
@@ -188,6 +189,7 @@ def test_a_claim_waits_for_typed_confirmation_and_a_slot_is_withdrawn(claimed, f
 @pytest.mark.parametrize("state", ["approved", "redeemed"])
 @pytest.mark.parametrize("first_page", ["/api/marketplace", "/api/pairing"])
 def test_browser_claim_skipping_confirmation_warns_on_both_pages(claimed, fake_daemon, entries, state, first_page):
+    fake_daemon.owner_api = "1.23"  # before aa5a904: the daemon does not enforce typed-code confirmation
     rid = arm(claimed, {"catalog_app_id": "test.example.notes", "scopes": ["sessions"],
                         "origin": "https://notes.example.test"}).json()["request"]["id"]
     # Simulate the legacy daemon: claim and possibly redeem before the next owner poll, without a confirm.
@@ -201,6 +203,33 @@ def test_browser_claim_skipping_confirmation_warns_on_both_pages(claimed, fake_d
         reply = claimed.get(page)
         assert reply.status_code == 200 and reply.json()["confirmation_warning"] == warning
         assert code not in reply.text and "match_code" not in reply.text
+
+
+@pytest.mark.parametrize("version", ["1.24", "1.25", "1.26"])
+@pytest.mark.parametrize("state", ["approved", "redeemed"])
+@pytest.mark.parametrize("page", ["/api/marketplace", "/api/pairing"])
+def test_confirming_on_the_host_cli_between_polls_does_not_warn(claimed, fake_daemon, entries, version, state, page):
+    fake_daemon.owner_api = version  # enforces confirmation, so an approval the Hub did not see was the owner's
+    rid = arm(claimed, {"catalog_app_id": "test.example.notes", "scopes": ["sessions"],
+                        "origin": "https://notes.example.test"}).json()["request"]["id"]
+    assert market(claimed)["confirmation_warning"] == ""  # the Hub saw it armed
+    fake_daemon.claim_slot(rid, "https://notes.example.test").update(state=state)  # `harness pairing-requests confirm`
+    for _ in range(2):
+        reply = claimed.get(page)
+        assert reply.status_code == 200 and reply.json()["confirmation_warning"] == ""
+    # The suspicion is dropped, so a later downgrade is not blamed on a confirmation long past.
+    fake_daemon.owner_api = "1.23"
+    assert market(claimed)["confirmation_warning"] == ""
+
+
+@pytest.mark.parametrize("version", ["", "1.23"])
+def test_a_daemon_whose_version_is_old_or_unreadable_keeps_the_warning(claimed, fake_daemon, entries, version):
+    fake_daemon.owner_api = version
+    rid = arm(claimed, {"catalog_app_id": "test.example.notes", "scopes": ["sessions"],
+                        "origin": "https://notes.example.test"}).json()["request"]["id"]
+    assert market(claimed)["confirmation_warning"] == ""
+    fake_daemon.claim_slot(rid, "https://notes.example.test").update(state="approved")
+    assert market(claimed)["confirmation_warning"].endswith("update the daemon.")
 
 
 @pytest.mark.parametrize("origin,app_id", [("", "test.example.native"),
@@ -267,7 +296,7 @@ def test_token_shaped_entry_text_and_daemon_failures(claimed, fake_daemon, entri
     assert data["slots_error"] == "Armed slots could not be read (HTTP 500)."
     fake_daemon.down = True
     down = market(claimed)
-    assert down["state"] == "error" and down["entries"] and down["stale"]
+    assert down["state"] == "error" and down["entries"] and down["stale"] and down["reachable"] is False
     assert arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]}).status_code == 503
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 

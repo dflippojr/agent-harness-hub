@@ -29,11 +29,12 @@ from .auth import SESSION_TTL_SECONDS, Sessions
 from .claim import CLAIMED, ClaimError, ClaimManager
 from .config import Settings
 from .daemon import ADMIN_ROUTES, DaemonClient, DaemonUnreachable
-from .guard import ResponseGuard, leaks
+from .guard import TOKEN_SHAPE, ResponseGuard, leaks
 from .inventory import InventoryCache, valid_inventory
 from .state import SERVER_FILE, StateStore, write_private
 from .tailnet import PeerCheck, TailnetIdentity, login
 from .views import (
+    REDACTED,
     administration_view,
     app_view,
     apps_view,
@@ -58,6 +59,7 @@ from .views import (
     registry_view,
     scope_disclosures,
     settings_error,
+    spend_view,
     valid_limits,
 )
 
@@ -70,6 +72,7 @@ SESSION_HEADER = "x-hub-session"
 MAX_SIGNIN_BODY = 1024
 ALLOWED_LOGINS_SECONDS = 5.0  # how long a tailnet sign-in reuses the daemon's allowed_logins answer
 PAIRING_COUNT_SECONDS = 5.0  # how long Overview waits for its optional pairing count, consent lock included
+SPEND_CAP_READS = 8  # App session-cap reads in flight at once; every live App is read
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 SECURITY_HEADERS = [
@@ -117,6 +120,16 @@ class HostCheck:
 
 def _error(status: int, detail: str, **extra: Any) -> JSONResponse:
     return JSONResponse({"detail": detail, **extra}, status_code=status)
+
+
+# An error says whether the daemon answered, so the shell's status tells "the Hub could not reach the daemon" (a 503 of
+# the Hub's own, reachable false) from "the daemon answered with an error" (forwarded, any status, reachable true).
+def _unreachable(detail: str, **extra: Any) -> JSONResponse:
+    return _error(503, detail, reachable=False, **extra)
+
+
+def _forwarded(reply: Any) -> JSONResponse:
+    return JSONResponse({**settings_error(reply.body, reply.status), "reachable": True}, status_code=reply.status)
 
 
 async def concurrently(*reads: Any) -> list[Any]:
@@ -170,6 +183,13 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     app.state.inventory = inventory
     restart = {"active": False, "target": None, "not_before": 0.0}
 
+    def observe_restart(shown: dict | None) -> None:
+        """End a restart the Hub started once the daemon answers healthy with confirmed settings, at the target revision
+        or after a recovery. Overview and the Settings health poll both look, so neither page has to stay open."""
+        if time.monotonic() >= restart["not_before"] and shown and shown["ok"] and shown["config_confirmed"] and (
+                restart["target"] is None or shown["config_revision"] == restart["target"] or shown["recovery"]):
+            restart["active"] = False
+
     @app.middleware("http")
     async def require_owner(request: Request, call_next):
         path = request.url.path
@@ -197,10 +217,12 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     @app.get("/api/session")
     async def get_session(request: Request):
         # `tailnet_login` is the caller's own identity, present only when tailscaled added it (tailnet.py). Whether
-        # it is the owner's is decided at sign-in, against the daemon's list.
+        # it is the owner's is decided at sign-in, against the daemon's list. A token-shaped login is redacted here, so
+        # the response guard never withholds this route: the page reads it first on every load.
+        caller = TOKEN_SHAPE.sub(REDACTED, login(request.headers))
         return {"signed_in": sessions.valid(request.cookies.get(settings.cookie_name),
                                             request.headers.get(SESSION_HEADER)), "signin_command": SIGNIN_COMMAND,
-                "tailnet_login": login(request.headers) or None, "version": __version__}
+                "tailnet_login": caller or None, "version": __version__}
 
     owner_logins: dict[str, Any] = {}  # the daemon's allowed_logins, kept briefly: {"until": ..., "logins": [...]}
 
@@ -210,8 +232,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         try:
             reply = await daemon.admin(token)
         except DaemonUnreachable:
-            return _error(503, f"the daemon at {settings.daemon_url} did not answer; use a sign-in link",
-                          signin_command=SIGNIN_COMMAND)
+            return _unreachable(f"the daemon at {settings.daemon_url} did not answer; use a sign-in link",
+                                signin_command=SIGNIN_COMMAND)
         if not reply.ok:
             return _error(502, f"the owner API answered HTTP {reply.status}; use a sign-in link",
                           signin_command=SIGNIN_COMMAND)
@@ -281,11 +303,11 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             refusal = await tailnet_sign_in(request)
             if refusal is not None:
                 return refusal
-            credentials = sessions.create()
+            credentials = sessions.create(request.cookies.get(settings.cookie_name))
         else:
             code = body.get("code") if isinstance(body, dict) else None
             was_throttled = sessions.throttled()
-            credentials = sessions.redeem_code(code)
+            credentials = sessions.redeem_code(code, request.cookies.get(settings.cookie_name))
             if credentials is None:
                 if was_throttled:
                     return _error(429, "too many sign-in attempts; wait a minute")
@@ -293,6 +315,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                               signin_command=SIGNIN_COMMAND)
         session, binding = credentials
         response = Response(status_code=204, headers={SESSION_HEADER: binding})
+        if session == request.cookies.get(settings.cookie_name):
+            return response  # another tab of the signed-in session: the cookie and its expiry stay as they were
         response.set_cookie(settings.cookie_name, session, max_age=SESSION_TTL_SECONDS,
                             httponly=True, samesite="strict",
                             secure=settings.secure_cookies, path="/")
@@ -313,7 +337,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     # Share observations across pages/tabs; record successful Hub confirmations under the same lock as polls.
     browser_slot_states: dict[tuple[str, str], tuple[str, bool]] = {}
 
-    def observe_browser_slots(rows: list, key_id: str, *, confirmed_id: str = "") -> str:
+    def observe_browser_slots(rows: list, key_id: str, *, confirmed_id: str = "") -> bool:
+        """Whether an observed browser claim looks like it skipped confirmation; `skipped_confirmation` rules on it."""
         warning = False
         for raw in rows:
             row = pairing_request_view(raw)
@@ -327,7 +352,27 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 browser_slot_states.pop(next(iter(browser_slot_states)))
             browser_slot_states[identity] = (row["state"], bypassed)
             warning = warning or bypassed
-        return "This daemon approved the claim without confirmation; update the daemon." if warning else ""
+        return warning
+
+    async def skipped_confirmation(key: dict, suspected: bool) -> str:
+        """The warning for a suspected bypass, only from a daemon that does not enforce confirmation.
+
+        Owner API 1.24 and later enforce typed-code confirmation, so from them an `armed` slot that turned `approved`
+        between listings was confirmed outside the Hub (the host CLI, another Hub process, a Hub restart): no warning,
+        and the stale suspicion is dropped. A daemon whose version is old or cannot be read keeps it."""
+        if not suspected:
+            return ""
+        try:
+            reply = await daemon.admin(key["token"])
+        except DaemonUnreachable:
+            reply = None
+        if reply is not None and reply.ok and ownership_view(
+                reply.body, {}, "")["compatibility"] in ("supported", "no_tailnet_signin"):
+            for identity, (state, _) in list(browser_slot_states.items()):
+                if identity[0] == key["key_id"]:
+                    browser_slot_states[identity] = (state, False)
+            return ""
+        return "This daemon approved the claim without confirmation; update the daemon."
 
     async def retained(token: str) -> str:
         """The daemon answered 401: drop the key only if a second read confirms it, else say it was kept.
@@ -341,7 +386,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     @app.get("/api/overview")
     async def get_overview():
-        health, ownership, attention, error = None, None, None, ""
+        health, ownership, attention, error, answered = None, None, None, "", False
         key = claims.key()
 
         async def read_pairing() -> Any:
@@ -361,6 +406,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             reads = await concurrently(daemon.health(), *(
                 (daemon.admin(key["token"]), daemon.admin(key["token"], "/hub-claim")) if key else ()))
             reply = settled(reads[0])
+            answered = True
             if reply.ok:
                 health = health_view(reply.body)
             else:
@@ -395,6 +441,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 pairing_task.cancel()
                 await concurrently(pairing_task)
         result = overview(claims, settings.daemon_url, health, ownership, error)
+        observe_restart(health["health"] if health else None)
+        result["answered"] = answered
         result["restarting"] = restart["active"]
         result["attention"] = attention
         return result
@@ -404,12 +452,21 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         await retained(token)
         return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
 
-    async def read_inventory(key: dict, shown) -> tuple[dict | None, str, str] | JSONResponse:
-        """The last good inventory (refreshed when the daemon answers with a valid one), its state and any error.
+    def cacheable(body: Any, key_id: str) -> bool:
+        """Whether no page that reads the shared cache would show a credential-like string from this snapshot."""
+        secrets = tuple(store.secrets())
+        views = (module_view(body), apps_view(body, key_id, secrets), entries_view(body, secrets))
+        return not leaks(json.dumps(views).encode(), store.secrets())
 
-        `shown` projects an inventory into its browser view, so a snapshot whose view would leak is never cached."""
+    async def read_inventory(key: dict, shown) -> tuple[dict | None, str, str, bool] | JSONResponse:
+        """The last good inventory (refreshed when the daemon answers with a valid one), its state, any error, and
+        whether the daemon answered at all (the shell's status reads that instead of the error text).
+
+        `shown` projects an inventory into the asking page's browser view; a snapshot whose view would leak is not
+        shown. Modules, Apps and Marketplace share the cache, so a snapshot that would leak on any of them is never
+        cached either: the page whose own view is clean shows it once, and the earlier last-good stays."""
         good = inventory.get(key["key_id"])
-        state, error = "ready", ""
+        state, error, reachable = "ready", "", True
         try:
             reply = await daemon.inventory(key["token"])
             if reply.status == 401:
@@ -419,8 +476,10 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     state, error = "error", "The daemon returned an invalid inventory."
                 elif leaks(json.dumps(shown(reply.body)).encode(), store.secrets()):
                     state, error = "error", "Inventory withheld: it contained a credential-like string."
-                else:
+                elif cacheable(reply.body, key["key_id"]):
                     good = inventory.save(reply.body, key["key_id"])
+                else:
+                    good = {"inventory": reply.body, "fetched_at": time.time()}
             elif reply.status == 404:
                 state, error = "absent", "The Hub inventory module is not installed."
             elif reply.status == 400 and "disabled" in reply.detail.lower():
@@ -429,10 +488,10 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 # A stale or unreadable entries file is a named 400 (`hub.entries: invalid JSON`, `entries[0]...`).
                 state, error = "error", settings_error(reply.body, reply.status)["detail"]
         except DaemonUnreachable:
-            state, error = "error", "The daemon did not answer."
+            state, error, reachable = "error", "The daemon did not answer.", False
         except (OSError, ValueError):
             state, error = "error", "The inventory could not be saved in the private state directory."
-        return good, state, error
+        return good, state, error, reachable
 
     @app.get("/api/apps")
     @app.get("/api/modules")
@@ -445,14 +504,74 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                                       if apps_page else module_view)
         if isinstance(result, JSONResponse):
             return result
-        good, state, error = result
+        good, state, error, reachable = result
         if apps_page:
             shown = apps_view(good["inventory"], key["key_id"], tuple(store.secrets())) if good else {
                 "apps": None, "entries": []}
         else:
             shown = {"modules": module_view(good["inventory"]) if good else None}
         return {"state": state, "error": error, "stale": state != "ready" and good is not None,
-                "fetched_at": good["fetched_at"] if good else None, **shown}
+                "reachable": reachable, "fetched_at": good["fetched_at"] if good else None, **shown}
+
+    async def refused_spend(token: str) -> JSONResponse:
+        """A 401 during a Spend read; the refusal's own confirmation read may also go unanswered."""
+        try:
+            return await refused(token)
+        except DaemonUnreachable:
+            return _error(503, "The daemon did not answer. Spend is unavailable until it does.")
+
+    @app.get("/api/spend")
+    async def get_spend():
+        """Read-only: each App's usage and session-cap use, and each backend's windows. It writes nothing, not even
+        the inventory cache, so its poll adds no disk writes; a failed read falls back to the cached inventory."""
+        key = claims.key()
+        if key is None:
+            return _error(409, "Claim this Hub on Overview before reading spend.")
+        secrets = tuple(store.secrets())
+        good = inventory.get(key["key_id"])
+        body, error, fetched_at = (good["inventory"], "", good["fetched_at"]) if good else (None, "", None)
+        # Each read stands alone: one that fails or times out never hides what another one returned.
+        reply, backends = await concurrently(daemon.inventory(key["token"]), daemon.settings(key["token"], "backends"))
+        for result in (reply, backends):
+            if isinstance(result, BaseException) and not isinstance(result, DaemonUnreachable):
+                raise result
+        if 401 in (getattr(reply, "status", None), getattr(backends, "status", None)):
+            return await refused_spend(key["token"])
+        if isinstance(reply, DaemonUnreachable):
+            error = "The daemon did not answer."
+        elif reply.ok and valid_inventory(reply.body):
+            body, fetched_at = reply.body, time.time()
+        else:
+            error = "The daemon returned an invalid inventory." if reply.ok else settings_error(
+                reply.body, reply.status)["detail"]
+        live = [row["id"] for row in (body or {}).get("apps", []) if isinstance(row, dict)
+                and row.get("kind") == "app" and row.get("revoked_at") is None and row.get("id") != key["key_id"]
+                and isinstance(row.get("id"), str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", row["id"])]
+        gate = asyncio.Semaphore(SPEND_CAP_READS)
+
+        async def read_caps(app_id: str):
+            async with gate:
+                return await daemon.apps(key["token"], "limits", app_id)
+
+        replies = await concurrently(*(read_caps(app_id) for app_id in live))
+        for result in replies:
+            if isinstance(result, BaseException) and not isinstance(result, DaemonUnreachable):
+                raise result
+        if any(getattr(result, "status", None) == 401 for result in replies):
+            return await refused_spend(key["token"])
+        limits = {app_id: result.body for app_id, result in zip(live, replies, strict=True)
+                  if getattr(result, "ok", False)}
+        backend_rows = backends.body if getattr(backends, "ok", False) else None
+        shown = spend_view(body, backend_rows, limits, key["key_id"], secrets)
+        if body is None:
+            shown["apps"] = None
+        if leaks(json.dumps(shown).encode(), store.secrets()):
+            return _error(502, "Spend withheld: it contained a credential-like string.")
+        return {"error": error, "stale": bool(error) and body is not None, "fetched_at": fetched_at,
+                # Any read the daemon answered shows it is up; the shell's status reads this, not the error text.
+                "reachable": not all(isinstance(result, DaemonUnreachable) for result in (reply, backends)),
+                "backends_error": "" if backend_rows is not None else "The daemon's backend usage was unavailable.",
+                **shown}
 
     # Bound to the Hub key and the entry's displayed identity, with a bounded ten-minute lifetime.
     consent_copies: dict[tuple[str, str], tuple[str, float, list[dict], bool]] = {}
@@ -488,13 +607,13 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return _error(409, "Claim this Hub on Overview before reading the Marketplace.")
         secrets = tuple(store.secrets())
 
-        async def read_slots() -> tuple[Any, str]:
+        async def read_slots() -> tuple[Any, bool]:
             # Only the pairing read and what it observes hold the consent lock; the inventory read never waits on it.
             async with pairing_consent_lock:
                 reply = await daemon.pairing(key["token"], "list")
                 if reply.ok and isinstance(reply.body, list):
                     return reply, observe_browser_slots(reply.body, key["key_id"])
-                return reply, ""
+                return reply, False
 
         # Both reads run together, but a refusal from the inventory read returns at once: the slots read can wait on
         # the consent lock for as long as another tab's arm request holds it, so it is cancelled, not awaited.
@@ -509,16 +628,17 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 slots_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await slots_task
-        good, state, error = result
+        good, state, error, reachable = result
         # Only the daemon's validated answer, or the last one: never entries the daemon did not validate.
         entries, withheld = entries_view(good["inventory"], secrets) if good else (None, 0)
         slots, slots_error, confirmation_warning = {}, "", ""
         try:
-            reply, confirmation_warning = settled(slots_read)
+            reply, suspected = settled(slots_read)
             if reply.status == 401:
                 return await refused(key["token"])
             if reply.ok and isinstance(reply.body, list):
                 slots = marketplace_slots(reply.body, secrets)
+                confirmation_warning = await skipped_confirmation(key, suspected)
             else:
                 slots_error = f"Armed slots could not be read (HTTP {reply.status})."
         except DaemonUnreachable:
@@ -527,7 +647,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             consent_entry(entry, key["key_id"])
             entry["slots"] = slots.get(entry["catalog_app_id"], [])
         return {"state": state, "error": error, "stale": state != "ready" and good is not None,
-                "fetched_at": good["fetched_at"] if good else None, "entries": entries, "withheld": withheld,
+                "reachable": reachable, "fetched_at": good["fetched_at"] if good else None, "entries": entries,
+                "withheld": withheld,
                 "slots_error": slots_error, "confirmation_warning": confirmation_warning,
                 "daemon_url": settings.daemon_url, "now": time.time()}
 
@@ -611,7 +732,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if reply.status == 401:
                 return await refused(key["token"])
         except DaemonUnreachable:
-            return _error(503, "The daemon did not answer. Refresh the Marketplace before setting up again.")
+            return _unreachable("The daemon did not answer. Refresh the Marketplace before setting up again.")
         if not reply.ok:
             error = settings_error(reply.body, reply.status)
             if error["error"]["code"] == "acknowledgement_required":
@@ -632,8 +753,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             try:
                 denied = await daemon.pairing(key["token"], "deny", rid=unsafe["id"])
             except DaemonUnreachable:
-                return _error(503, "Disclosure review failed and the slot could not be withdrawn. "
-                              "Withdraw it on Pairing requests before trying again.")
+                return _unreachable("Disclosure review failed and the slot could not be withdrawn. "
+                                    "Withdraw it on Pairing requests before trying again.")
             if not denied.ok or pairing_request_view(denied.body)["state"] != "denied":
                 return _error(502, "Disclosure review failed and the daemon refused to withdraw the slot. "
                               "Withdraw it on Pairing requests before trying again.")
@@ -710,7 +831,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if reply.status == 401:
                 return await refused(key["token"])
             if not reply.ok:
-                return JSONResponse(settings_error(reply.body, reply.status), status_code=reply.status)
+                return _forwarded(reply)
             if operation == "revoke":
                 return Response(status_code=204)
             if operation == "erasures":
@@ -727,7 +848,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 if keys.status == 401:
                     return await refused(key["token"])
                 if not keys.ok:
-                    return _error(keys.status, f"App detail could not be read (HTTP {keys.status}).")
+                    return _error(keys.status, f"App detail could not be read (HTTP {keys.status}).", reachable=True)
                 if not isinstance(keys.body, list):
                     return _error(502, "The daemon returned invalid App detail.")
                 row = next((row for row in keys.body if isinstance(row, dict) and row.get("id") == app_id), None)
@@ -736,7 +857,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return {**shown, "retention_days": app_view(row)["retention_days"]}
             return {"id": app_view(reply.body)["id"], "retention_days": app_view(reply.body)["retention_days"]}
         except DaemonUnreachable:
-            return _error(503, "The daemon did not answer. Refresh the state before repeating a write.")
+            return _unreachable("The daemon did not answer. Refresh the state before repeating a write.")
 
     @app.api_route("/api/pairing", methods=["GET"])
     @app.api_route("/api/pairing/{rid}/{action}", methods=["POST"])
@@ -783,7 +904,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 if acknowledged:
                     body["acknowledge_elevated"] = True
         try:
-            reply = None
+            reply, suspected = None, False
             if operation == "approve" and "acknowledge_elevated" not in body:
                 # Never send an approval for elevated scopes without the owner's separate acknowledgement.
                 reply = await daemon.pairing(key["token"], "list")
@@ -801,19 +922,20 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     reply = await daemon.pairing(key["token"], operation, rid, body)
                     if reply.ok:
                         if operation == "list" and isinstance(reply.body, list):
-                            confirmation_warning = observe_browser_slots(reply.body, key["key_id"])
+                            suspected = observe_browser_slots(reply.body, key["key_id"])
                         elif operation == "confirm":
                             observe_browser_slots([reply.body], key["key_id"], confirmed_id=rid)
             if reply.status == 401:
                 return await refused(key["token"])
         except DaemonUnreachable:
-            return _error(503, "The daemon did not answer. Refresh the list before repeating a decision.")
+            return _unreachable("The daemon did not answer. Refresh the list before repeating a decision.")
         if not reply.ok:
-            return JSONResponse(settings_error(reply.body, reply.status), status_code=reply.status)
+            return _forwarded(reply)
         if operation == "list":
             if not isinstance(reply.body, list):
                 return _error(502, "The daemon returned invalid pairing requests.")
-            return {**pairing_view(reply.body, tuple(store.secrets())), "confirmation_warning": confirmation_warning}
+            return {**pairing_view(reply.body, tuple(store.secrets())),
+                    "confirmation_warning": await skipped_confirmation(key, suspected)}
         return pairing_request_view(reply.body, tuple(store.secrets()))
 
     @app.get("/api/manage/catalog")
@@ -884,7 +1006,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if reply.status == 401:
                 return await refused(key["token"])
             if not reply.ok:
-                return JSONResponse(settings_error(reply.body, reply.status), status_code=reply.status)
+                return _forwarded(reply)
             if reply.status == 204:
                 return Response(status_code=204)
             try:
@@ -893,19 +1015,19 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return _error(502, "The daemon returned invalid administration data. Refresh before repeating a write.")
             return JSONResponse(shown, status_code=reply.status)
         except DaemonUnreachable:
-            return _error(503, "The daemon did not answer. Read its current state before repeating a write.")
+            return _unreachable("The daemon did not answer. Read its current state before repeating a write.")
 
     @app.get("/api/settings/health")
     async def settings_health():
         try:
             reply = await daemon.health()
         except DaemonUnreachable:
-            return {"reachable": False, "restarting": restart["active"], "health": None}
+            return {"reachable": False, "answered": False, "restarting": restart["active"], "health": None}
         shown = health_view(reply.body)["health"] if reply.ok else None
-        if time.monotonic() >= restart["not_before"] and shown and shown["ok"] and shown["config_confirmed"] and (
-                restart["target"] is None or shown["config_revision"] == restart["target"] or shown["recovery"]):
-            restart["active"] = False
-        return {"reachable": reply.ok, "restarting": restart["active"], "health": shown}
+        observe_restart(shown)
+        # reachable: a health answer was read; answered: the daemon replied at all, a 503 mid-restart included.
+        return {"reachable": reply.ok, "answered": True, "status": reply.status, "restarting": restart["active"],
+                "health": shown}
 
     @app.api_route("/api/settings/{resource:path}", methods=["GET", "POST", "PUT", "PATCH"])
     async def settings_action(resource: str, request: Request):
@@ -962,11 +1084,11 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if reply.status == 401:
                 return await refused(key["token"])
         except DaemonUnreachable:
-            return _error(503, "The daemon did not answer. Check its health before repeating a write.")
+            return _unreachable("The daemon did not answer. Check its health before repeating a write.")
         if operation == "memory" and reply.status == 404 and memory_route_absent(reply.body):
             return JSONResponse(control_view(operation, {"enabled": False}, installed=False))
         if not reply.ok:
-            return JSONResponse(settings_error(reply.body, reply.status), status_code=reply.status)
+            return _forwarded(reply)
         if operation == "restart" and isinstance(reply.body, dict) and reply.body.get("accepted") is True:
             restart.update(active=True, target=reply.body.get("target_revision"),
                            not_before=time.monotonic() + 1)

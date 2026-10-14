@@ -11,7 +11,7 @@ Installing the Hub is optional. Every Hub action is also a `harness` CLI command
 ## Status
 
 The Hub includes the server, first-run claim, sign-in, **Overview**, **Settings**, **Modules**, **Apps**,
-**Pairing requests**, **Marketplace** and **Accounts and maintenance**.
+**Spend**, **Pairing requests**, **Marketplace** and **Accounts and maintenance**.
 
 Settings renders the daemon's complete registry, grouped by category, with types, defaults, allowed values,
 read-only guidance, current and pending revisions, and restart requirements. Validate shows field errors without
@@ -23,8 +23,15 @@ its manual restart instructions.
 Settings also manages smart approvals, backend model/effort defaults, the memory agent profile (saving commits
 and pushes to its library), member GitHub access, read-only Google sign-in status, and test notifications. Secret
 references remain file paths: the Hub never opens or resolves those files. Installer-only secrets remain hidden
-and read-only. Every action includes its daemon CLI equivalent. When the daemon has no `memory_library` module
+and read-only. Every action has its daemon CLI equivalent behind a **Host command** button. When the daemon has no `memory_library` module
 (not installed, or switched off), the memory section says so and shows how to enable it instead of an error.
+
+Spend is read-only. It lists every App in one sortable table with its requests, tokens, cost and use of its
+session caps, and flags Apps whose sessions reach 80% of a cap. It also shows each backend's usage today and over
+the last 7 days. Local-model backends show tokens only; their cost is "—", never a notional price. The daemon
+reports only lifetime totals per App, so per-App today, 7-day and 30-day windows and a daily trend wait on
+[agent-harness #686](https://github.com/dflippojr/agent-harness/issues/686). Spend polls once a minute, pauses
+in a hidden tab and writes nothing to disk.
 
 ## Install and run
 
@@ -82,7 +89,9 @@ The link works once, for ten minutes. Its code travels in the URL fragment, whic
 or puts in a Referer; a truncated or mangled link is refused on the page without being sent. The page posts a
 well-formed code once and gets an HttpOnly, SameSite=Strict session cookie for twelve hours.
 The cookie alone cannot authorize requests: a second per-session value is kept in origin-scoped `sessionStorage`
-and sent in `X-Hub-Session`. Each new tab needs its own sign-in link. HTTPS uses a `__Host-hub_session` cookie
+and sent in `X-Hub-Session`. Each new tab needs its own sign-in link; a tab that signs in while the browser's session
+is still live joins it, so the tabs stay signed in together, share the original twelve-hour expiry, and signing
+out in one signs out all of them. HTTPS uses a `__Host-hub_session` cookie
 with `Secure`, `HttpOnly`, `SameSite=Strict` and no Domain attribute.
 Proving you can read the Hub's owner-only state directory is the same proof the daemon uses for local callers.
 
@@ -146,8 +155,9 @@ A daemon has at most one Hub ([agent-harness #543](https://github.com/dflippojr/
 2. On the daemon host, check that the code matches and run the command the Hub shows:
    `harness hub approve <request id> --match <code>`. Only the host can approve: the CLI reads a secret from the
    daemon's data directory.
-3. The Hub redeems the claim with its verifier and keeps the `hub` key in its state directory. Overview then shows the
-   daemon's version, health, capabilities and that this Hub is the claimed one.
+3. The Hub redeems the claim with its verifier and keeps the `hub` key in its state directory. Overview then shows
+   status tiles for this Hub (Claimed), the daemon (health, release, Owner API) and its settings, then the daemon's
+   capabilities and details.
 
 When the daemon already has a Hub, the claim is refused (409) and the Hub shows how to release the old one on the host:
 `harness hub release --confirm`. An expired or denied claim shows that, with a button to start a new one. If the Hub
@@ -199,8 +209,10 @@ module fields are sent to the browser.
 - The Hub's server holds the `hub` key, the claim's PKCE verifier and the sign-in codes' hashes in its owner-only
   state directory. The browser never receives the `hub` key, any `ha-`/`ho-`/`hp-` token or prefix, a PKCE verifier
   or a provider credential: responses are built field by field from allowlists, and a guard withholds (HTTP 500) any
-  `/api/` response that still contains one. Tests check every response in the claim flow, against a fake daemon and
-  a real one.
+  `/api/` response that still contains the `hub` key, the verifier or a full-length daemon token. Key display
+  prefixes are redacted in place (`[withheld: token-shaped]`) in the fields that can carry them, so an ordinary word
+  such as `ha-core` or `hp-laserjet` in a setting, model name or login never blanks a page. Tests check every
+  response in the claim flow, against a fake daemon and a real one.
 - The Hub never reads an App's token response and never claims or redeems an App's pairing request: App tokens go
   from the daemon straight to the App ([agent-harness #519](https://github.com/dflippojr/agent-harness/issues/519)).
   The only token response it reads is its own Hub claim's, and it keeps the key only if the daemon says its role is
@@ -230,6 +242,11 @@ HUB_E2E_DAEMON_SRC=../agent-harness pytest -m e2e   # a real daemon from a check
 
 The UI is plain ES modules in `harness_hub/static` with no build step. Every tap target is at least 44 px, and the
 layout switches from a phone menu to a left rail at 900 px; a tap outside the open phone menu closes it.
+For CLI parity, every action the Hub takes has the daemon host command that does the same. Those commands are off by
+default: a **Host command** button under each action shows its command, with Copy. The **Show host commands** switch in
+the rail footer (in the phone menu on a phone) shows them all in place of the buttons; the browser remembers it as
+`hub.hostCommands` in localStorage, the only thing the Hub stores there. Steps only the daemon host can take, such as
+approving a Hub claim, restoring an App or minting a sign-in link, always show their command.
 The shell (sign-in links, the phone menu, Modules and the Settings memory section) has its own isolated spec:
 `npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1 shell-browser.spec.cjs`.
 The Modules browser flow can also be run with `playwright-cli run-code --filename=tests/modules-browser.js`
@@ -298,28 +315,30 @@ Owner setup before the first tag. Only an admin can do these; the workflow doesn
 
 ### Apps
 
-Apps shows the daemon inventory's connection state, last seen, scopes, origins,
-catalog identity, token age (warning at 90 days; no automatic expiry), aggregate
-sessions, usage and errors. Installed entries use the inventory's paired ids,
-including its origin checks, rather than matching display names. The complete
-inventory stays in the owner-only cache shared with Modules; a failed refresh
-shows the last good snapshot and disables management until a fresh read succeeds.
+Apps lists every key that can reach the daemon in one table: name (App-supplied names say so, next to the key id),
+kind, a status pill (Active, Idle, Stale, Never used, or Revoked with its erasure date), scopes, last seen and token
+age. Warnings show as row pills: errors in the last 24 hours, a token at least 90 days old (no automatic expiry), and
+a duplicate or reserved name. Catalog entries follow as one row each, paired through the inventory's verified ids,
+including its origin checks, rather than by matching display names. The complete inventory stays in the owner-only
+cache shared with Modules; a failed refresh shows the last good snapshot and disables management until a fresh read
+succeeds.
 
-App names are labeled as App-supplied; duplicate names and the reserved "This Hub"
-label show warnings. Revoke is offered only for App and device keys. Its confirmation shows
-the key id, origins, catalog id, creation time and verified-entry pairing. Owner
-and runner keys are managed on the host, without App erasure or restore hints. This Hub
-has no revoke control; release it on the host with `harness hub release --confirm`.
-The erasure queue shows deadlines. Restore stays on the daemon host: run the exact
-`harness apps restore <app_id>` command shown for the revoked App before erasure.
-The CLI returns a replacement credential once; reconnect the App using that
-credential. The Hub never calls the restore route or receives an App token.
-Restore remains CLI-only by the owner decision in agent-harness#597.
+A row opens its detail beside the list from 1200 px wide, and in its place below that (**Back to all apps** returns).
+The detail has usage tiles (requests, tokens in and out, cost, errors), the identity facts, and for an App its
+running/queued session caps and retention. A blank cap shows the daemon default as its placeholder and restores it
+on save; a save sends only the caps you changed, so a cap changed on the host meanwhile is kept. Blank retention
+keeps sessions until deleted. Saving retention asks first, inside its card, because
+shortening it can erase older sessions during cleanup.
 
-The App detail view supports running/queued session caps (blank restores daemon
-defaults) and retention (blank keeps sessions until deleted). Saving retention
-requires confirmation because shortening it can erase older sessions during
-cleanup. All controls show their supported host CLI equivalents.
+Revoke sits in the detail's danger zone and is offered only for App and device keys. Its question, asked in place,
+shows the key id, origins, catalog id, creation time and verified-entry pairing. App names are labeled as
+App-supplied; duplicate names and the reserved "This Hub" label show warnings. Owner and runner keys are managed on
+the host, without App erasure or restore hints. This Hub has no revoke control; release it on the host with
+`harness hub release --confirm`. A revoked App's row shows its erasure date and a **Restore command** button that
+opens its detail. Restore stays on the daemon host: run the exact `harness apps restore <app_id>` command shown
+there before erasure. The CLI returns a replacement credential once; reconnect the App using that credential. The
+Hub never calls the restore route or receives an App token. Restore remains CLI-only by the owner decision in
+agent-harness#597. Every Hub control has its supported host CLI equivalent behind a **Host command** button.
 
 Token-shaped App display fields are replaced with `[withheld: token-shaped]` so
 an App name cannot block inventory or revoke. Exact Hub keys and claim verifiers
@@ -334,19 +353,24 @@ These specs intercept all network requests and start no servers.
 ### Pairing requests
 
 Pairing requests lists the App pairing requests of the last day ([agent-harness #519](https://github.com/dflippojr/agent-harness/issues/519)),
-newest first and grouped by state, with each one's name, scopes, catalog app id, origin (or "native app"), expiry
-countdown and next step. The Hub never projects or renders an App request's match code. Every scope shows the daemon's
-disclosure text exactly as given, as text, with its `standard` or `elevated` badge. The page polls every 5 seconds.
-Overview shows a **Waiting for you** card, with a link here, counting the unexpired App requests that need you to
+newest first in three groups. **Needs you** holds the requests waiting on your decision, each a card in two halves:
+who and what on one side (name, origin or "Native app", catalog app id, scopes), the match code field and Deny or
+Approve on the other, with an expiry countdown in the card's head that turns amber in the last two minutes.
+**Waiting for the app** lists approved requests and armed slots, each with its countdown and Withdraw. **History**
+is a table of the paired, denied and expired requests. The Hub never projects or renders an App request's match
+code. Every scope shows the daemon's disclosure text exactly as given, as text, with its Standard or Elevated badge.
+The page polls every 5 seconds.
+Overview leads with a **Needs you** card ("2 pairing requests need you"), with a link here, counting the unexpired App requests that need you to
 approve or confirm; it shows counts only, never the requests themselves, and leaves out Hub claims.
-Started from distinguishes owner-armed slots from App-initiated requests. App-initiated origin and catalog ids are
-stated by the requester, not verified; only the match code on your App's screen proves this is your App. For an armed
-slot, the page explains that you set the origin and catalog id when arming it.
+Started from and Bound to distinguish App-initiated requests from owner-armed slots. A card says once that an
+App-initiated name, origin and catalog id are stated by the App, not verified; only the match code on your App's screen
+proves this is your App. For an armed slot, the card explains that you set the origin and catalog id when arming it.
 
 Approve and Confirm need the code the App is showing right now, typed into an empty field; the daemon compares it
 and refuses a wrong code. If the App shows no code or an error, deny. If your App reported that the slot was already
-claimed, list requests with `harness pairing-requests list`. For a `redeemed` row, revoke its `key_id` with
-`harness keys revoke <key_id>`; for `approved` or `claimed`, deny it with `harness pairing-requests deny <id>`.
+claimed, open **Troubleshooting** at the foot of the page (Marketplace has the same one): list requests with
+`harness pairing-requests list`. For a `redeemed` row, revoke its `key_id` with `harness keys revoke <key_id>`; for
+`approved` or `claimed`, deny it with `harness pairing-requests deny <id>`.
 
 If this Hub process observes a browser slot jump from `armed` to `approved` or `redeemed` without handling a
 successful confirmation, Marketplace and Pairing requests warn: "This daemon approved the claim without
@@ -357,13 +381,13 @@ Browser and native claims on armed slots both wait for typed-code confirmation b
 `memory_library`, `homelab`) need a separate acknowledgement: Approve stays disabled until it is ticked, and the
 server refuses an approval without it before calling the daemon. If a name, origin or catalog id is withheld,
 Approve and Confirm are unavailable; review the request with `harness pairing-requests list` on the host. Deny
-remains available. Deny and Withdraw ask for confirmation in the page.
+remains available. Deny and Withdraw ask for confirmation inside the card that was acted on.
 A request that changed state (409) or no longer exists (404) refreshes the list with a short note. Hub claims are
 read-only and show `harness hub approve <id> --match <code>`, because they are decided only on the daemon host.
 
 Approval changes the request's state only: the App then redeems its own token from the daemon with its PKCE
 verifier, so the Hub never calls the App-side `claim` or `token` routes and never sees an App token. Every action
-shows its `harness pairing-requests` CLI equivalent. Arming slots for Hub entries belongs to [Marketplace](#marketplace).
+has its `harness pairing-requests` CLI equivalent behind a **Host command** button. Arming slots for Hub entries belongs to [Marketplace](#marketplace).
 Run the isolated browser regressions with Playwright installed locally:
 `npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1 pairing-security.spec.cjs`.
 
@@ -409,7 +433,7 @@ forge that header. As on Pairing requests, the Hub never shows an App's code, an
 If the app shows no code or an error, withdraw the slot. If it reports the slot was already claimed, list requests
 with `harness pairing-requests list`; revoke a redeemed row's `key_id` with `harness keys revoke <key_id>`, or deny
 an approved or claimed row with `harness pairing-requests deny <id>`.
-**Withdraw** ends a slot after an in-page confirmation. Every action shows its CLI equivalent
+**Withdraw** ends a slot after an in-page confirmation. Every action has its CLI equivalent behind a **Host command** button
 (`harness hub status`, `harness hub entries init|validate`, `harness pairing-requests arm|confirm|deny`).
 
 A stale or unreadable entries file makes `GET /hub` answer 400 with a named error (`hub.entries: invalid JSON`,
@@ -422,7 +446,8 @@ Run the isolated browser regressions with Playwright installed locally:
 ### Accounts and maintenance
 
 The six areas manage household accounts, name-only provider assignments, skills and proposals, maintenance,
-runners/projects/folder discovery, and read-only audit logs. Each action shows its host CLI equivalent.
+runners/projects/folder discovery, and read-only audit logs. Each action has its host CLI equivalent behind a
+**Host command** button.
 Choose an area to read its current state, then choose an action or a record's control. Writes are explicit;
 destructive changes show the target and edited fields in an in-page confirmation.
 

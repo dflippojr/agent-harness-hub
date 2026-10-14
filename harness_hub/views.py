@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from . import __version__
 from .administration import TARGET
 from .claim import CLAIMED, PENDING, RELEASE_COMMAND, ClaimManager
-from .guard import TOKEN_SHAPE
+from .guard import KEY_PREFIX_SHAPE, LINK_CODE, TOKEN_SHAPE
 
 MESSAGES = {
     "unclaimed": "This Hub has not claimed the daemon yet.",
@@ -34,7 +34,28 @@ MESSAGES = {
 
 
 def _str(value: Any, limit: int = 200) -> str:
-    return value[:limit] if isinstance(value, str) else ""
+    if not isinstance(value, str):
+        return ""
+    for token in TOKEN_SHAPE.finditer(value):
+        if token.start() >= limit:
+            break
+        if limit < token.end():
+            return value[:token.end()]  # Cut short, it would pass the guard: keep it whole so the view is withheld.
+    return value[:limit]
+
+
+REDACTED = "[withheld: token-shaped]"
+
+
+def _prefix(match: re.Match) -> str:
+    # A full token is left in place: the response guard must withhold the entire view, not hide a daemon leak.
+    return match[0] if TOKEN_SHAPE.match(match[0]) else REDACTED
+
+
+def _diagnostic_text(value: Any, limit: int = 200) -> str:
+    """Daemon diagnostic text, which can echo a key's display prefix: each token-shaped word is redacted in place."""
+    # Cut first: a token cut short at the limit is then redacted, not passed under the guard's full-length shape.
+    return KEY_PREFIX_SHAPE.sub(_prefix, value[:limit]) if isinstance(value, str) else ""
 
 
 def _bool(value: Any) -> bool | None:
@@ -173,7 +194,7 @@ def setting_value(value: Any) -> Any:
 def field_errors(value: Any) -> dict:
     if not isinstance(value, dict):
         return {}
-    return {key: {"code": _str(row.get("code"), 64), "message": _str(row.get("message"), 2000)}
+    return {key: {"code": _str(row.get("code"), 64), "message": _diagnostic_text(row.get("message"), 2000)}
             for key, row in value.items() if isinstance(key, str) and isinstance(row, dict)}
 
 
@@ -181,11 +202,11 @@ def settings_error(body: Any, status: int) -> dict:
     body = body if isinstance(body, dict) else {}
     error = body.get("error") if isinstance(body.get("error"), dict) else {}
     details = error.get("details") if isinstance(error.get("details"), dict) else {}
-    return {"detail": _str(body.get("detail"), 2000) or f"The daemon answered HTTP {status}",
+    return {"detail": _diagnostic_text(body.get("detail"), 2000) or f"The daemon answered HTTP {status}",
             "error": {"code": _str(error.get("code"), 64), "keys": field_errors(error.get("keys")),
                       "details": {"expected_revision": _num(details.get("expected_revision")),
                                   "current_revision": _num(details.get("current_revision")),
-                                  "manual": _str(details.get("manual"), 1000)}}}
+                                  "manual": _diagnostic_text(details.get("manual"), 1000)}}}
 
 
 def registry_entry(body: Any) -> dict:
@@ -213,7 +234,7 @@ def registry_view(body: Any) -> dict:
            ("confirmed", "supervised_restart", "restart_required", "accepted")},
         "status": _str(body.get("status"), 64),
         "recovery": recovery_view(body.get("recovery")),
-        "warning": _str(body.get("warning"), 2000),
+        "warning": _diagnostic_text(body.get("warning"), 2000),
         "settings": [registry_entry(row) for row in rows],
         "changes": [{"key": _str(row.get("key"), 200), "from": setting_value(row.get("from")),
                      "to": setting_value(row.get("to")), "apply": _str(row.get("apply"), 32),
@@ -225,14 +246,16 @@ def registry_view(body: Any) -> dict:
 def recovery_view(value: Any) -> dict | None:
     if not isinstance(value, dict):
         return {"recovery": _str(value, 64)} if isinstance(value, str) and value else None
-    return {"recovery": _str(value.get("recovery"), 64), "reason": _str(value.get("reason"), 2000),
-            "warning": _str(value.get("warning"), 2000), "at": _num(value.get("at"))}
+    return {"recovery": _str(value.get("recovery"), 64), "reason": _diagnostic_text(value.get("reason"), 2000),
+            "warning": _diagnostic_text(value.get("warning"), 2000), "at": _num(value.get("at"))}
 
 
 def preflight_view(value: Any) -> dict | None:
     if not isinstance(value, dict):
         return None
-    return {"ok": _bool(value.get("ok")), "problems": _names(value.get("problems")),
+    problems = value.get("problems") if isinstance(value.get("problems"), list) else []
+    return {"ok": _bool(value.get("ok")),
+            "problems": [_diagnostic_text(v, 64) for v in problems[:32] if isinstance(v, str)],
             "checked_at": _num(value.get("checked_at"))}
 
 
@@ -259,7 +282,8 @@ def control_view(operation: str, body: Any, installed: bool = True) -> Any:
     body = body if isinstance(body, dict) else {}
     if operation in ("smart", "smart_save"):
         return {"mode": _str(body.get("mode"), 32), "enabled": _bool(body.get("enabled")),
-                "configured": _bool(body.get("configured")), "secret_ref": _str(body.get("secret_ref"), 4000)}
+                "configured": _bool(body.get("configured")),
+                "secret_ref": _diagnostic_text(body.get("secret_ref"), 4000)}
     if operation in ("memory", "memory_save"):
         commit = body.get("last_commit") if isinstance(body.get("last_commit"), dict) else {}
         return {"installed": installed, "enabled": _bool(body.get("enabled")),
@@ -268,7 +292,7 @@ def control_view(operation: str, body: Any, installed: bool = True) -> Any:
                 "last_commit": {"head": _str(commit.get("head"), 64), "path": _str(commit.get("path"), 4000),
                                 "summary": _str(commit.get("summary"), 200), "at": _num(commit.get("at")),
                                 "pushed": _bool(commit.get("pushed"))},
-                "refresh_error": _str(body.get("refresh_error"), 2000)}
+                "refresh_error": _diagnostic_text(body.get("refresh_error"), 2000)}
     if operation in ("github", "github_save"):
         return {"enabled": _bool(body.get("enabled")), "configured": _bool(body.get("configured")),
                 "preflight": preflight_view(body.get("preflight"))}
@@ -291,7 +315,7 @@ def module_view(body: Any) -> list[dict]:
                 if not isinstance(key, str) or len(key) > 200:
                     continue
                 if isinstance(value, str):
-                    fields[key] = _str(value, 200)
+                    fields[key] = _diagnostic_text(value, 200)
                 elif value is None or type(value) is bool or type(value) is int and value.bit_length() <= 64 or (
                         type(value) is float and math.isfinite(value)):
                     fields[key] = value
@@ -322,15 +346,15 @@ def _app_text(value: Any, limit: int = 200, secrets: tuple[str, ...] = ()) -> st
         for secret in secrets:
             if secret and secret in value:
                 return secret  # The response guard must withhold the entire view.
-        if TOKEN_SHAPE.search(value):
-            return "[withheld: token-shaped]"
+        if KEY_PREFIX_SHAPE.search(value):
+            return REDACTED
     return _str(value, limit)
 
 
 def app_view(row: Any, key_id: str = "", secrets: tuple[str, ...] = ()) -> dict:
     row = row if isinstance(row, dict) else {}
     store = row.get("store") if isinstance(row.get("store"), dict) else {}
-    usage = store.get("usage") if isinstance(store.get("usage"), dict) else {}
+    usage = store.get("usage")
     sessions = store.get("sessions") if isinstance(store.get("sessions"), dict) else {}
     out = {key: _str(row.get(key), 200) for key in ("id", "name", "kind", "role", "catalog_app_id")}
     out["id"] = _app_id(row.get("id"))
@@ -349,8 +373,7 @@ def app_view(row: Any, key_id: str = "", secrets: tuple[str, ...] = ()) -> dict:
     out["token_age_warning"] = out["token_age_seconds"] is not None and out["token_age_seconds"] >= 90 * 86400
     out["store"] = {
         "sessions": {key: _int(sessions[key]) for key in SESSION_STATES if key in sessions},
-        "usage": {key: _finite(usage.get(key)) for key in
-                  ("requests", "prompt_tokens", "completion_tokens", "cost_usd")},
+        "usage": usage_tally(usage),
         "errors": _int(store.get("errors")), "last_error": _app_text(store.get("last_error"), 200, secrets),
         "last_error_at": _finite(store.get("last_error_at")),
     }
@@ -408,6 +431,58 @@ def limits_view(body: Any) -> dict:
     return out
 
 
+USAGE_FIELDS = ("requests", "prompt_tokens", "completion_tokens", "cost_usd")
+SPEND_NEAR = 0.8  # an App whose session-cap use reaches this share of a cap is flagged as near its limit
+
+
+def usage_tally(value: Any, local: bool = False) -> dict:
+    """One usage tally; a local-model tally shows tokens only, so its cost is None (the owner's choice in #61)."""
+    value = value if isinstance(value, dict) else {}
+    out = {key: _finite(value.get(key)) for key in USAGE_FIELDS}
+    if local:
+        out["cost_usd"] = None
+    return out
+
+
+def cap_use(limits: Any) -> dict | None:
+    """Sessions counted against an App's effective caps; parked sessions count toward both (as the daemon counts)."""
+    if not valid_limits(limits):
+        return None
+    shown = limits_view(limits)
+    running, queued, parked = (shown[key] or 0 for key in ("running", "queued", "parked"))
+    caps = shown["effective"]
+    running_used, queued_used = running + parked, queued + parked
+    share = max(running_used / caps["max_running"], queued_used / caps["max_queued"])
+    return {"max_running": caps["max_running"], "max_queued": caps["max_queued"], "running_used": running_used,
+            "queued_used": queued_used, "parked": parked, "share": round(share, 4), "near": share >= SPEND_NEAR}
+
+
+def spend_view(inventory: Any, backends: Any, limits: dict, key_id: str, secrets: tuple[str, ...] = ()) -> dict:
+    """Every App's lifetime usage and session-cap use, and each backend's today and 7-day usage.
+
+    The daemon has no per-App time windows yet (agent-harness#686), so per-App rows carry lifetime totals only."""
+    rows = inventory.get("apps", []) if isinstance(inventory, dict) else []
+    apps = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("kind") not in ("app", "device") or row.get("role") == "hub":
+            continue
+        shown = app_view(row, key_id, secrets)
+        if not shown["id"] or shown["this_hub"]:
+            continue
+        apps.append({"id": shown["id"], "name": shown["name"], "kind": shown["kind"], "state": shown["state"],
+                     "usage": shown["store"]["usage"], "caps": cap_use(limits.get(shown["id"]))})
+    out_backends = []
+    for row in backends if isinstance(backends, list) else []:
+        if not isinstance(row, dict):
+            continue
+        billing = _str(row.get("billing"), 32)
+        local = billing == "local"
+        out_backends.append({"name": _app_text(row.get("name"), 80, secrets), "billing": billing, "local": local,
+                             "today": usage_tally(row.get("today"), local),
+                             "week": usage_tally(row.get("week"), local)})
+    return {"apps": apps, "backends": out_backends}
+
+
 TEXT = "text"
 NUMBER = "number"
 BOOL = "bool"
@@ -456,7 +531,7 @@ SCAN = {"id": IDENTIFIER, "revision": NUMBER, "status": TEXT, "visited": NUMBER,
 # Audit metadata is deliberately narrower than free text or caller-defined objects.
 AUDIT = {**dict.fromkeys(("actor_id", "actor_kind", "key_id", "source", "target_id", "target_kind", "action",
                           "outcome"), TEXT),
-         "id": NUMBER, "at": NUMBER, "timestamp": NUMBER, "created_at": NUMBER,
+         "id": NUMBER, "ts": NUMBER, "at": NUMBER, "timestamp": NUMBER, "created_at": NUMBER, "detail": TEXT,
          "metadata": {"fields": NAMES, "reason": TEXT, "operation_id": TEXT, "category": TEXT,
                       **dict.fromkeys(("count", "removed", "kept", "expired", "new_max_running", "old_max_running",
                                       "new_max_queued", "old_max_queued", "new_disk_quota_bytes",
@@ -559,8 +634,12 @@ def administration_view(operation: str, body: Any, secrets: tuple[str, ...] = ()
             candidate["promotion_available"] = bool(candidate.get("id") and candidate.get("suggested_slug")
                                                     and all(raw.get(k) == candidate.get(k)
                                                             for k in ("path", "markers")))
-    if operation == "google_invite" and (not shown.get("code") or shown.get("expires_at") is None):
-        raise ValueError("Invalid invitation response")
+    if operation == "google_invite":
+        code = body.get("code")
+        if (not isinstance(code, str) or not LINK_CODE.fullmatch(code) or shown.get("expires_at") is None
+                or any(secret and secret in code for secret in secrets)):
+            raise ValueError("Invalid invitation response")  # Never show a redaction marker as if it were the code.
+        shown["code"] = code  # The owner's one-time code: redacting a lookalike substring would hide the only copy.
     return shown
 
 

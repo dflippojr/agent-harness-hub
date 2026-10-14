@@ -1,5 +1,5 @@
 import { api } from "../lib/api.mjs";
-import { clear, command, h } from "../lib/dom.mjs";
+import { clear, command, h, when } from "../lib/dom.mjs";
 
 const GROUPS = [["accounts", "Accounts"], ["credentials", "Provider assignments"], ["skills", "Skills"],
   ["maintenance", "Maintenance"], ["runners", "Runners and projects"], ["audit", "Audit"]];
@@ -91,7 +91,7 @@ export function renderAdmin(main) {
     form.append(h("button", { type: "submit", class: "btn" }, selected.label));
     clear(workspace, h("h2", {}, GROUPS.find(([id]) => id === active)[1]),
       h("div", { class: "setting-field" }, h("label", {}, "Choose action", choices)),
-      command(selected.cli), form, h("div", { class: "admin-confirmation" }));
+      form, command(selected.cli, { parity: true }), h("div", { class: "admin-confirmation" }));
   }
   async function confirmProjects(op, targets, body) {
     setBusy(true); message("Reading the current project allowlist…");
@@ -170,6 +170,8 @@ export function renderAdmin(main) {
         id === "skill_projects" ? { projects: row.projects_complete === true ? row.projects : [] } : {}));
     }));
   }
+  // Audit rows carry the daemon's epoch seconds in ts; show the owner a readable time.
+  function withTime(row) { return typeof row.ts === "number" ? { ...row, ts: when(row.ts) } : row; }
   function showResult(op, reply) {
     clear(output, h("h2", {}, op.label));
     let rows = Array.isArray(reply) ? reply : op.id === "skills" ? [...(reply.proposals || []), ...(reply.installed || [])] :
@@ -177,7 +179,8 @@ export function renderAdmin(main) {
     if (rows) {
       if (!rows.length) output.append(h("p", { class: "muted" }, "No records."));
       for (const row of rows) output.append(h("section", { class: "card admin-row" },
-        h("h3", {}, row.display_name || row.title || row.name || row.project || row.action || row.id || "Record"), record(row), rowActions(op, row)));
+        h("h3", {}, row.display_name || row.title || row.name || row.project || row.action || row.id || "Record"),
+        record(op.id === "audit" || op.id === "account_audit" ? withTime(row) : row), rowActions(op, row)));
       if (op.id === "skills" || op.id === "remote") output.append(record({ enabled: reply.enabled, discovery: reply.discovery }));
     } else output.append(h("section", { class: "card" }, record(reply), reply ? rowActions(op, reply) : null));
     if (op.id === "proposal" && reply.review_complete !== true) output.append(h("p", { class: "notice warn" },

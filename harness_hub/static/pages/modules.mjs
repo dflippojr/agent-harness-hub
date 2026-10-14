@@ -10,7 +10,7 @@ export function switchFor(name, schema) {
 }
 
 export function renderModules(main) {
-  let stopped = false, busy = false, inventory, schema, config;
+  let stopped = false, busy = false, inventory, schema, config, outcome = null;
   const poll = poller(() => load());
   const notice = h("p", { class: "notice", "aria-live": "polite" });
   const inventoryError = h("p", { class: "notice bad", role: "alert" });
@@ -18,14 +18,20 @@ export function renderModules(main) {
   const list = h("div", { class: "grid" });
   const reload = button("Refresh modules", () => load());
   clear(main, h("header", { class: "page-head" }, h("h1", {}, "Modules"), reload),
-    command("harness hub status"), notice, inventoryError, summary, list);
+    command("harness hub status", { parity: true }), notice, inventoryError, summary, list);
 
   function button(label, action) {
     return h("button", { type: "button", class: "btn", onclick: action }, label);
   }
+  // The notice holds the last save's outcome, if any, plus the current read failure. A later load that reads both
+  // settings documents drops the failure but keeps the outcome.
   function message(text, bad = false) {
-    notice.textContent = text;
-    notice.className = bad ? "notice bad" : "notice";
+    outcome = text ? { text, bad } : null;
+    showNotice("");
+  }
+  function showNotice(failure) {
+    notice.textContent = [outcome?.text, failure].filter(Boolean).join(" ");
+    notice.className = outcome?.bad || failure ? "notice bad" : "notice";
   }
   function restartLink() {
     return h("p", {}, h("a", { href: "#/settings", class: "btn restart-link" }, "Restart in Settings"),
@@ -45,8 +51,8 @@ export function renderModules(main) {
     }
     schema = results[1].status === "fulfilled" ? results[1].value : null;
     config = results[2].status === "fulfilled" ? results[2].value : null;
-    if (!schema || !config) message("Switches unavailable: " +
-      results.slice(1).filter((r) => r.status === "rejected").map((r) => r.reason.message).join("; "), true);
+    showNotice(schema && config ? "" : "Switches unavailable: " +
+      results.slice(1).filter((r) => r.status === "rejected").map((r) => r.reason.message).join("; "));
     if (inventory) inventoryError.textContent = inventory.error;
     busy = false;
     draw();
@@ -58,7 +64,7 @@ export function renderModules(main) {
       "Settings could not be loaded."),
     config?.restart_required ? h("p", { class: "notice" }, "Restart needed to apply saved switches.") : null,
     config?.restart_required ? restartLink() : null,
-    config?.restart_required ? command("harness config restart --confirm") : null,
+    config?.restart_required ? command("harness config restart --confirm", { parity: true }) : null,
     inventory?.stale ? h("p", { class: "notice" }, "Last good inventory from " + when(inventory.fetched_at) +
       ". These running states may be out of date.") : null);
     clear(list);
@@ -88,7 +94,7 @@ export function renderModules(main) {
         const target = !value;
         const toggle = button("Switch " + row.name + (target ? " on" : " off"), () => save(spec, target));
         toggle.disabled = busy;
-        box.append(toggle, command("harness config set " + spec.key + "=" + target));
+        box.append(toggle, command("harness config set " + spec.key + "=" + target, { parity: true }));
         if (spec.apply === "daemon_restart") box.append(h("p", { class: "muted" }, "Changing this switch needs a daemon restart."));
       } else box.append(h("p", { class: "muted" }, spec?.guidance || "No writable module switch is available in the settings registry."));
       list.append(box);

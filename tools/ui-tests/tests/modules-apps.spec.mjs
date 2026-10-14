@@ -21,39 +21,43 @@ test("a module switch saves, survives a reload and switches back", async ({ sign
 
 test("app session caps and retention save after confirmation and persist", async ({ signedIn: page, errors }) => {
   await openSection(page, "apps");
-  const card = page.locator("section[data-app-id]").filter({ has: page.getByRole("heading", { name: /^Synthetic App/ }) });
-  await expect(card).toContainText("app / app");
-  await card.getByRole("button", { name: "Manage Synthetic App" }).click();
+  const row = page.locator("tr[data-app-id]").filter({ hasText: "Synthetic App" });
+  await expect(row).toContainText("App-supplied name");
+  await expect(row).toContainText("Never used");
   const detail = page.locator("section.apps-detail");
-  await expect(detail.getByRole("heading", { name: "Manage Synthetic App" })).toBeFocused();
+  const open = async () => {
+    await row.getByRole("button", { name: "Open Synthetic App" }).click();
+    await expect(detail.getByRole("heading", { name: "Synthetic App", level: 2 })).toBeFocused();
+  };
+  await open();
   const running = detail.getByLabel(/^Maximum running/);
-  const value = String(2 + (Date.now() % 9));
+  await expect(running).toHaveAttribute("placeholder", /^(Default \d+|Daemon default)$/);
+  // A value other than the current one (the projects share one instance): a save sends only a changed cap.
+  const value = String((Number(await running.inputValue()) || 1) % 9 + 2);
   await running.fill(value);
   await detail.getByRole("button", { name: "Save session caps" }).click();
   await expect(page.locator("main p.notice[aria-live]").first()).toHaveText("Session caps saved.");
 
   await page.reload();
-  await page.getByRole("button", { name: "Manage Synthetic App" }).click();
+  await open();
   await expect(running).toHaveValue(value);
-  await expect(detail).toContainText(`Running ${value}`);
+  await expect(detail).toContainText(`Effective caps: running ${value}`);
 
-  const retention = detail.getByLabel(/^Retention days/);
+  // Retention asks inside its own card; Cancel saves nothing and keeps the typed value.
+  const retention = detail.getByLabel("Retention days");
   const days = String(20 + (Date.now() % 50));
   await retention.fill(days);
   await detail.getByRole("button", { name: "Save retention" }).click();
-  const confirm = page.getByRole("alert").filter({ hasText: "change retention for Synthetic App?" });
+  const confirm = detail.getByRole("alert").filter({ hasText: "Change retention for Synthetic App?" });
   await expect(confirm).toContainText(`Apply retention ${days} days to Synthetic App.`);
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await expect(confirm).toHaveCount(0);
-  // Cancel resumes the page's refresh, which closes the details; open them again from a fresh load.
-  await page.reload();
-  await page.getByRole("button", { name: "Manage Synthetic App" }).click();
-  await retention.fill(days);
+  await expect(retention).toHaveValue(days);
   await detail.getByRole("button", { name: "Save retention" }).click();
   await confirm.getByRole("button", { name: "Confirm change retention for Synthetic App" }).click();
   await expect(page.locator("main p.notice[aria-live]").first()).toHaveText("Retention saved.");
   await page.reload();
-  await page.getByRole("button", { name: "Manage Synthetic App" }).click();
+  await open();
   await expect(retention).toHaveValue(days);
 
   // The daemon's retained audit records both changes.
