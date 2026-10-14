@@ -306,28 +306,29 @@ Owner setup before the first tag. Only an admin can do these; the workflow doesn
 
 ### Apps
 
-Apps shows the daemon inventory's connection state, last seen, scopes, origins,
-catalog identity, token age (warning at 90 days; no automatic expiry), aggregate
-sessions, usage and errors. Installed entries use the inventory's paired ids,
-including its origin checks, rather than matching display names. The complete
-inventory stays in the owner-only cache shared with Modules; a failed refresh
-shows the last good snapshot and disables management until a fresh read succeeds.
+Apps lists every key that can reach the daemon in one table: name (App-supplied names say so, next to the key id),
+kind, a status pill (Active, Idle, Stale, Never used, or Revoked with its erasure date), scopes, last seen and token
+age. Warnings show as row pills: errors in the last 24 hours, a token at least 90 days old (no automatic expiry), and
+a duplicate or reserved name. Catalog entries follow as one row each, paired through the inventory's verified ids,
+including its origin checks, rather than by matching display names. The complete inventory stays in the owner-only
+cache shared with Modules; a failed refresh shows the last good snapshot and disables management until a fresh read
+succeeds.
 
-App names are labeled as App-supplied; duplicate names and the reserved "This Hub"
-label show warnings. Revoke is offered only for App and device keys. Its confirmation shows
-the key id, origins, catalog id, creation time and verified-entry pairing. Owner
-and runner keys are managed on the host, without App erasure or restore hints. This Hub
-has no revoke control; release it on the host with `harness hub release --confirm`.
-The erasure queue shows deadlines. Restore stays on the daemon host: run the exact
-`harness apps restore <app_id>` command shown for the revoked App before erasure.
-The CLI returns a replacement credential once; reconnect the App using that
-credential. The Hub never calls the restore route or receives an App token.
-Restore remains CLI-only by the owner decision in agent-harness#597.
+A row opens its detail beside the list from 1200 px wide, and in its place below that (**Back to all apps** returns).
+The detail has usage tiles (requests, tokens in and out, cost, errors), the identity facts, and for an App its
+running/queued session caps and retention. A blank cap shows the daemon default as its placeholder and restores it
+on save; blank retention keeps sessions until deleted. Saving retention asks first, inside its card, because
+shortening it can erase older sessions during cleanup.
 
-The App detail view supports running/queued session caps (blank restores daemon
-defaults) and retention (blank keeps sessions until deleted). Saving retention
-requires confirmation because shortening it can erase older sessions during
-cleanup. Every control has its supported host CLI equivalent behind a **Host command** button.
+Revoke sits in the detail's danger zone and is offered only for App and device keys. Its question, asked in place,
+shows the key id, origins, catalog id, creation time and verified-entry pairing. App names are labeled as
+App-supplied; duplicate names and the reserved "This Hub" label show warnings. Owner and runner keys are managed on
+the host, without App erasure or restore hints. This Hub has no revoke control; release it on the host with
+`harness hub release --confirm`. A revoked App's row shows its erasure date and a **Restore command** button that
+opens its detail. Restore stays on the daemon host: run the exact `harness apps restore <app_id>` command shown
+there before erasure. The CLI returns a replacement credential once; reconnect the App using that credential. The
+Hub never calls the restore route or receives an App token. Restore remains CLI-only by the owner decision in
+agent-harness#597. Every Hub control has its supported host CLI equivalent behind a **Host command** button.
 
 Token-shaped App display fields are replaced with `[withheld: token-shaped]` so
 an App name cannot block inventory or revoke. Exact Hub keys and claim verifiers
