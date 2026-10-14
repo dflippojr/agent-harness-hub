@@ -19,7 +19,7 @@ export function renderApps(main) {
   const confirmation = h("div");
   const refresh = button("Refresh apps", load);
   clear(main, h("header", { class: "page-head" }, h("h1", {}, "Apps"), refresh),
-    command("harness hub status"), command("harness keys list"), notice, problem,
+    command(["harness hub status", "harness keys list"], { parity: true }), notice, problem,
     h("h2", {}, "Installed entries"), entries, h("h2", {}, "Paired apps and keys"), list, detail, confirmation, erasures);
 
   function button(label, action) {
@@ -115,19 +115,19 @@ export function renderApps(main) {
       else if (canRevoke(row)) {
         const revoke = button("Revoke " + name, () => confirmRevoke(row));
         revoke.disabled = inventory.state !== "ready";
-        box.append(revoke, command("harness keys revoke " + row.id));
+        box.append(revoke, command("harness keys revoke " + row.id, { parity: true }));
       }
       if (row.kind === "app" && !revoked(row)) {
         const manage = button("Manage " + name, () => manageApp(row));
         manage.disabled = inventory.state !== "ready";
-        box.append(manage, command("harness apps limits " + row.id));
+        box.append(manage, command("harness apps limits " + row.id, { parity: true }));
       }
       list.append(box);
     }
     if (!rows.length) list.append(h("p", { class: "muted" }, "No paired app snapshot is available."));
   }
   function drawErasures(result) {
-    clear(erasures, h("h2", {}, "Waiting for erasure"), command("harness apps erasures"));
+    clear(erasures, h("h2", {}, "Waiting for erasure"), command("harness apps erasures", { parity: true }));
     if (result.status === "rejected") {
       erasures.append(h("p", { class: "notice bad", role: "alert" }, result.reason.message)); return;
     }
@@ -189,8 +189,8 @@ export function renderApps(main) {
           if (!running.input.reportValidity() || !queued.input.reportValidity()) return;
           perform(async () => { await api("apps/" + row.id + "/limits", { method: "PUT", body: {
             max_running: numberValue(running.input), max_queued: numberValue(queued.input) } }); message("Session caps saved."); });
-        }), command("harness apps set-limits " + row.id + " --max-running <integer> --max-queued <integer>"),
-        command("harness apps set-limits " + row.id + " --set max_running=null --set max_queued=null"),
+        }), command(["harness apps set-limits " + row.id + " --max-running <integer> --max-queued <integer>",
+          "harness apps set-limits " + row.id + " --set max_running=null --set max_queued=null"], { parity: true }),
         retention.field, button("Save retention", () => {
           if (!retention.input.reportValidity()) return;
           const days = numberValue(retention.input);
@@ -199,8 +199,8 @@ export function renderApps(main) {
             ". Shorter retention can erase older sessions during cleanup.", async () => {
             await api("apps/" + row.id + "/retention", { method: "PUT", body: { retention_days: days, confirm: true } });
             message("Retention saved."); });
-        }), command("harness apps retention " + row.id + " --retention-days <days>"),
-        command("harness apps retention " + row.id + " --set retention_days=null"),
+        }), command(["harness apps retention " + row.id + " --retention-days <days>",
+          "harness apps retention " + row.id + " --set retention_days=null"], { parity: true }),
         button("Close app details", () => { clear(detail); clear(confirmation); schedule(); })));
       detail.querySelector("h2").setAttribute("tabindex", "-1"); detail.querySelector("h2").focus();
     } catch (error) { if (!stopped) { message(error.message, true); reveal(notice); schedule(); } }

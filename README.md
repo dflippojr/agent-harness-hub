@@ -23,7 +23,7 @@ its manual restart instructions.
 Settings also manages smart approvals, backend model/effort defaults, the memory agent profile (saving commits
 and pushes to its library), member GitHub access, read-only Google sign-in status, and test notifications. Secret
 references remain file paths: the Hub never opens or resolves those files. Installer-only secrets remain hidden
-and read-only. Every action includes its daemon CLI equivalent. When the daemon has no `memory_library` module
+and read-only. Every action has its daemon CLI equivalent behind a **Host command** button. When the daemon has no `memory_library` module
 (not installed, or switched off), the memory section says so and shows how to enable it instead of an error.
 
 ## Install and run
@@ -230,6 +230,11 @@ HUB_E2E_DAEMON_SRC=../agent-harness pytest -m e2e   # a real daemon from a check
 
 The UI is plain ES modules in `harness_hub/static` with no build step. Every tap target is at least 44 px, and the
 layout switches from a phone menu to a left rail at 900 px; a tap outside the open phone menu closes it.
+For CLI parity, every action the Hub takes has the daemon host command that does the same. Those commands are off by
+default: a **Host command** button under each action shows its command, with Copy. The **Show host commands** switch in
+the rail footer (in the phone menu on a phone) shows them all in place of the buttons; the browser remembers it as
+`hub.hostCommands` in localStorage, the only thing the Hub stores there. Steps only the daemon host can take, such as
+approving a Hub claim, restoring an App or minting a sign-in link, always show their command.
 The shell (sign-in links, the phone menu, Modules and the Settings memory section) has its own isolated spec:
 `npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1 shell-browser.spec.cjs`.
 The Modules browser flow can also be run with `playwright-cli run-code --filename=tests/modules-browser.js`
@@ -319,7 +324,7 @@ Restore remains CLI-only by the owner decision in agent-harness#597.
 The App detail view supports running/queued session caps (blank restores daemon
 defaults) and retention (blank keeps sessions until deleted). Saving retention
 requires confirmation because shortening it can erase older sessions during
-cleanup. All controls show their supported host CLI equivalents.
+cleanup. Every control has its supported host CLI equivalent behind a **Host command** button.
 
 Token-shaped App display fields are replaced with `[withheld: token-shaped]` so
 an App name cannot block inventory or revoke. Exact Hub keys and claim verifiers
@@ -363,7 +368,7 @@ read-only and show `harness hub approve <id> --match <code>`, because they are d
 
 Approval changes the request's state only: the App then redeems its own token from the daemon with its PKCE
 verifier, so the Hub never calls the App-side `claim` or `token` routes and never sees an App token. Every action
-shows its `harness pairing-requests` CLI equivalent. Arming slots for Hub entries belongs to [Marketplace](#marketplace).
+has its `harness pairing-requests` CLI equivalent behind a **Host command** button. Arming slots for Hub entries belongs to [Marketplace](#marketplace).
 Run the isolated browser regressions with Playwright installed locally:
 `npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1 pairing-security.spec.cjs`.
 
@@ -409,7 +414,7 @@ forge that header. As on Pairing requests, the Hub never shows an App's code, an
 If the app shows no code or an error, withdraw the slot. If it reports the slot was already claimed, list requests
 with `harness pairing-requests list`; revoke a redeemed row's `key_id` with `harness keys revoke <key_id>`, or deny
 an approved or claimed row with `harness pairing-requests deny <id>`.
-**Withdraw** ends a slot after an in-page confirmation. Every action shows its CLI equivalent
+**Withdraw** ends a slot after an in-page confirmation. Every action has its CLI equivalent behind a **Host command** button
 (`harness hub status`, `harness hub entries init|validate`, `harness pairing-requests arm|confirm|deny`).
 
 A stale or unreadable entries file makes `GET /hub` answer 400 with a named error (`hub.entries: invalid JSON`,
@@ -422,7 +427,8 @@ Run the isolated browser regressions with Playwright installed locally:
 ### Accounts and maintenance
 
 The six areas manage household accounts, name-only provider assignments, skills and proposals, maintenance,
-runners/projects/folder discovery, and read-only audit logs. Each action shows its host CLI equivalent.
+runners/projects/folder discovery, and read-only audit logs. Each action has its host CLI equivalent behind a
+**Host command** button.
 Choose an area to read its current state, then choose an action or a record's control. Writes are explicit;
 destructive changes show the target and edited fields in an in-page confirmation.
 

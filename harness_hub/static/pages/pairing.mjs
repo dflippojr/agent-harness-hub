@@ -166,7 +166,7 @@ export function renderPairing(main) {
       if (ACTIVE.includes(row.state)) {
         const verb = ["pending", "claimed"].includes(row.state) ? "Deny" : "Withdraw";
         box.append(h("div", { class: "settings-actions" }, button(`${verb} ${name}`, () => confirmDeny(row, verb),
-          { "data-action": "deny" })), command(`harness pairing-requests deny ${row.id}`));
+          { "data-action": "deny" })), command(`harness pairing-requests deny ${row.id}`, { parity: true }));
       }
     }
     if (row.kind === "app" && row.state === "redeemed" && row.key_id) {
@@ -211,7 +211,7 @@ export function renderPairing(main) {
           "Type the code the app is showing right now. If the app shows no code or an error, deny.")),
       ack ? h("label", { class: "pairing-ack" }, ack,
         h("span", {}, `I understand the elevated scopes above (${row.elevated.join(", ")}) and still want to approve.`)) : null,
-      h("div", { class: "settings-actions" }, submit), command(cli));
+      h("div", { class: "settings-actions" }, submit), command(cli, { parity: true }));
   }
   function confirmDeny(row, verb) {
     if (busy) return;
@@ -225,7 +225,8 @@ export function renderPairing(main) {
       h("h2", {}, `${verb} ${name}?`),
       h("p", {}, `${verb === "Deny" ? "Deny" : "Withdraw"} pairing request ${row.id} from ` +
         `${row.origin || "a native app"}. The app cannot use it afterwards; it must ask again.`),
-      h("div", { class: "settings-actions" }, ok, cancel), command(`harness pairing-requests deny ${row.id}`)));
+      h("div", { class: "settings-actions" }, ok, cancel),
+      command(`harness pairing-requests deny ${row.id}`, { parity: true })));
     ok.focus();
   }
   async function perform(action) {

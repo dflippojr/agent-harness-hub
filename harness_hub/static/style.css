@@ -250,7 +250,6 @@ body.menu-open::after {
 .daemon-chip.bad { background: var(--bad-bg); color: var(--bad); }
 .daemon-chip.bad::before { background: var(--bad); }
 .host-commands { padding: 0 0 0 10px; font-size: .85rem; }
-.host-commands[hidden] { display: none; }
 .host-commands .nav-icon { color: var(--muted); }
 .signout { display: flex; align-items: center; gap: 8px; padding: 0 10px; border-color: transparent; font-size: .9rem; }
 .signout .nav-icon { color: currentColor; }
@@ -319,7 +318,35 @@ body.menu-open::after {
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
-.command code { flex: 1; min-width: 0; overflow-wrap: anywhere; font: .92rem/1.4 var(--mono); }
+.command code { flex: 1; min-width: 0; overflow-wrap: anywhere; font: .82rem/1.4 var(--mono); }
+.command .copy { padding: 0 10px; font-size: .82rem; }
+
+/* Host commands (decision 3 of #65). A command that repeats a Hub action hides behind its Host command button until
+   pressed; Show host commands (body.show-host-commands) shows every one, one compact line under its action, and hides
+   the buttons. Steps only the host can take are plain .command lines and always show. */
+.host-command { margin: 4px 0 8px; }
+.btn.host-command-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--accent);
+  font-size: .85rem;
+}
+.host-command-toggle::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  transform: translateY(-2px) rotate(45deg);
+}
+.host-command.open .host-command-toggle::after { transform: translateY(2px) rotate(-135deg); }
+.host-command-lines { display: none; }
+.host-command.open .host-command-lines, body.show-host-commands .host-command-lines { display: block; }
+body.show-host-commands .host-command-toggle { display: none; }
 
 .facts { display: grid; grid-template-columns: minmax(8em, max-content) 1fr; gap: 6px 16px; margin: 8px 0 0; }
 .facts dt { color: var(--muted); }

@@ -35,7 +35,8 @@ export function renderMarketplace(main) {
       "arms a slot with your scope consent. Browser and native apps claim once, then wait for typed-code confirmation " +
       "before fetching their own token from the daemon, " +
       "and this Hub never sees it."),
-    command("harness hub status"), command("harness hub entries validate"), pairingRecovery(), notice, problem, panel, list);
+    command(["harness hub status", "harness hub entries validate"], { parity: true }), pairingRecovery(), notice, problem,
+    panel, list);
 
   function button(label, action, extra = {}) {
     return h("button", { type: "button", class: "btn", onclick: action, ...extra }, label);
@@ -181,7 +182,7 @@ export function renderMarketplace(main) {
     }
     box.append(h("div", { class: "settings-actions" }, button(`Withdraw slot for ${name}`,
       () => confirmWithdraw(entry, slot), { "data-action": "withdraw" })),
-    command(`harness pairing-requests deny ${slot.id}`));
+    command(`harness pairing-requests deny ${slot.id}`, { parity: true }));
     return box;
   }
   function confirmation(slot, name) {
@@ -211,7 +212,7 @@ export function renderMarketplace(main) {
         h("p", { class: "setting-meta", id: `match-help-${slot.id}` }, "If the app shows no code or an error, " +
           "withdraw this slot.")),
       h("div", { class: "settings-actions" }, submit),
-      command(`harness pairing-requests confirm ${slot.id} --match <code>`));
+      command(`harness pairing-requests confirm ${slot.id} --match <code>`, { parity: true }));
   }
   function consent(entry) {
     if (busy) return;
@@ -236,7 +237,8 @@ export function renderMarketplace(main) {
     }, { class: "btn primary", "data-action": "approve" });
     const update = () => {
       approve.disabled = busy || Boolean(origins.length && !origin) || Boolean(ack && !ack.checked);
-      clear(cli, command(armCommand(entry, origin || (origins.length ? "<origin>" : ""))));
+      clear(cli, command(armCommand(entry, origin || (origins.length ? "<origin>" : "")),
+        { parity: true, key: `arm ${entry.catalog_app_id}` }));
     };
     let where;
     if (origins.length === 1) {
@@ -298,7 +300,7 @@ export function renderMarketplace(main) {
       h("h2", {}, `Withdraw the slot for ${name}?`),
       h("p", {}, `Slot ${slot.id} can no longer be claimed or redeemed. Set the app up again to pair it.`),
       h("div", { class: "settings-actions" }, ok, button("Cancel", () => clear(panel))),
-      command(`harness pairing-requests deny ${slot.id}`)));
+      command(`harness pairing-requests deny ${slot.id}`, { parity: true })));
     ok.focus();
   }
   async function perform(action, keepPanel = false) {

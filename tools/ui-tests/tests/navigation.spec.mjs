@@ -17,7 +17,7 @@ test("each section loads, is marked current and survives a reload", async ({ sig
   expect(errors).toEqual([]);
 });
 
-test("the rail groups the sections and shows the daemon chip, the banner and Sign out", async ({ signedIn: page, errors }, testInfo) => {
+test("the rail groups the sections, shows the daemon chip and banner, and remembers the host-commands switch", async ({ signedIn: page, errors }, testInfo) => {
   test.skip(isPhone(testInfo), "the rail is a drawer on phones; the phone test covers it");
   const nav = page.getByRole("navigation", { name: "Sections" });
   await expect(page.locator(".topbar")).toBeHidden();
@@ -34,8 +34,30 @@ test("the rail groups the sections and shows the daemon chip, the banner and Sig
   await expect(page.getByRole("heading", { name: "Apps", level: 1 })).toBeVisible();
   await expect(slot.getByRole("status")).toContainText("Tailnet sign-in needs Owner API 1.26 or later.");
 
-  // The Show host commands switch stays hidden until Hub design 3 (#70) makes commands follow it.
-  await expect(nav.getByRole("switch", { name: "Show host commands" })).toBeHidden();
+  // Host commands (#70): off by default, each action's CLI equivalent waits behind its Host command button.
+  const host = nav.getByRole("switch", { name: "Show host commands" });
+  const keysList = page.getByText("harness keys list", { exact: true });
+  const reveal = page.getByRole("main").getByRole("button", { name: "Host commands", exact: true }).first();
+  await expect(host).not.toBeChecked();
+  await expect(keysList).toBeHidden();
+  await expect(reveal).toHaveAttribute("aria-expanded", "false");
+  await reveal.click();
+  await expect(reveal).toHaveAttribute("aria-expanded", "true");
+  await expect(keysList).toBeVisible();
+  await reveal.click();
+  await expect(keysList).toBeHidden();
+  // The switch shows every command in place of the buttons, and the browser remembers it.
+  await host.check();
+  await expect(page.locator("body")).toHaveClass(/show-host-commands/);
+  await expect(keysList).toBeVisible();
+  await expect(reveal).toBeHidden();
+  await page.reload();
+  await expect(host).toBeChecked();
+  await expect(keysList).toBeVisible();
+  await host.uncheck();
+  await page.reload();
+  await expect(host).not.toBeChecked();
+  await expect(keysList).toBeHidden();
   expect(await nav.getByRole("button", { name: "Sign out" }).boundingBox()).toBeTruthy();
   expect(errors).toEqual([]);
 });
@@ -70,7 +92,8 @@ test("phone: pages fit the device width and the drawer navigates", async ({ sign
   await expect(page.getByRole("heading", { name: "Apps", level: 1 })).toBeVisible();
   await menu.click();
   await expect(page.locator('#nav a[data-section="apps"]')).toHaveAttribute("aria-current", "page");
-  // The drawer is the rail: the footer's Sign out is in it.
+  // The drawer is the rail: the footer's switch and Sign out are in it.
+  await expect(page.getByRole("switch", { name: "Show host commands" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(menu).toHaveAttribute("aria-expanded", "false");

@@ -32,8 +32,36 @@ export function when(seconds) {
   return new Date(seconds * 1000).toLocaleString();
 }
 
-// A command the owner runs on the daemon host, with a copy button.
-export function command(text) {
+// Host commands a Host command button opened, by key: held for this page load so a poll's redraw keeps them open.
+const openCommands = new Set();
+let hostCommandCount = 0;
+
+// A command the owner runs on the daemon host, with a copy button. A step only the host can take always shows.
+// { parity: true } marks the CLI equivalent of the Hub action just above it (CLI parity, decision 3 of #65): it stays
+// hidden behind a "Host command" button until pressed, or until the owner turns on Show host commands
+// (body.show-host-commands). text may then be a list of commands that one button reveals together; key names the
+// action when its command text changes with the form (by default, the text itself).
+export function command(text, { parity = false, key } = {}) {
+  if (!parity) return commandLine(text);
+  const lines = [text].flat();
+  const id = `host-command-${++hostCommandCount}`;
+  const name = key ?? lines.join("\n");
+  const open = openCommands.has(name);
+  const button = h("button", { type: "button", class: "btn host-command-toggle", "aria-expanded": String(open),
+    "aria-controls": id }, lines.length > 1 ? "Host commands" : "Host command");
+  const box = h("div", { class: open ? "host-command open" : "host-command" }, button,
+    h("div", { class: "host-command-lines", id }, lines.map(commandLine)));
+  button.addEventListener("click", () => {
+    const opening = !openCommands.has(name);
+    if (opening) openCommands.add(name);
+    else openCommands.delete(name);
+    box.className = opening ? "host-command open" : "host-command";
+    button.setAttribute("aria-expanded", String(opening));
+  });
+  return box;
+}
+
+function commandLine(text) {
   const copy = h("button", { type: "button", class: "btn ghost copy", "aria-label": `Copy: ${text}` }, "Copy");
   copy.addEventListener("click", async () => {
     try {

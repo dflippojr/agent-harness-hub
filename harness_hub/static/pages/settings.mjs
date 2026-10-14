@@ -65,12 +65,12 @@ export function renderSettings(main) {
         "; pending revision " + config.pending_revision : "") + (config.restart_required ? "; restart needed" : "")),
       config.warning ? h("p", { class: "notice bad" }, config.warning) : null,
       h("p", { class: "muted" }, "Edit fields, then validate or save. Reset returns a field to its inherited value."),
-      command("harness config schema"), command("harness config show"),
+      command(["harness config schema", "harness config show"], { parity: true }),
       h("div", { class: "settings-actions" }, button("Validate", () => perform(() => submit(false))),
         button("Save", () => perform(() => submit(true))),
         button("Roll back", () => confirm("rollback")), button("Restart", () => confirm("restart"))),
-      command("harness config validate <key>=<value>"), command("harness config set <key>=<value>"),
-      command("harness config rollback --confirm"), command("harness config restart --confirm"),
+      command(["harness config validate <key>=<value>", "harness config set <key>=<value>",
+        "harness config rollback --confirm", "harness config restart --confirm"], { parity: true }),
       !config.supervised_restart ? h("p", { class: "muted" },
         "This daemon has no supervisor. Restart will report the daemon's manual restart instructions.") : null);
     clear(registry, summary);
@@ -186,8 +186,8 @@ export function renderSettings(main) {
         const mode = h("select", {}, ["off", "shadow", "auto"].map((v) => h("option", { value: v }, v)));
         mode.value = data.mode;
         box.append(field("Mode", mode), h("p", { class: "setting-meta" }, data.secret_ref ? "Token file path: " + data.secret_ref : "No token file path configured."),
-          command("harness smart-approvals set <mode>"),
-          button("Save approvals mode", () => perform(() => saveControl("smart-approvals", { mode: mode.value }))));
+          button("Save approvals mode", () => perform(() => saveControl("smart-approvals", { mode: mode.value }))),
+          command("harness smart-approvals set <mode>", { parity: true }));
       }],
       ["backends", "Backend defaults", "harness backends list", (rows, box) => {
         for (const row of rows) {
@@ -195,8 +195,8 @@ export function renderSettings(main) {
           const effort = h("input", { type: "text" }); effort.value = row.effort;
           box.append(h("h3", {}, row.name), field("Default model", model), field("Default effort", effort),
             h("p", { class: "muted" }, "Suggested models: " + row.popular_models.map((m) => m.id).join(", ")),
-            command("harness backends set " + row.name + " --model <model> --effort <effort>"),
-            button("Save " + row.name, () => perform(() => saveControl("backend", { name: row.name, model: model.value, effort: effort.value }))));
+            button("Save " + row.name, () => perform(() => saveControl("backend", { name: row.name, model: model.value, effort: effort.value }))),
+            command("harness backends set " + row.name + " --model <model> --effort <effort>", { parity: true }));
         }
       }],
       ["memory", "Memory agent profile", "harness memory show", (data, box) => {
@@ -211,15 +211,16 @@ export function renderSettings(main) {
         const profile = h("textarea", { rows: 8, disabled: !data.enabled }); profile.value = data.profile;
         box.append(field("Agent profile", profile), h("p", { class: "muted" },
           data.enabled ? "Saving commits and pushes this profile to the memory library." : "Memory library is disabled."),
-          h("p", { class: "muted" }, data.refresh_error || ""),
-          command("harness memory set-profile <content>"));
+          h("p", { class: "muted" }, data.refresh_error || ""));
         if (data.enabled) box.append(button("Save profile", () => perform(() => saveControl("memory", { content: profile.value, summary: "Update agent profile from Hub Settings" }))));
+        box.append(command("harness memory set-profile <content>", { parity: true }));
       }],
       ["github", "Member GitHub access", "harness github-member-auth show", (data, box) => {
         const enabled = h("select", {}, h("option", { value: "true" }, "Allowed"), h("option", { value: "false" }, "Stopped"));
         enabled.value = String(data.enabled);
-        box.append(field("Members may connect GitHub", enabled), command("harness github-member-auth set <enabled>"),
-          button("Save GitHub access", () => perform(() => saveControl("github", { enabled: enabled.value === "true" }))));
+        box.append(field("Members may connect GitHub", enabled),
+          button("Save GitHub access", () => perform(() => saveControl("github", { enabled: enabled.value === "true" }))),
+          command("harness github-member-auth set <enabled>", { parity: true }));
         preflight(data, box);
       }],
       ["google", "Google sign-in", "harness google-signin status", (data, box) => {
@@ -228,7 +229,7 @@ export function renderSettings(main) {
     ];
     clear(controls);
     await Promise.all(cards.map(async ([path, title, cli, draw]) => {
-      const box = h("section", { class: "card" }, h("h2", {}, title), command(cli));
+      const box = h("section", { class: "card" }, h("h2", {}, title), command(cli, { parity: true }));
       controls.append(box);
       try {
         const data = await api("settings/" + path);
@@ -236,11 +237,11 @@ export function renderSettings(main) {
       } catch (error) { if (!stopped) box.append(h("p", { class: "notice bad", role: "alert" }, error.message)); }
     }));
     if (stopped) return;
-    controls.append(h("section", { class: "card" }, h("h2", {}, "Notifications"), command("harness notify test"),
+    controls.append(h("section", { class: "card" }, h("h2", {}, "Notifications"),
       button("Send test notification", () => perform(async () => {
         const answer = await api("settings/notify", { method: "POST", body: {} });
         if (!stopped) message(answer.sent ? "Test notification sent." : "The daemon did not report a sent notification.");
-      }))));
+      })), command("harness notify test", { parity: true })));
   }
   function preflight(data, box) {
     if (data.preflight) box.append(h("p", { class: "muted" }, "Preflight: " + data.preflight.ok +

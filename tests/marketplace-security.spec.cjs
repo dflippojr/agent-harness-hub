@@ -53,6 +53,8 @@ async function mount(page, initial, { answer } = {}) {
   });
   await page.goto("http://hub.test/");
   await expect(page.locator("[data-entry]")).toHaveCount((initial.entries || []).length);
+  // These regressions read each action's CLI equivalent, so the Show host commands switch is on (Hub design 3, #70).
+  await page.evaluate(() => document.body.classList.add("show-host-commands"));
   return { writes, errors, outside };
 }
 const card = (page, id) => page.locator('[data-entry="' + id + '"]');
@@ -279,10 +281,14 @@ for (const [label, width] of [["phone", 390], ["desktop", 1280]]) {
       entry("test.example.native", { slots: [slot("pr-c", { state: "claimed", needs: "confirm" })],
         unverified_origin: { paired: ["k-native"], pending_pairing: true } })]));
     await card(page, "test.example.ops").getByRole("button", { name: /^Set up/ }).click();
-    for (const target of await page.locator("main button, main input, main summary").all()) {
-      const box = await target.boundingBox();
-      expect(box.height, await target.evaluate(el => el.outerHTML.slice(0, 80))).toBeGreaterThanOrEqual(44);
-      expect(box.width).toBeGreaterThanOrEqual(44);
+    // Host commands shown, then hidden behind their Host command buttons: every target is measured either way.
+    for (const shown of [true, false]) {
+      await page.evaluate(on => document.body.classList.toggle("show-host-commands", on), shown);
+      for (const target of await page.locator("main button:visible, main input:visible, main summary:visible").all()) {
+        const box = await target.boundingBox();
+        expect(box.height, await target.evaluate(el => el.outerHTML.slice(0, 80))).toBeGreaterThanOrEqual(44);
+        expect(box.width).toBeGreaterThanOrEqual(44);
+      }
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     expect(errors).toEqual([]);

@@ -89,3 +89,51 @@ test("danger zone holds its actions", () => {
   assert.equal(zone.className, "danger-zone");
   assert.equal(zone.textContent, "Revoke this appIt stops working at once.Revoke");
 });
+
+// Hub design 3 (#70): a CLI-parity command hides behind its Host command button; a host-only step always shows.
+const all = (el, tag) => [...(el.tag === tag ? [el] : []), ...el.children.flatMap((child) => all(child, tag))];
+const byClass = (el, name) => el.className?.split(" ").includes(name) ? el
+  : el.children.map((child) => byClass(child, name)).find(Boolean);
+
+test("a host-only step is a plain command line with a copy button", () => {
+  const line = dom.command("harness hub approve r-1 --match 123456");
+  assert.equal(line.className, "command");
+  assert.equal(find(line, "code").textContent, "harness hub approve r-1 --match 123456");
+  assert.equal(find(line, "button").attrs.get("aria-label"), "Copy: harness hub approve r-1 --match 123456");
+});
+
+test("a parity command waits behind a Host command button that controls its lines", () => {
+  const box = dom.command("harness keys revoke k-parity", { parity: true });
+  assert.equal(box.className, "host-command");
+  const [toggle, copy] = all(box, "button");
+  assert.equal(toggle.className, "btn host-command-toggle");
+  assert.equal(toggle.textContent, "Host command");
+  assert.equal(toggle.attrs.get("aria-expanded"), "false");
+  const lines = byClass(box, "host-command-lines");
+  assert.equal(toggle.attrs.get("aria-controls"), lines.attrs.get("id"));
+  assert.equal(find(lines, "code").textContent, "harness keys revoke k-parity");
+  assert.equal(copy.attrs.get("aria-label"), "Copy: harness keys revoke k-parity");
+
+  toggle.listeners.get("click")();
+  assert.equal(box.className, "host-command open");
+  assert.equal(toggle.attrs.get("aria-expanded"), "true");
+  // A poll's redraw builds the same command again: it stays open, under a fresh id.
+  const redrawn = dom.command("harness keys revoke k-parity", { parity: true });
+  assert.equal(redrawn.className, "host-command open");
+  assert.equal(find(redrawn, "button").attrs.get("aria-expanded"), "true");
+  assert.notEqual(byClass(redrawn, "host-command-lines").attrs.get("id"), lines.attrs.get("id"));
+
+  find(redrawn, "button").listeners.get("click")();
+  assert.equal(dom.command("harness keys revoke k-parity", { parity: true }).className, "host-command");
+});
+
+test("one Host commands button reveals an action's several commands; key keeps a changing command open", () => {
+  const box = dom.command(["harness config schema", "harness config show"], { parity: true });
+  assert.equal(find(box, "button").textContent, "Host commands");
+  assert.deepEqual(all(box, "code").map((code) => code.textContent), ["harness config schema", "harness config show"]);
+
+  find(dom.command("harness arm --origin <origin>", { parity: true, key: "arm test.example" }), "button")
+    .listeners.get("click")();
+  assert.equal(dom.command("harness arm --origin https://a.test", { parity: true, key: "arm test.example" }).className,
+    "host-command open");
+});
