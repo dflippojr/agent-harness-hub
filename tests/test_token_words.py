@@ -1,7 +1,7 @@
 """Ordinary words shaped like `ha-core` or `hp-laserjet` never blank a page; real tokens still never leave (#84)."""
 import pytest
 
-from harness_hub.views import control_view, module_view, preflight_view, registry_view, settings_error
+from harness_hub.views import backend_view, control_view, module_view, preflight_view, registry_view, settings_error
 
 from .conftest import assert_no_secrets
 from .test_settings import write
@@ -88,3 +88,16 @@ def test_daemon_diagnostics_leave_a_full_token_for_the_guard(token):
 def test_a_token_cut_at_the_field_limit_is_redacted(token):
     problems = preflight_view({"problems": ["x" * 50 + " " + token]})["problems"]
     assert problems == ["x" * 50 + " " + REDACTED]
+
+
+@pytest.mark.parametrize("token", FULL_TOKENS)
+def test_a_token_cut_by_a_plain_field_limit_is_kept_whole_for_the_guard(token):
+    model = "x" * 190 + " " + token
+    assert backend_view({"model": model})["model"] == model
+    assert backend_view({"model": "x" * 300})["model"] == "x" * 200
+
+
+def test_a_backend_model_ending_in_the_hub_key_is_withheld(claimed, fake_daemon):
+    fake_daemon.backend["model"] = "x" * 154 + " " + fake_daemon.hub_token
+    assert claimed.get("/api/settings/backends").status_code == 500
+    assert_no_secrets(claimed.bodies, fake_daemon.hub_token, fake_daemon.hub_token[:40])
