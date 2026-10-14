@@ -19,7 +19,7 @@ const SESSION_LABELS = { waiting_approval: "waiting approval", waiting_target: "
 const revoked = (row) => row.revoked_at !== null || ["revoked", "erasure_pending"].includes(row.state);
 const hasAppData = (row) => ["app", "device"].includes(row.kind);
 const isHub = (row) => row.this_hub || row.role === "hub";
-const canRevoke = (row) => Boolean(row.id) && !row.this_hub && row.role !== "hub" && hasAppData(row) && !revoked(row);
+const canRevoke = (row) => Boolean(row.id) && !isHub(row) && hasAppData(row) && !revoked(row);
 const manageable = (row) => row.kind === "app" && !revoked(row);
 const displayName = (row) => row.this_hub ? "This Hub" : row.name || row.id;
 const figure = (value) => typeof value === "number" ? value.toLocaleString() : "—";
@@ -61,13 +61,15 @@ export function renderApps(main) {
   let confirming = null; // "revoke" or "retention": the question asked inside the open detail (decision 5 of #65)
   let detail = null; // { id, data } or { id, error } or { id, loading }: the open App's session caps and retention
   let drafts = {}; // the owner's typing in the open detail's fields, kept across a redraw
+  let reading = 0; // the newest caps and retention read; an older reply that lands later is dropped
   const poll = poller(() => load());
   const updated = h("span", { class: "muted refreshed" });
   const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true });
   const problem = h("p", { class: "notice bad", role: "alert", hidden: true });
   const view = h("div", { class: "apps-view" });
-  const refresh = h("button", { type: "button", class: "btn ghost refresh", onclick: () => load(true) },
-    icon("refresh"), "Refresh apps");
+  // Refresh also reads the open App's caps and retention again, so a save never sends a value changed on the host.
+  const refresh = h("button", { type: "button", class: "btn ghost refresh",
+    onclick: () => { detail = null; void load(true); } }, icon("refresh"), "Refresh apps");
   clear(main, h("header", { class: "page-head" }, h("h1", {}, "Apps"), updated, refresh),
     h("p", { class: "lede" }, "Every key that can reach the daemon, and what it has used. Names marked App-supplied " +
       "come from the app itself; check the key id and origins."),
@@ -178,7 +180,7 @@ export function renderApps(main) {
       h("div", { class: "apps-erasures" }, erasures?.error ? h("p", { class: "notice bad", role: "alert" },
         "Erasure deadlines could not be read. " + erasures.error) : null, orphans.length ? waiting(orphans) : null));
     if (focused) focusField(focused[0], focused[1]);
-    if (read) readDetail(row.id);
+    if (read) void readDetail(row.id);
   }
   function focusField(field, caret) {
     const target = view.querySelector(`[data-field="${field}"]`);
@@ -235,12 +237,13 @@ export function renderApps(main) {
     focusField(`open-${id}`);
   }
   async function readDetail(id) {
+    const turn = ++reading;
     try {
       const data = await api("apps/" + id + "/limits");
-      if (stopped || selected !== id) return;
+      if (stopped || selected !== id || turn !== reading) return;
       detail = { id, data };
     } catch (error) {
-      if (stopped || selected !== id) return;
+      if (stopped || selected !== id || turn !== reading) return;
       detail = { id, error: error.message };
     }
     draw(true);
@@ -298,7 +301,7 @@ export function renderApps(main) {
     const retention = numberField("retention", "Retention days", data.retention_days, 36500, "Keep until deleted", "any");
     const saveCaps = button("Save session caps", () => {
       if (!running.input.reportValidity() || !queued.input.reportValidity()) return;
-      perform(async () => {
+      void perform(async () => {
         await api("apps/" + row.id + "/limits", { method: "PUT", body: {
           max_running: numberValue(running.input), max_queued: numberValue(queued.input) } });
         message("Session caps saved.");
@@ -453,6 +456,6 @@ export function renderApps(main) {
     return { input, field: h("div", { class: "apps-field" }, h("label", { for: id }, label), input) };
   }
   function numberValue(input) { return input.value.trim() === "" ? null : Number(input.value); }
-  load(true);
+  void load(true);
   return () => { stopped = true; poll.stop(); };
 }

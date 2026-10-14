@@ -229,3 +229,31 @@ test("readable states in the table, the detail beside it, caps with the default 
     }
     expect(errors).toEqual([]);
   });
+
+test("Refresh reads the open App's caps again, and an older caps reply never replaces a newer one", async ({ page }) => {
+  const { errors } = await mount(page, [app("k-a", "App A"), app("k-b", "App B")]);
+  const limits = (running) => ({ configured: { max_running: running, max_queued: 10 },
+    effective: { max_running: running, max_queued: 10 }, running: 0, queued: 0, parked: 0, retention_days: null });
+  let reads = 0, release;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route("http://hub.test/api/apps/k-a/limits", async route => {
+    reads += 1;
+    if (reads === 1) { await held; return route.fulfill({ json: limits(2) }); } // the first read answers last
+    return route.fulfill({ json: limits(reads === 2 ? 6 : 8) });
+  });
+  await card(page, "k-a").getByRole("button").click();
+  await expect.poll(() => reads).toBe(1);
+  const b = await open(page, "k-b");
+  await expect(b.getByLabel("Maximum running (1–100)")).toBeVisible();
+  await card(page, "k-a").getByRole("button").click();
+  const a = page.locator('[data-detail-id="k-a"]');
+  await expect(a.getByLabel("Maximum running (1–100)")).toHaveValue("6");
+  release();
+  await page.waitForTimeout(300);
+  await expect(a.getByLabel("Maximum running (1–100)")).toHaveValue("6");
+  // A value changed on the host shows after Refresh, so the next save cannot send the old one back.
+  await page.getByRole("button", { name: "Refresh apps" }).click();
+  await expect(a.getByLabel("Maximum running (1–100)")).toHaveValue("8");
+  expect(reads).toBe(3);
+  expect(errors).toEqual([]);
+});
