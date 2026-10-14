@@ -70,7 +70,7 @@ export function renderApps(main) {
   const view = h("div", { class: "apps-view" });
   // Refresh also reads the open App's caps and retention again, so a save never sends a value changed on the host.
   const refresh = h("button", { type: "button", class: "btn ghost refresh",
-    onclick: () => { detail = null; reading++; void load(true); } }, icon("refresh"), "Refresh apps");
+    onclick: () => { forgetDetail(); void load(true); } }, icon("refresh"), "Refresh apps");
   clear(main, h("header", { class: "page-head" }, h("h1", {}, "Apps"), updated, refresh),
     h("p", { class: "lede" }, "Every key that can reach the daemon, and what it has used. Names marked App-supplied " +
       "come from the app itself; check the key id and origins."),
@@ -90,6 +90,11 @@ export function renderApps(main) {
   }
   function facts(rows) {
     return h("dl", { class: "facts" }, rows.map(([key, value]) => [h("dt", {}, key), h("dd", {}, value)]));
+  }
+  // Drop the open App's caps and retention, and any read of them still in flight, so the next draw reads them afresh.
+  function forgetDetail() {
+    detail = null;
+    reading++;
   }
   function ready() {
     return !busy && inventory?.state === "ready";
@@ -165,7 +170,7 @@ export function renderApps(main) {
     const focused = active?.dataset?.field ? [active.dataset.field, active.selectionStart] : null;
     const rows = sorted();
     const row = rows.find((item) => item.id === selected);
-    if (!row) { selected = null; confirming = null; detail = null; }
+    if (!row) { selected = null; confirming = null; if (detail) forgetDetail(); }
     // An App's caps and retention are read when its detail opens, or once a refresh makes management available.
     const read = row && manageable(row) && inventory?.state === "ready" && detail?.id !== row.id;
     if (read) detail = { id: row.id, loading: true };
@@ -229,6 +234,7 @@ export function renderApps(main) {
     if (stopped) return;
     if (selected === id) { closeDetail(); return; }
     drafts = {};
+    forgetDetail();
     selected = id;
     confirming = null;
     draw(true);
@@ -238,7 +244,8 @@ export function renderApps(main) {
   }
   function closeDetail() {
     const id = selected;
-    selected = null; confirming = null; detail = null; drafts = {};
+    selected = null; confirming = null; drafts = {};
+    forgetDetail();
     draw(true);
     focusField(`open-${id}`);
   }
@@ -457,7 +464,7 @@ export function renderApps(main) {
     }
     if (stopped) return;
     busy = false;
-    detail = null; // the reload reads the open App's caps and retention again
+    forgetDetail(); // a read started before the write is stale: the reload reads the caps and retention again
     await load(true);
     for (const control of disabled) control.disabled = false;
     if (refused && !stopped) reveal(notice);

@@ -297,3 +297,52 @@ test("Refresh drops a caps read still in flight, and a save made during a refres
   await expect(page.getByText("Session caps saved.", { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+test("an abandoned caps read never leaves the detail loading, and a read from before a save is dropped", async ({ page }) => {
+  const rows = [app("k-a", "App A"), app("k-owner", "Owner CLI", { kind: "owner", role: "owner", scopes: "admin" })];
+  const { writes, errors } = await mount(page, rows);
+  const limits = (running) => ({ configured: { max_running: running, max_queued: 10 },
+    effective: { max_running: running, max_queued: 10 }, running: 0, queued: 0, parked: 0, retention_days: null });
+  const gates = [];
+  const gate = () => { let open; const shut = new Promise(resolve => { open = resolve; }); gates.push(open); return shut; };
+  let reads = 0;
+  const plan = { 1: [true, 2], 2: [false, 3], 3: [true, 2] }; // [held, running]; later reads answer 7
+  await page.route("http://hub.test/api/apps/k-a/limits", async route => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const [held, running] = plan[++reads] || [false, 7];
+    if (held) await gate();
+    return route.fulfill({ json: limits(running) });
+  });
+  const a = page.locator('[data-detail-id="k-a"]');
+  const field = a.getByLabel("Maximum running (1–100)");
+  // Leave A while its read is held, let that read land, and come back: A reads again.
+  await card(page, "k-a").getByRole("button").click();
+  await expect.poll(() => reads).toBe(1);
+  await open(page, "k-owner");
+  gates.shift()();
+  await page.waitForTimeout(200);
+  await card(page, "k-a").getByRole("button").click();
+  await expect(field).toHaveValue("3");
+
+  // Save while Refresh reads the inventory: the caps read that Refresh starts is older than the save, so it is dropped.
+  await expect.poll(() => reads).toBe(2);
+  await field.fill("");
+  await field.fill("3");
+  await a.getByLabel("Maximum queued (1–1000)").fill("12");
+  let releaseInventory;
+  const heldInventory = new Promise(resolve => { releaseInventory = resolve; });
+  await page.route("http://hub.test/api/apps", async route => {
+    await heldInventory;
+    return route.fulfill({ json: { state: "ready", apps: rows, entries: [] } });
+  });
+  await page.getByRole("button", { name: "Refresh apps" }).click();
+  await a.getByRole("button", { name: "Save session caps" }).click();
+  releaseInventory();
+  await expect.poll(() => writes.length).toBe(1);
+  await expect.poll(() => reads).toBeGreaterThanOrEqual(4);
+  await expect(field).toHaveValue("7");
+  while (gates.length) gates.shift()();
+  await page.waitForTimeout(300);
+  await expect(field).toHaveValue("7");
+  expect(errors).toEqual([]);
+});
