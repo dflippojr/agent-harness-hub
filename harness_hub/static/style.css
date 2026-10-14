@@ -611,8 +611,10 @@ details summary { min-height: var(--tap); display: flex; align-items: center; cu
 .core.bad summary, .core.bad summary .icon { color: var(--bad); }
 .core .chips { margin: 4px 0 8px; }
 
+/* Side by side only where the main column is wide enough for Details' two columns of facts. */
+@media (min-width: 1200px) { .overview-cards { grid-template-columns: 1fr 1fr; } }
+
 @media (min-width: 700px) {
-  .overview-cards { grid-template-columns: 1fr 1fr; }
   /* The tiles speak for themselves on a wide screen; the Status header stays for screen readers. */
   .overview > .section-head {
     position: absolute;
