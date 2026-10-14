@@ -79,7 +79,7 @@ export function renderOverview(main) {
         claimed ? hubTile(data) : null,
         daemonTile(data, shown),
         shown ? settingsTile(shown, data.restarting) : null,
-        claimed ? null : tile("Other sections", "Open after the claim",
+        claimed ? null : tile("Other sections", h("span", { class: "tile-text" }, "Open after the claim"),
           "Settings, Apps and Pairing requests need the Hub key")),
       h("div", { class: "overview-cards" },
         shown ? capabilitiesCard(shown) : null,

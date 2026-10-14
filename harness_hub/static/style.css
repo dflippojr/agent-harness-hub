@@ -571,6 +571,8 @@ details summary { min-height: var(--tap); display: flex; align-items: center; cu
   overflow-wrap: anywhere;
 }
 .tile-meta { margin: 0; font-size: .85rem; color: var(--muted); overflow-wrap: anywhere; }
+/* A tile whose value is words, not a figure (Other sections, before the claim). */
+@media (min-width: 700px) { .tile-text { font-size: 1rem; } }
 .tile .notice { margin: 4px 0 0; font-size: .85rem; }
 
 .overview-cards { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 16px; }
@@ -686,7 +688,7 @@ details summary { min-height: var(--tap); display: flex; align-items: center; cu
 @media (min-width: 1200px) { .claim-body.two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
 .claim-main, .claim-side { min-width: 0; }
 .claim-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
-.card .claim-head h2 { flex: 1; margin: 0; font-size: 1.25rem; }
+.card .claim-head h2 { flex: 1; min-width: max-content; margin: 0; font-size: 1.25rem; }
 .claim .lead { margin: 8px 0 18px; font-size: .95rem; overflow-wrap: anywhere; }
 .label { margin: 0 0 6px; font-size: .82rem; font-weight: 650; color: var(--muted); }
 .hint { margin: 6px 0 0; font-size: .82rem; color: var(--muted); overflow-wrap: anywhere; }
