@@ -59,6 +59,7 @@ from .views import (
     registry_view,
     scope_disclosures,
     settings_error,
+    spend_view,
     valid_limits,
 )
 
@@ -71,6 +72,7 @@ SESSION_HEADER = "x-hub-session"
 MAX_SIGNIN_BODY = 1024
 ALLOWED_LOGINS_SECONDS = 5.0  # how long a tailnet sign-in reuses the daemon's allowed_logins answer
 PAIRING_COUNT_SECONDS = 5.0  # how long Overview waits for its optional pairing count, consent lock included
+SPEND_CAP_READS = 8  # App session-cap reads in flight at once; every live App is read
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 SECURITY_HEADERS = [
@@ -500,6 +502,66 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             shown = {"modules": module_view(good["inventory"]) if good else None}
         return {"state": state, "error": error, "stale": state != "ready" and good is not None,
                 "reachable": reachable, "fetched_at": good["fetched_at"] if good else None, **shown}
+
+    async def refused_spend(token: str) -> JSONResponse:
+        """A 401 during a Spend read; the refusal's own confirmation read may also go unanswered."""
+        try:
+            return await refused(token)
+        except DaemonUnreachable:
+            return _error(503, "The daemon did not answer. Spend is unavailable until it does.")
+
+    @app.get("/api/spend")
+    async def get_spend():
+        """Read-only: each App's usage and session-cap use, and each backend's windows. It writes nothing, not even
+        the inventory cache, so its poll adds no disk writes; a failed read falls back to the cached inventory."""
+        key = claims.key()
+        if key is None:
+            return _error(409, "Claim this Hub on Overview before reading spend.")
+        secrets = tuple(store.secrets())
+        good = inventory.get(key["key_id"])
+        body, error, fetched_at = (good["inventory"], "", good["fetched_at"]) if good else (None, "", None)
+        # Each read stands alone: one that fails or times out never hides what another one returned.
+        reply, backends = await concurrently(daemon.inventory(key["token"]), daemon.settings(key["token"], "backends"))
+        for result in (reply, backends):
+            if isinstance(result, BaseException) and not isinstance(result, DaemonUnreachable):
+                raise result
+        if 401 in (getattr(reply, "status", None), getattr(backends, "status", None)):
+            return await refused_spend(key["token"])
+        if isinstance(reply, DaemonUnreachable):
+            error = "The daemon did not answer."
+        elif reply.ok and valid_inventory(reply.body):
+            body, fetched_at = reply.body, time.time()
+        else:
+            error = "The daemon returned an invalid inventory." if reply.ok else settings_error(
+                reply.body, reply.status)["detail"]
+        live = [row["id"] for row in (body or {}).get("apps", []) if isinstance(row, dict)
+                and row.get("kind") == "app" and row.get("revoked_at") is None and row.get("id") != key["key_id"]
+                and isinstance(row.get("id"), str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", row["id"])]
+        gate = asyncio.Semaphore(SPEND_CAP_READS)
+
+        async def read_caps(app_id: str):
+            async with gate:
+                return await daemon.apps(key["token"], "limits", app_id)
+
+        replies = await concurrently(*(read_caps(app_id) for app_id in live))
+        for result in replies:
+            if isinstance(result, BaseException) and not isinstance(result, DaemonUnreachable):
+                raise result
+        if any(getattr(result, "status", None) == 401 for result in replies):
+            return await refused_spend(key["token"])
+        limits = {app_id: result.body for app_id, result in zip(live, replies, strict=True)
+                  if getattr(result, "ok", False)}
+        backend_rows = backends.body if getattr(backends, "ok", False) else None
+        shown = spend_view(body, backend_rows, limits, key["key_id"], secrets)
+        if body is None:
+            shown["apps"] = None
+        if leaks(json.dumps(shown).encode(), store.secrets()):
+            return _error(502, "Spend withheld: it contained a credential-like string.")
+        return {"error": error, "stale": bool(error) and body is not None, "fetched_at": fetched_at,
+                # Any read the daemon answered shows it is up; the shell's status reads this, not the error text.
+                "reachable": not all(isinstance(result, DaemonUnreachable) for result in (reply, backends)),
+                "backends_error": "" if backend_rows is not None else "The daemon's backend usage was unavailable.",
+                **shown}
 
     # Bound to the Hub key and the entry's displayed identity, with a bounded ten-minute lifetime.
     consent_copies: dict[tuple[str, str], tuple[str, float, list[dict], bool]] = {}

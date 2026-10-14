@@ -354,7 +354,7 @@ def _app_text(value: Any, limit: int = 200, secrets: tuple[str, ...] = ()) -> st
 def app_view(row: Any, key_id: str = "", secrets: tuple[str, ...] = ()) -> dict:
     row = row if isinstance(row, dict) else {}
     store = row.get("store") if isinstance(row.get("store"), dict) else {}
-    usage = store.get("usage") if isinstance(store.get("usage"), dict) else {}
+    usage = store.get("usage")
     sessions = store.get("sessions") if isinstance(store.get("sessions"), dict) else {}
     out = {key: _str(row.get(key), 200) for key in ("id", "name", "kind", "role", "catalog_app_id")}
     out["id"] = _app_id(row.get("id"))
@@ -373,8 +373,7 @@ def app_view(row: Any, key_id: str = "", secrets: tuple[str, ...] = ()) -> dict:
     out["token_age_warning"] = out["token_age_seconds"] is not None and out["token_age_seconds"] >= 90 * 86400
     out["store"] = {
         "sessions": {key: _int(sessions[key]) for key in SESSION_STATES if key in sessions},
-        "usage": {key: _finite(usage.get(key)) for key in
-                  ("requests", "prompt_tokens", "completion_tokens", "cost_usd")},
+        "usage": usage_tally(usage),
         "errors": _int(store.get("errors")), "last_error": _app_text(store.get("last_error"), 200, secrets),
         "last_error_at": _finite(store.get("last_error_at")),
     }
@@ -430,6 +429,58 @@ def limits_view(body: Any) -> dict:
         out[group] = {key: _int(values.get(key)) for key in ("max_running", "max_queued")}
     out.update({key: _int(body.get(key)) for key in ("running", "queued", "parked")})
     return out
+
+
+USAGE_FIELDS = ("requests", "prompt_tokens", "completion_tokens", "cost_usd")
+SPEND_NEAR = 0.8  # an App whose session-cap use reaches this share of a cap is flagged as near its limit
+
+
+def usage_tally(value: Any, local: bool = False) -> dict:
+    """One usage tally; a local-model tally shows tokens only, so its cost is None (the owner's choice in #61)."""
+    value = value if isinstance(value, dict) else {}
+    out = {key: _finite(value.get(key)) for key in USAGE_FIELDS}
+    if local:
+        out["cost_usd"] = None
+    return out
+
+
+def cap_use(limits: Any) -> dict | None:
+    """Sessions counted against an App's effective caps; parked sessions count toward both (as the daemon counts)."""
+    if not valid_limits(limits):
+        return None
+    shown = limits_view(limits)
+    running, queued, parked = (shown[key] or 0 for key in ("running", "queued", "parked"))
+    caps = shown["effective"]
+    running_used, queued_used = running + parked, queued + parked
+    share = max(running_used / caps["max_running"], queued_used / caps["max_queued"])
+    return {"max_running": caps["max_running"], "max_queued": caps["max_queued"], "running_used": running_used,
+            "queued_used": queued_used, "parked": parked, "share": round(share, 4), "near": share >= SPEND_NEAR}
+
+
+def spend_view(inventory: Any, backends: Any, limits: dict, key_id: str, secrets: tuple[str, ...] = ()) -> dict:
+    """Every App's lifetime usage and session-cap use, and each backend's today and 7-day usage.
+
+    The daemon has no per-App time windows yet (agent-harness#686), so per-App rows carry lifetime totals only."""
+    rows = inventory.get("apps", []) if isinstance(inventory, dict) else []
+    apps = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("kind") not in ("app", "device") or row.get("role") == "hub":
+            continue
+        shown = app_view(row, key_id, secrets)
+        if not shown["id"] or shown["this_hub"]:
+            continue
+        apps.append({"id": shown["id"], "name": shown["name"], "kind": shown["kind"], "state": shown["state"],
+                     "usage": shown["store"]["usage"], "caps": cap_use(limits.get(shown["id"]))})
+    out_backends = []
+    for row in backends if isinstance(backends, list) else []:
+        if not isinstance(row, dict):
+            continue
+        billing = _str(row.get("billing"), 32)
+        local = billing == "local"
+        out_backends.append({"name": _app_text(row.get("name"), 80, secrets), "billing": billing, "local": local,
+                             "today": usage_tally(row.get("today"), local),
+                             "week": usage_tally(row.get("week"), local)})
+    return {"apps": apps, "backends": out_backends}
 
 
 TEXT = "text"

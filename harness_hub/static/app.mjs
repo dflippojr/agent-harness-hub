@@ -11,6 +11,7 @@ import { renderApps } from "./pages/apps.mjs";
 import { renderMarketplace } from "./pages/marketplace.mjs";
 import { renderModules } from "./pages/modules.mjs";
 import { renderPairing } from "./pages/pairing.mjs";
+import { renderSpend } from "./pages/spend.mjs";
 import { INVALID_LINK, renderSignin, signinFromHash } from "./pages/signin.mjs";
 
 // Overview first, then Access, then Daemon. Routes and labels are the CLI's and the docs' names: they do not change.
@@ -19,6 +20,7 @@ const GROUPS = [
   { label: "Access", sections: [
     { id: "pairing", label: "Pairing requests", render: renderPairing },
     { id: "apps", label: "Apps", render: renderApps },
+    { id: "spend", label: "Spend", render: renderSpend },
     { id: "marketplace", label: "Marketplace", render: renderMarketplace },
   ] },
   { label: "Daemon", sections: [

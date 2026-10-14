@@ -7,6 +7,7 @@ import "./dom-components.test.mjs";
 import "./overview-attention.test.mjs";
 import "./overview-polling.test.mjs";
 import "./page-polling.test.mjs";
+import "./spend-page.test.mjs";
 import "./shell-status.test.mjs";
 import { api } from "../harness_hub/static/lib/api.mjs";
 import { switchFor } from "../harness_hub/static/pages/modules.mjs";
