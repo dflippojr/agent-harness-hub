@@ -97,6 +97,16 @@ test("phone: pages fit the device width and the drawer navigates", async ({ sign
   await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(menu).toHaveAttribute("aria-expanded", "false");
+  // A tap inside the drawer that is neither a link nor a footer control leaves it open (a group label).
+  await menu.tap();
+  await expect(menu).toHaveAttribute("aria-expanded", "true");
+  await page.locator("#nav .nav-group").first().tap();
+  await expect(menu).toHaveAttribute("aria-expanded", "true");
+  // A press on the dimmed backdrop beside the drawer closes it and returns focus to the menu button. (A synthesized
+  // touch tap on the bare backdrop does not reach the page's click handler in Playwright's WebKit, so this clicks.)
+  await page.locator("body").click({ position: { x: page.viewportSize().width - 12, y: 400 } });
+  await expect(menu).toHaveAttribute("aria-expanded", "false");
+  await expect(menu).toBeFocused();
   expect(errors).toEqual([]);
 });
 

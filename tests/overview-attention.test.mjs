@@ -18,6 +18,10 @@ function* walk(el) {
 
 const labelled = (main, id) => [...walk(main)].find((el) => el.attrs && el.attrs.get("aria-labelledby") === id);
 
+// The Refresh button and the "Last answer" line sit in the page head: find them by what they say, not by position.
+const refreshOf = (main) => [...walk(main)].find((el) => el.tag === "button" && el.textContent.includes("Refresh"));
+const lastAnswerOf = (main) => [...walk(main)].find((el) => el.attrs && el.attrs.get("aria-live") === "polite");
+
 async function draw(t, data) {
   const page = mount(t, renderOverview, () => Promise.resolve(response(data)));
   await settle();
@@ -59,9 +63,13 @@ test("Overview's tiles show the claim, the daemon and its settings", async (t) =
   const main = await draw(t, healthy);
   assert.equal(labelled(main, "claim-title"), undefined, "a claimed Hub has no claim card");
   const hub = labelled(main, "tile-this-hub");
-  assert.match(hub.textContent, /^This HubClaimedUI test HubKey k-1 · since /);
-  assert.equal(labelled(main, "tile-daemon").textContent, "DaemonHealthy0.9.0Owner API 1.27 · supported · profile full");
-  assert.equal(labelled(main, "tile-settings").textContent, "SettingsRevision 3ConfirmedRestart is manual here");
+  for (const fact of ["This Hub", "Claimed", "UI test Hub", "Key k-1"]) assert.ok(hub.textContent.includes(fact), fact);
+  for (const fact of ["Daemon", "Healthy", "0.9.0", "Owner API 1.27", "supported", "profile full"]) {
+    assert.ok(labelled(main, "tile-daemon").textContent.includes(fact), fact);
+  }
+  for (const fact of ["Settings", "Revision 3", "Confirmed", "Restart is manual here"]) {
+    assert.ok(labelled(main, "tile-settings").textContent.includes(fact), fact);
+  }
   const details = labelled(main, "details-title").textContent;
   for (const fact of ["Daemon addresshttp://127.0.0.1:8085", "Release · build0.9.0 · 2026.09.17.1", "Protocolsapp 1–2",
     "Supervised restartNo", "Daemon records this HubYes, as “UI test Hub”", "Hub version0.0.0"]) {
@@ -91,11 +99,12 @@ test("Overview's daemon tile says Not answering and keeps the last answer's fact
   const page = mount(t, renderOverview, () => Promise.resolve(response(++reads === 1 ? healthy
     : overview(null, { reachable: false, daemon: null, health: null, capabilities: null }))));
   await settle();
-  await page.main.children[0].children[2].listeners.get("click")();
+  await refreshOf(page.main).listeners.get("click")();
   await settle();
-  assert.match(labelled(page.main, "tile-daemon").textContent, /^DaemonNot answering0\.9\.0Owner API 1\.27/);
+  const tile = labelled(page.main, "tile-daemon").textContent;
+  for (const fact of ["Not answering", "0.9.0", "Owner API 1.27"]) assert.ok(tile.includes(fact), fact);
   assert.ok(labelled(page.main, "tile-settings"), "the last answer's settings stay");
-  assert.match(page.main.children[0].children[1].textContent, /^Last answer .* · retrying every 30 s$/);
+  assert.match(lastAnswerOf(page.main).textContent, /^Last answer .* · retrying every 30 s$/);
 });
 
 for (const [restarting, label] of [[true, "Restarting"], [false, "Not healthy"]]) {
@@ -105,9 +114,10 @@ for (const [restarting, label] of [[true, "Restarting"], [false, "Not healthy"]]
     const page = mount(t, renderOverview, (url) =>
       Promise.resolve(response(url === "/api/overview" ? answers.shift() || failed : { ok: false })));
     await settle();
-    await page.main.children[0].children[2].listeners.get("click")();
+    await refreshOf(page.main).listeners.get("click")();
     await settle();
-    assert.ok(labelled(page.main, "tile-daemon").textContent.startsWith(`Daemon${label}0.9.0`));
+    const tile = labelled(page.main, "tile-daemon").textContent;
+    assert.ok(tile.includes(label) && tile.includes("0.9.0"), tile);
   });
 }
 

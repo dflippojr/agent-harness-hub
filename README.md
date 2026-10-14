@@ -251,10 +251,9 @@ default: a **Host command** button under each action shows its command, with Cop
 the rail footer (in the phone menu on a phone) shows them all in place of the buttons; the browser remembers it as
 `hub.hostCommands` in localStorage, the only thing the Hub stores there. Steps only the daemon host can take, such as
 approving a Hub claim, restoring an App or minting a sign-in link, always show their command.
-The shell (sign-in links, the phone menu, Modules and the Settings memory section) has its own isolated spec:
-`npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1 shell-browser.spec.cjs`.
-The Modules browser flow can also be run with `playwright-cli run-code --filename=tests/modules-browser.js`
-on a signed-in Modules page backed by a fresh `tests.conftest.FakeDaemon` (one browser session).
+The shell (sign-in links, Modules and the Settings memory section) has its own isolated spec:
+`npm --prefix tools/ui-tests test -- --workers=1 --project=intercepted shell-browser`.
+The phone menu is covered against a real instance by `tools/ui-tests/tests/navigation.spec.mjs`.
 
 For browser testing, `python scripts/ui_instance.py start --dir <dir>` starts a disposable Hub and a fake model
 daemon from an agent-harness checkout (`HUB_UI_DAEMON_SRC`), on loopback with synthetic data, and
@@ -351,8 +350,8 @@ Malformed erasure or session-cap replies show errors instead of an empty queue o
 editable default caps.
 
 With Playwright installed locally, run the isolated Apps security regressions:
-`npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1`.
-These specs intercept all network requests and start no servers.
+`npm --prefix tools/ui-tests test -- --workers=1 --project=intercepted apps-security`.
+These specs intercept all network requests and serve the real static files.
 
 ### Pairing requests
 
@@ -393,7 +392,7 @@ Approval changes the request's state only: the App then redeems its own token fr
 verifier, so the Hub never calls the App-side `claim` or `token` routes and never sees an App token. Every action
 has its `harness pairing-requests` CLI equivalent behind a **Host command** button. Arming slots for Hub entries belongs to [Marketplace](#marketplace).
 Run the isolated browser regressions with Playwright installed locally:
-`npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1 pairing-security.spec.cjs`.
+`npm --prefix tools/ui-tests test -- --workers=1 --project=intercepted pairing-security`.
 
 ### Marketplace
 
@@ -445,7 +444,7 @@ A stale or unreadable entries file makes `GET /hub` answer 400 with a named erro
 inventory snapshot, never an empty list and never entries the daemon did not validate, and setting up is refused
 until the file is fixed. Entries that do not match the contract are withheld and counted.
 Run the isolated browser regressions with Playwright installed locally:
-`npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1 marketplace-security.spec.cjs`.
+`npm --prefix tools/ui-tests test -- --workers=1 --project=intercepted marketplace-security`.
 
 ### Accounts and maintenance
 
@@ -471,4 +470,4 @@ remain host CLI actions because the Hub key cannot mint owner keys.
 The checked-in administration route snapshot comes from the daemon's API/parity documentation; tests fail if
 an operation loses its catalogue entry or daemon dispatch. Tests use synthetic account and folder data only.
 Run the isolated administration browser regressions with Playwright installed locally:
-`npx --no-install playwright test --config=tests/playwright.config.cjs --workers=1 admin-security.spec.cjs`.
+`npm --prefix tools/ui-tests test -- --workers=1 --project=intercepted admin-security`.

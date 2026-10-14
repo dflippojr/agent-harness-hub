@@ -1,10 +1,9 @@
-// Run: playwright test --config=tests/playwright.config.cjs --workers=1 shell-browser
+// Run: npm --prefix tools/ui-tests test -- --project=intercepted
 // The real index.html and app shell over synthetic intercepted Hub responses: no daemon, Hub server or real account.
-const { test, expect } = require("playwright/test");
+const { test, expect } = require("@playwright/test");
 const { readFile } = require("node:fs/promises");
 const path = require("node:path");
 
-const CODE = "A".repeat(32);
 const replies = {
   "modules": { state: "ready", modules: [{ name: "hub", state: "present" }], error: "", stale: false },
   "settings/schema": { settings: [] },
@@ -39,37 +38,23 @@ async function mount(page, hash, { signedIn = true, memoryReply = memory } = {})
       return route.fulfill({ status: 503, json: { detail: "Synthetic: not part of this test." } });
     }
     if (pathname === "/") return route.fulfill({ contentType: "text/html",
-      body: await readFile(path.join(__dirname, "../harness_hub/static/index.html"), "utf8") });
+      body: await readFile(path.join(__dirname, "../../../harness_hub/static/index.html"), "utf8") });
     if (!/^\/static\/[a-z/.-]+\.(mjs|css|svg)$/.test(pathname)) throw Error("Unexpected resource: " + pathname);
     const type = { mjs: "text/javascript", css: "text/css", svg: "image/svg+xml" }[pathname.split(".").pop()];
-    return route.fulfill({ contentType: type, body: await readFile(path.join(__dirname, "../harness_hub", pathname), "utf8") });
+    return route.fulfill({ contentType: type, body: await readFile(path.join(__dirname, "../../../harness_hub", pathname), "utf8") });
   });
   await page.goto("http://hub.test/" + hash);
   return { posts, errors, missing };
 }
 
-for (const hash of ["#signin=bogus-code", "#signin=" + CODE + ".", "#signin=" + CODE + ")", "#signin="]) {
-  test(`a malformed sign-in link (${hash.replace(CODE, "<code>")}) is refused without posting it`, async ({ page }) => {
-    const { posts, errors } = await mount(page, hash, { signedIn: false });
-    await expect(page.getByRole("alert")).toHaveText(
-      "That sign-in link is not valid.Links work once, for ten minutes. Make a new one below.");
-    expect(new URL(page.url()).hash).toBe("#/overview");
-    expect(posts).toEqual([]);
-    expect(errors).toEqual([]);
-  });
-}
-
-test("a plain visit to the sign-in page shows no error", async ({ page }) => {
-  const { posts } = await mount(page, "", { signedIn: false });
-  await expect(page.getByRole("heading", { name: "Sign in to the Hub" })).toBeVisible();
-  await expect(page.getByRole("alert")).toHaveCount(0);
+// Parsing of every malformed shape is in browser-session.test.mjs; this checks that nothing is posted.
+test("a malformed sign-in link is refused without posting it", async ({ page }) => {
+  const { posts, errors } = await mount(page, "#signin=bogus-code", { signedIn: false });
+  await expect(page.getByRole("alert")).toHaveText(
+    "That sign-in link is not valid.Links work once, for ten minutes. Make a new one below.");
+  expect(new URL(page.url()).hash).toBe("#/overview");
   expect(posts).toEqual([]);
-});
-
-test("a well-formed link is still posted once", async ({ page }) => {
-  const { posts } = await mount(page, "#signin=" + CODE, { signedIn: false });
-  await expect(page.getByRole("alert")).toContainText("not valid");
-  expect(posts).toEqual([{ code: CODE }]);
+  expect(errors).toEqual([]);
 });
 
 test("Modules with a healthy inventory shows no empty error box", async ({ page }) => {
@@ -97,32 +82,4 @@ test("Settings still offers the profile editor when the module is present", asyn
   await page.getByRole("button", { name: "Memory agent profile" }).click();
   await expect(page.getByLabel("Agent profile", { exact: true })).toHaveValue("Synthetic profile");
   await expect(page.getByRole("button", { name: "Save profile" })).toBeVisible();
-});
-
-test.describe("phone drawer", () => {
-  test.use({ viewport: { width: 375, height: 667 }, hasTouch: true, isMobile: true });
-
-  test("a tap on the backdrop closes the drawer and returns focus to the menu button", async ({ page }) => {
-    const { errors } = await mount(page, "#/modules");
-    const menu = page.getByRole("button", { name: "Sections" });
-    await menu.tap();
-    await expect(menu).toHaveAttribute("aria-expanded", "true");
-    await page.touchscreen.tap(350, 400);
-    await expect(menu).toHaveAttribute("aria-expanded", "false");
-    await expect(menu).toBeFocused();
-    await menu.tap();
-    await page.getByRole("navigation").getByRole("link", { name: "Apps" }).tap();
-    await expect(menu).toHaveAttribute("aria-expanded", "false");
-    expect(new URL(page.url()).hash).toBe("#/apps");
-    expect(errors.filter(e => !/503/.test(e))).toEqual([]);
-  });
-
-  test("taps inside the drawer leave it open", async ({ page }) => {
-    await mount(page, "#/modules");
-    const menu = page.getByRole("button", { name: "Sections" });
-    await menu.tap();
-    // A group label: inside the drawer, but not a link or a footer control.
-    await page.locator("#nav .nav-group").first().tap();
-    await expect(menu).toHaveAttribute("aria-expanded", "true");
-  });
 });

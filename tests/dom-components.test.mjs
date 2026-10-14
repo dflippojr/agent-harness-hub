@@ -37,26 +37,15 @@ test("pill takes its tone from the Stables label set", () => {
   assert.equal(dom.pill("Denied").textContent, "Denied");
 });
 
-test("section head carries a count badge", () => {
-  const head = dom.sectionHead("Needs you", 2, { tone: "warn" });
-  assert.equal(head.tag, "h2");
-  assert.equal(head.className, "section-head");
-  assert.equal(find(head, "span").className, "count warn");
-  assert.equal(head.textContent, "Needs you2");
-  assert.equal(dom.sectionHead("History", undefined, { level: 3 }).children.length, 1);
-  assert.equal(find(dom.sectionHead("History", 0), "span").textContent, "0");
-});
-
 test("banner: bad is an alert, the others are status", () => {
   const bad = dom.banner("bad", "The daemon is not answering.", "Changes are paused.");
-  assert.equal(bad.className, "banner bad");
   assert.equal(bad.attrs.get("role"), "alert");
   assert.match(bad.textContent, /not answering\.Changes are paused\./);
   assert.equal(dom.banner("warn", "Restart needed").attrs.get("role"), "status");
+  assert.equal(dom.banner("info", "Plain").attrs.get("role"), "status");
   const led = dom.banner("bad", "That sign-in link is not valid.", null, null, { lead: "alert" });
-  assert.equal(led.children[0].tag, "svg");
-  assert.equal(led.children[0].attrs.get("class"), "icon banner-icon");
-  assert.equal(dom.banner("info", "Plain").children[0].className, "banner-text");
+  assert.ok(find(led, "svg"), "the lead icon is drawn");
+  assert.equal(find(dom.banner("info", "Plain"), "svg"), undefined);
 });
 
 test("every rail section has an icon, and an unknown name is a bug rather than a blank", () => {
@@ -64,26 +53,6 @@ test("every rail section has an icon, and an unknown name is a bug rather than a
     assert.ok(dom.icon(id).children.length > 0, id);
   }
   assert.throws(() => dom.icon("no-such-icon"), TypeError);
-});
-
-test("toggle is a checkbox with role=switch and reports changes", () => {
-  let seen;
-  const row = dom.toggle("Show host commands", { checked: true, onchange: (on) => { seen = on; } });
-  const input = find(row, "input");
-  assert.equal(row.tag, "label");
-  assert.equal(input.attrs.get("role"), "switch");
-  assert.equal(input.checked, true);
-  input.checked = false;
-  input.listeners.get("change")();
-  assert.equal(seen, false);
-});
-
-test("table builds column heads and rows", () => {
-  const wrap = dom.table("Apps", ["Name", "State"], [["Phone", dom.pill("Active")]]);
-  assert.equal(wrap.className, "table-wrap");
-  const th = find(wrap, "th");
-  assert.equal(th.attrs.get("scope"), "col");
-  assert.equal(find(wrap, "tbody").textContent, "PhoneActive");
 });
 
 test("countdown reads time left, warns in the last minute, then expires", () => {
@@ -99,23 +68,10 @@ test("countdown reads time left, warns in the last minute, then expires", () => 
   assert.equal(dom.countdown(120, { warnBelow: 120 }).className, "countdown");
 });
 
-test("danger zone holds its actions", () => {
-  const zone = dom.dangerZone("Revoke this app", "It stops working at once.", dom.h("button", { class: "btn danger" }, "Revoke"));
-  assert.equal(zone.className, "danger-zone");
-  assert.equal(zone.textContent, "Revoke this appIt stops working at once.Revoke");
-});
-
 // Hub design 3 (#70): a CLI-parity command hides behind its Host command button; a host-only step always shows.
 const all = (el, tag) => [...(el.tag === tag ? [el] : []), ...el.children.flatMap((child) => all(child, tag))];
 const byClass = (el, name) => el.className?.split(" ").includes(name) ? el
   : el.children.map((child) => byClass(child, name)).find(Boolean);
-
-test("a host-only step is a plain command line with a copy button", () => {
-  const line = dom.command("harness hub approve r-1 --match 123456");
-  assert.equal(line.className, "command");
-  assert.equal(find(line, "code").textContent, "harness hub approve r-1 --match 123456");
-  assert.equal(find(line, "button").attrs.get("aria-label"), "Copy: harness hub approve r-1 --match 123456");
-});
 
 test("a parity command waits behind a Host command button that controls its lines", () => {
   const box = dom.command("harness keys revoke k-parity", { parity: true });

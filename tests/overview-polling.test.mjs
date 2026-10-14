@@ -6,8 +6,9 @@ import { deferred, mount as mountPage, response, settle } from "./page-fake.mjs"
 
 function mount(t, fetcher) {
   const page = mountPage(t, renderOverview, fetcher);
-  // The page head: the title, when it last updated, then Refresh.
-  return { ...page, refresh: page.main.children[0].children[2].listeners.get("click") };
+  const refresh = (el) => el.tag === "button" && el.textContent.includes("Refresh")
+    ? [el] : (el.children || []).flatMap(refresh);
+  return { ...page, refresh: refresh(page.main)[0].listeners.get("click") };
 }
 
 const overview = (state = "unclaimed", restarting = false) => ({
@@ -142,10 +143,9 @@ const reachableOverview = (ownership) => ({
   ownership,
 });
 const ownershipFor = (api_version, compatibility) => ({ api_version, compatibility, daemon_has_hub: true, this_hub: true, record: null });
-// The Owner API advice moved from Overview's Daemon card to the shell's banner slot (Hub design 2, #69).
+// The Owner API advice moved from Overview's Daemon card to the shell's banner slot (Hub design 2, #69). The wording
+// of each banner and its priority are tested in shell-status.test.mjs; these two check that Overview's read reaches it.
 const OWNER_API_BANNERS = [
-  ["too_old", "1.23", "bad", "This daemon's Owner API is 1.23; the Hub needs 1.24 or later."],
-  ["no_tailnet_signin", "1.25", "info", "Tailnet sign-in needs Owner API 1.26 or later."],
   ["unknown", "", "info", "This daemon did not report its Owner API version."],
 ];
 
