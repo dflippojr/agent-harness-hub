@@ -12,6 +12,7 @@ let lastGood = null; // the last overview answer that reached the daemon
 let attention = null; // { approve, confirm }: App pairing requests waiting on the owner
 let config = null; // the last Settings revision read (saved, not running): { revision, pending_revision, restart_required }
 let running = null; // the settings revision the daemon reported in its last health answer
+let confirmed = null; // { revision, started }: the newest health answer with a confirmed settings revision
 let silent = null; // whether the latest evidence says the daemon is not answering; null before any
 let ownerError = ""; // Overview's owner API failure behind a healthy /health, until an owner API read answers
 let restarting = false; // whether a restart the Hub started is still under way
@@ -20,11 +21,10 @@ let reads = 0; // request counter for callers that pass no start order (tests)
 const listeners = new Set();
 
 // Whether a 2xx answer to this Hub read could only have come from the daemon's owner API. Overview and the health poll
-// report reachability in their bodies instead; Apps, Modules and Marketplace answer from the Hub's last good inventory
-// unless their state is "ready" (read just now); the Accounts catalog never asks the daemon.
+// report reachability in their bodies instead, and so do Apps, Modules and Marketplace, which answer 200 from the Hub's
+// last good inventory either way; the Accounts catalog never asks the daemon.
 const INVENTORY = new Set(["apps", "modules", "marketplace"]);
-function daemonAnswered(path, body) {
-  if (INVENTORY.has(path)) return Boolean(body) && body.state === "ready";
+function daemonAnswered(path) {
   return path === "pairing" || path.startsWith("apps/")
     || (path.startsWith("settings/") && path !== "settings/health")
     || (path.startsWith("manage/") && path !== "manage/catalog");
@@ -63,7 +63,12 @@ export function noteRead(path, status, data, started = ++reads) {
       if (newer("restart", started)) restarting = body.restarting === true;
       if (body.reachable) health(body.health, started);
     }
-  } else if (ok && daemonAnswered(path, body)) {
+  } else if (INVENTORY.has(path) && body) {
+    if (typeof body.reachable === "boolean" && newer("reach", started)) {
+      silent = !body.reachable;
+      if (body.reachable) ownerError = "";
+    }
+  } else if (ok && daemonAnswered(path)) {
     if (newer("reach", started)) {
       silent = false;
       ownerError = "";
@@ -72,21 +77,31 @@ export function noteRead(path, status, data, started = ++reads) {
   if (body && path === "pairing" && Array.isArray(body.requests) && newer("attention", started)) {
     attention = pairingAttention(body);
   }
-  if (body && path === "settings/config" && newer("config", started)) config = body;
+  if (body && path === "settings/config" && newer("config", started)) {
+    config = body;
+    settle();
+  }
   for (const listener of listeners) listener();
 }
 
-// A health answer from the daemon: the revision it runs, and whether that settles a restart the saved settings need.
-// A daemon that reports a confirmed revision at or past the saved (pending) one needs no restart for it, whatever an
-// older Settings read said.
+// A health answer from the daemon: the revision it runs, and the newest confirmed one, which may settle a restart.
 function health(reported, started) {
   if (!reported || typeof reported.config_revision !== "number") return;
   if (newer("running", started)) running = reported.config_revision;
-  if (!config || !config.restart_required || reported.config_confirmed !== true || started < (at.config || 0)) return;
+  if (reported.config_confirmed === true && newer("confirmed", started)) {
+    confirmed = { revision: reported.config_revision, started };
+    settle();
+  }
+}
+
+// A daemon that confirmed a revision at or past the saved (pending) one needs no restart for it, whatever an older
+// Settings read said, in whichever order the two answers arrive.
+function settle() {
+  if (!config || !config.restart_required || !confirmed || confirmed.started < (at.config || 0)) return;
   const saved = config.pending_revision;
-  if (typeof saved === "number" && reported.config_revision >= saved) {
+  if (typeof saved === "number" && confirmed.revision >= saved) {
     config = { ...config, restart_required: false, pending_revision: null };
-    at.config = started;
+    at.config = confirmed.started;
   }
 }
 
@@ -97,7 +112,7 @@ export function subscribe(listener) {
 
 // Forget everything (tests).
 export function resetStatus() {
-  overview = lastGood = attention = config = running = silent = null;
+  overview = lastGood = attention = config = running = confirmed = silent = null;
   ownerError = "";
   restarting = false;
   at = {};

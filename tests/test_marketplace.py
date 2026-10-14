@@ -56,6 +56,7 @@ def arm(claimed, body, headers=None):
 def test_entries_show_display_fields_state_and_unverified_origin_only(claimed, fake_daemon, entries):
     data = market(claimed)
     assert data["state"] == "ready" and data["error"] == "" and not data["stale"] and data["withheld"] == 0
+    assert data["reachable"] is True
     assert data["daemon_url"] == "https://daemon.test"
     shown = by_id(data)
     notes, native, ops = shown["test.example.notes"], shown["test.example.native"], shown["test.example.ops"]
@@ -267,7 +268,7 @@ def test_token_shaped_entry_text_and_daemon_failures(claimed, fake_daemon, entri
     assert data["slots_error"] == "Armed slots could not be read (HTTP 500)."
     fake_daemon.down = True
     down = market(claimed)
-    assert down["state"] == "error" and down["entries"] and down["stale"]
+    assert down["state"] == "error" and down["entries"] and down["stale"] and down["reachable"] is False
     assert arm(claimed, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]}).status_code == 503
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 

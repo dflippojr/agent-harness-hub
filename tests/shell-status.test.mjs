@@ -158,11 +158,21 @@ test("a reply to an older request cannot overwrite newer evidence", () => {
   assert.equal(daemonBanner().tone, "bad");
 });
 
-test("an inventory read the daemon just answered (state ready) proves it is answering", () => {
+test("an inventory read reports whether the daemon answered, whatever its state", () => {
   resetStatus();
   noteRead("pairing", 503, null);
-  noteRead("marketplace", 200, { state: "ready", stale: false, entries: [] });
+  noteRead("marketplace", 200, { state: "ready", stale: false, reachable: true, entries: [] });
   assert.equal(daemonBanner(), null);
+  // The daemon stops while the owner stays on Marketplace: the Hub still answers 200 from its last good inventory.
+  noteRead("overview", 200, answer());
+  noteRead("marketplace", 200, { state: "error", error: "The daemon did not answer.", stale: true, reachable: false });
+  assert.deepEqual(daemonChip(), { tone: "bad", text: "Daemon not answering" });
+  // Any answer from the daemon, even one the Hub withholds or a module switched off, proves it is answering.
+  for (const path of ["modules", "apps"]) {
+    noteRead("marketplace", 200, { state: "error", stale: true, reachable: false });
+    noteRead(path, 200, { state: path === "apps" ? "error" : "disabled", stale: true, reachable: true });
+    assert.equal(daemonChip().tone, "ok");
+  }
 });
 
 test("a Settings config reply older than the health that settled the restart cannot restore it", () => {
@@ -226,4 +236,15 @@ test("an older reply cannot restore a restart, an Overview answer or the last ti
   noteRead("pairing", 503, null, 6);
   assert.equal(daemonBanner().title, "The daemon at https://daemon.test is not answering.");
   assert.match(daemonBanner().detail, new RegExp(new Date(200000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })));
+});
+
+test("a health answer that confirmed the saved revision settles a Settings reply that started earlier but came later", () => {
+  resetStatus();
+  noteRead("settings/health", 200, { reachable: true, restarting: false,
+    health: { config_revision: 2, config_confirmed: true } }, 2);
+  noteRead("settings/config", 200, { revision: 2, pending_revision: 2, restart_required: true }, 1);
+  assert.equal(daemonBanner(), null);
+  // A newer Settings read still wins over that health answer.
+  noteRead("settings/config", 200, { revision: 3, pending_revision: 3, restart_required: true }, 3);
+  assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
 });

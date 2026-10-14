@@ -404,12 +404,13 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         await retained(token)
         return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
 
-    async def read_inventory(key: dict, shown) -> tuple[dict | None, str, str] | JSONResponse:
-        """The last good inventory (refreshed when the daemon answers with a valid one), its state and any error.
+    async def read_inventory(key: dict, shown) -> tuple[dict | None, str, str, bool] | JSONResponse:
+        """The last good inventory (refreshed when the daemon answers with a valid one), its state, any error, and
+        whether the daemon answered at all (the shell's status reads that instead of the error text).
 
         `shown` projects an inventory into its browser view, so a snapshot whose view would leak is never cached."""
         good = inventory.get(key["key_id"])
-        state, error = "ready", ""
+        state, error, reachable = "ready", "", True
         try:
             reply = await daemon.inventory(key["token"])
             if reply.status == 401:
@@ -429,10 +430,10 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 # A stale or unreadable entries file is a named 400 (`hub.entries: invalid JSON`, `entries[0]...`).
                 state, error = "error", settings_error(reply.body, reply.status)["detail"]
         except DaemonUnreachable:
-            state, error = "error", "The daemon did not answer."
+            state, error, reachable = "error", "The daemon did not answer.", False
         except (OSError, ValueError):
             state, error = "error", "The inventory could not be saved in the private state directory."
-        return good, state, error
+        return good, state, error, reachable
 
     @app.get("/api/apps")
     @app.get("/api/modules")
@@ -445,14 +446,14 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                                       if apps_page else module_view)
         if isinstance(result, JSONResponse):
             return result
-        good, state, error = result
+        good, state, error, reachable = result
         if apps_page:
             shown = apps_view(good["inventory"], key["key_id"], tuple(store.secrets())) if good else {
                 "apps": None, "entries": []}
         else:
             shown = {"modules": module_view(good["inventory"]) if good else None}
         return {"state": state, "error": error, "stale": state != "ready" and good is not None,
-                "fetched_at": good["fetched_at"] if good else None, **shown}
+                "reachable": reachable, "fetched_at": good["fetched_at"] if good else None, **shown}
 
     # Bound to the Hub key and the entry's displayed identity, with a bounded ten-minute lifetime.
     consent_copies: dict[tuple[str, str], tuple[str, float, list[dict], bool]] = {}
@@ -509,7 +510,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 slots_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await slots_task
-        good, state, error = result
+        good, state, error, reachable = result
         # Only the daemon's validated answer, or the last one: never entries the daemon did not validate.
         entries, withheld = entries_view(good["inventory"], secrets) if good else (None, 0)
         slots, slots_error, confirmation_warning = {}, "", ""
@@ -527,7 +528,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             consent_entry(entry, key["key_id"])
             entry["slots"] = slots.get(entry["catalog_app_id"], [])
         return {"state": state, "error": error, "stale": state != "ready" and good is not None,
-                "fetched_at": good["fetched_at"] if good else None, "entries": entries, "withheld": withheld,
+                "reachable": reachable, "fetched_at": good["fetched_at"] if good else None, "entries": entries,
+                "withheld": withheld,
                 "slots_error": slots_error, "confirmation_warning": confirmation_warning,
                 "daemon_url": settings.daemon_url, "now": time.time()}
 
