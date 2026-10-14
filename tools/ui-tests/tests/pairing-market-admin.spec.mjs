@@ -17,9 +17,9 @@ test("approve a request with the app's code; a wrong code is refused", async ({ 
   const asked = await appAsksToPair(request, name);
   // Overview counts the waiting request (other projects' requests may be counted too) and links to the list.
   await openSection(page, "overview");
-  const waiting = page.getByRole("status").filter({ has: page.getByRole("heading", { name: "Waiting for you" }) });
+  const waiting = page.getByRole("status").filter({ has: page.getByRole("heading", { name: /^\d+ pairing requests? needs? you$/ }) });
   await expect(waiting).toContainText(/\d+ to approve/);
-  await waiting.getByRole("link", { name: "Open Pairing requests" }).click();
+  await waiting.getByRole("link", { name: "Review requests" }).click();
   await expect(page).toHaveURL(/#\/pairing$/);
   const request_ = card(page, name);
   await expect(group(page, "Waiting for approval").filter({ has: request_ })).toHaveCount(1);

@@ -6,7 +6,8 @@ import { deferred, mount as mountPage, response, settle } from "./page-fake.mjs"
 
 function mount(t, fetcher) {
   const page = mountPage(t, renderOverview, fetcher);
-  return { ...page, refresh: page.main.children[0].children[1].listeners.get("click") };
+  // The page head: the title, when it last updated, then Refresh.
+  return { ...page, refresh: page.main.children[0].children[2].listeners.get("click") };
 }
 
 const overview = (state = "unclaimed", restarting = false) => ({

@@ -9,13 +9,20 @@ test("signed out, an unknown link is refused and a fresh link signs in", async (
   await page.goto(`${hubUrl()}/`);
   await expect(signinCard(page)).toBeVisible();
   await expect(signinCard(page)).toContainText("python -m harness_hub signin-link");
+  await expect(signinCard(page).getByRole("listitem")).toHaveCount(2);
+  // No top bar while signed out: the card carries the brand, at every width.
+  await expect(page.locator(".topbar")).toBeHidden();
+  const docker = signinCard(page).getByText("The Hub runs in Docker");
+  await docker.click();
+  await expect(signinCard(page)).toContainText("docker exec <hub container> python -m harness_hub signin-link");
   await expect(page.getByRole("button", { name: /^Continue as/ })).toHaveCount(0);
   await expect(page.locator("#nav a[data-section]")).toHaveCount(0);
   await expect(page.locator("#nav")).toBeHidden();
 
   await page.goto(`${hubUrl()}/#signin=${"x".repeat(43)}`);
   await page.reload();
-  await expect(signinCard(page).getByRole("alert")).toHaveText(/sign-in link is not valid/);
+  await expect(signinCard(page).getByRole("alert")).toHaveText(
+    "That sign-in link is not valid.Links work once, for ten minutes. Make a new one below.");
   await expect(page).toHaveURL(/#\/overview$/);
 
   await signIn(page);

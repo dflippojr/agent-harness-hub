@@ -141,7 +141,9 @@ for (const width of [390, 1280]) test("layout and audit paging at " + width, asy
   await page.getByRole("button", { name: "Next audit page" }).click();
   await expect.poll(() => reads.some(url => url.searchParams.get("before_id") === "2")).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  const heights = await page.locator("button, input, select, textarea").evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
+  // Rendered targets only: a Host command's lines (and their Copy buttons) stay hidden until its button is pressed.
+  const heights = await page.locator("button, input, select, textarea").evaluateAll(nodes => nodes
+    .filter(node => node.getClientRects().length).map(node => node.getBoundingClientRect().height));
   expect(heights.every(height => height >= 44)).toBe(true); expect(errors).toEqual([]);
 });
 

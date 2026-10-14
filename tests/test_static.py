@@ -126,8 +126,7 @@ def test_rail_groups_and_footer():
     for marker in ('id="daemon-chip"', 'role="status"', 'id="host-commands"', 'role="switch"', 'id="signout-button"'):
         assert marker in nav, marker
     assert "signout" not in html[html.index('<header class="topbar">'):html.index("</header>")]
-    # Hub design 3 (#70) shows the switch once host commands follow it.
-    assert 'class="switch host-commands" hidden' in nav
+    assert '<label id="host-commands-row" class="switch host-commands">' in nav
     css = text(STATIC / "style.css")
     assert "body:not(.signed-out) .topbar { display: none; }" in css
 
@@ -173,3 +172,18 @@ def test_component_styles_exist():
         assert selector in css, selector
     switch = css[css.index(".switch {"):]
     assert "min-height: var(--tap)" in switch[:switch.index("}")]
+
+
+def test_host_commands_follow_the_switch():
+    """Hub design 3 (#70): a CLI-parity command waits behind its Host command button, and Show host commands shows
+    every one; a step only the daemon host can take (claiming, signing in) is never hidden."""
+    css = text(STATIC / "style.css")
+    assert ".host-command-lines { display: none; }" in css
+    shown = ".host-command.open .host-command-lines, body.show-host-commands .host-command-lines { display: block; }"
+    assert shown in css
+    assert "body.show-host-commands .host-command-toggle { display: none; }" in css
+    assert "body.classList.toggle(\"show-host-commands\", on)" in text(STATIC / "app.mjs")
+    for page in ("admin", "apps", "marketplace", "modules", "pairing", "settings"):
+        assert "{ parity: true" in text(STATIC / "pages" / f"{page}.mjs"), page
+    for path in (STATIC / "pages" / "overview.mjs", STATIC / "pages" / "signin.mjs", STATIC / "lib" / "pairing.mjs"):
+        assert "command(" in text(path) and "parity" not in text(path), path

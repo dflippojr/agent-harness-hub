@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // Included in the existing CI browser behavior entrypoint.
+import "./apps-controls.test.mjs";
+import "./claim-signin.test.mjs";
 import "./dom-components.test.mjs";
+import "./overview-attention.test.mjs";
 import "./overview-polling.test.mjs";
 import "./page-polling.test.mjs";
 import "./shell-status.test.mjs";
