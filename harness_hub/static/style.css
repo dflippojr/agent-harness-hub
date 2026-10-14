@@ -864,6 +864,7 @@ body.signed-out .topbar { display: none; }
   .apps-table .app-meta { display: block; }
   .apps-table td { padding: 10px 12px; }
   .apps-detail-head { margin-top: 8px; }
+  .usage-tiles { grid-template-columns: minmax(0, 1fr); }
   .apps-detail-head .key-id { flex-basis: 100%; margin-left: 0; }
   .apps-entry { padding: 8px 12px; }
 }
