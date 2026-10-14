@@ -139,7 +139,7 @@ test("any page's read that only the daemon could answer clears an older 503 from
   assert.deepEqual(daemonChip(), { tone: "ok", text: "Daemon live · API 1.27" });
   // A cached inventory or the Hub's own Accounts catalog proves nothing about the daemon.
   noteRead("apps/erasures", 503, null);
-  for (const path of ["modules", "apps", "marketplace", "manage/catalog"]) noteRead(path, 200, { state: "stale" });
+  for (const path of ["modules", "apps", "marketplace", "manage/catalog"]) noteRead(path, 200, { state: "error", stale: true });
   assert.equal(daemonChip().tone, "bad");
   noteRead("manage/skills", 200, []);
   assert.equal(daemonChip().tone, "ok");
@@ -155,4 +155,22 @@ test("a reply to an older request cannot overwrite newer evidence", () => {
   assert.deepEqual(daemonChip(), { tone: "ok", text: "Daemon live · API 1.27" });
   noteRead("pairing", 503, null, 4);
   assert.equal(daemonBanner().tone, "bad");
+});
+
+test("an inventory read the daemon just answered (state ready) proves it is answering", () => {
+  resetStatus();
+  noteRead("pairing", 503, null);
+  noteRead("marketplace", 200, { state: "ready", stale: false, entries: [] });
+  assert.equal(daemonBanner(), null);
+});
+
+test("a Settings config reply older than the health that settled the restart cannot restore it", () => {
+  resetStatus();
+  noteRead("settings/config", 200, { revision: 1, pending_revision: 2, restart_required: true }, 1);
+  noteRead("settings/health", 200, { reachable: true, restarting: false,
+    health: { config_revision: 2, config_confirmed: true } }, 3);
+  noteRead("settings/config", 200, { revision: 1, pending_revision: 2, restart_required: true }, 2);
+  assert.equal(daemonBanner(), null);
+  noteRead("settings/config", 200, { revision: 2, pending_revision: 3, restart_required: true }, 4);
+  assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
 });

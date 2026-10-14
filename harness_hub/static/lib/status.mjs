@@ -14,13 +14,16 @@ let config = null; // the last Settings revision read: { revision, pending_revis
 let silent = null; // whether the latest evidence says the daemon is not answering; null before any
 let restarting = false; // whether a restart the Hub started is still under way
 let evidenceAt = 0; // when the request behind the latest evidence started; older replies cannot overwrite it
+let configAt = 0; // when the request behind `config` (or the health that settled it) started
 let reads = 0; // request counter for callers that pass no start order (tests)
 const listeners = new Set();
 
 // Whether a 2xx answer to this Hub read could only have come from the daemon. Overview and the health poll report
-// reachability in their bodies instead; Apps, Modules and Marketplace can answer from the Hub's last good inventory,
-// and the Accounts catalog never asks the daemon.
-function daemonAnswered(path) {
+// reachability in their bodies instead; Apps, Modules and Marketplace answer from the Hub's last good inventory unless
+// their state is "ready" (read just now); the Accounts catalog never asks the daemon.
+const INVENTORY = new Set(["apps", "modules", "marketplace"]);
+function daemonAnswered(path, body) {
+  if (INVENTORY.has(path)) return Boolean(body) && body.state === "ready";
   return path === "pairing" || path.startsWith("apps/")
     || (path.startsWith("settings/") && path !== "settings/health")
     || (path.startsWith("manage/") && path !== "manage/catalog");
@@ -47,7 +50,7 @@ export function noteRead(path, status, data, started = ++reads) {
       restarting = body.restarting === true;
       if (body.reachable) {
         lastGood = body;
-        settle(body.health);
+        settle(body.health, started);
       }
       if (body.attention !== undefined) attention = body.attention;
     }
@@ -56,23 +59,27 @@ export function noteRead(path, status, data, started = ++reads) {
     if (typeof body.reachable === "boolean" && fresh(started)) {
       silent = !body.reachable;
       restarting = body.restarting === true;
-      if (body.reachable) settle(body.health);
+      if (body.reachable) settle(body.health, started);
     }
-  } else if (ok && daemonAnswered(path)) {
+  } else if (ok && daemonAnswered(path, body)) {
     if (fresh(started)) silent = false;
   }
   if (body && path === "pairing" && Array.isArray(body.requests)) attention = pairingAttention(body);
-  if (body && path === "settings/config") config = body;
+  if (body && path === "settings/config" && started >= configAt) {
+    config = body;
+    configAt = started;
+  }
   for (const listener of listeners) listener();
 }
 
 // A daemon that reports a confirmed revision at or past the saved (pending) one needs no restart for it, whatever the last
 // Settings read said.
-function settle(health) {
-  if (!config || !config.restart_required || !health || health.config_confirmed !== true) return;
+function settle(health, started) {
+  if (!config || !config.restart_required || !health || health.config_confirmed !== true || started < configAt) return;
   const saved = config.pending_revision;
   if (typeof health.config_revision === "number" && typeof saved === "number" && health.config_revision >= saved) {
     config = { ...config, restart_required: false, revision: health.config_revision, pending_revision: null };
+    configAt = started;
   }
 }
 
@@ -85,7 +92,7 @@ export function subscribe(listener) {
 export function resetStatus() {
   overview = lastGood = attention = config = silent = null;
   restarting = false;
-  evidenceAt = reads = 0;
+  evidenceAt = configAt = reads = 0;
 }
 
 // The same count the server makes for Overview (views.pairing_attention): unexpired App requests that need an
