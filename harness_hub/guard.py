@@ -4,7 +4,8 @@ Browser responses are built from allowlisted fields (`views.py`), so nothing sec
 checks every `/api/` response body anyway and withholds it (500) when it contains the Hub key or the pending claim's
 verifier, or a string shaped like a full Agent Harness token. Only full-length shapes count: ordinary words such as
 `ha-core` or `hp-laserjet` pass. Shorter key display prefixes (`ho-LW5TqUX`) are redacted field by field in `views.py`.
-Withholding fails closed: a page shows an error, never a secret.
+Withholding fails closed: a page shows an error, never a secret. The one exemption is the Google link code the owner
+just asked to create (`LINK_CODE`): they are meant to see it once.
 """
 
 from __future__ import annotations
@@ -25,6 +26,11 @@ TOKEN_SHAPE = re.compile(r"(?<![A-Za-z0-9])(?:(?:ha|ho|hk)-[A-Za-z0-9_\-]{43,}|(
 # A key list's display prefix (`ho-LW5TqUX`, the token's first 10 characters) or anything shaped like one. Views redact
 # it in fields where a key id or daemon diagnostic can appear; the guard does not, because ordinary words match it.
 KEY_PREFIX_SHAPE = re.compile(r"(?<![A-Za-z0-9])(?:ha|ho|hk|hp|hrp)-[A-Za-z0-9_\-]{4,}")
+# The daemon's Google link code, `"ahg-" + secrets.token_urlsafe(32)` (agent-harness `harness/google_signin.py`): a
+# credential the owner asked to create and is meant to see once (#92). Its random part can hold `hp-` and token
+# characters, so the shapes above would withhold a valid code. Only the invite route's `code` field is exempt.
+LINK_CODE = re.compile(r"ahg-[A-Za-z0-9_\-]{1,128}")
+LINK_CODE_PATH = "/api/manage/google_invite"
 WITHHELD = b'{"detail":"response withheld: it contained a credential-like string"}'
 
 
@@ -48,11 +54,26 @@ def _decoded(text: str) -> list[str]:
     return out
 
 
-def leaks(body: bytes, secrets: Iterable[str]) -> bool:
+def leaks(body: bytes, secrets: Iterable[str], exempt: str | None = None) -> bool:
+    """`exempt` is one string the caller validated as safe to show: shape checks skip it, a known secret never does."""
     text = body.decode("utf-8", errors="replace")
     known = [secret for secret in secrets if secret]
+    if any(secret in text for secret in known):
+        return True
+    if exempt is not None:
+        text = text.replace(json.dumps(exempt), '""', 1)
     return any(TOKEN_SHAPE.search(value) or any(secret in value for secret in known)
                for value in (text, *_decoded(text)))
+
+
+def link_code(body: bytes) -> str | None:
+    """The invite reply's `code` when it is exactly a link code, else None."""
+    try:
+        reply = json.loads(body)
+    except (ValueError, RecursionError):
+        return None
+    code = reply.get("code") if isinstance(reply, dict) else None
+    return code if isinstance(code, str) and LINK_CODE.fullmatch(code) else None
 
 
 class ResponseGuard:
@@ -81,7 +102,8 @@ class ResponseGuard:
         async def flush() -> None:
             assert start is not None
             body = b"".join(chunks)
-            if leaks(body, self.secrets()):
+            invite = scope["path"] == LINK_CODE_PATH and start["status"] == 201
+            if leaks(body, self.secrets(), link_code(body) if invite else None):
                 log.error("withheld a %s response on %s: it contained a credential-like string",
                           start["status"], scope["path"])
                 headers = [(k, v) for k, v in start["headers"] if k.lower() not in (b"content-length", b"content-type")]

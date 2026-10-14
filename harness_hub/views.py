@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from . import __version__
 from .administration import TARGET
 from .claim import CLAIMED, PENDING, RELEASE_COMMAND, ClaimManager
-from .guard import KEY_PREFIX_SHAPE, TOKEN_SHAPE
+from .guard import KEY_PREFIX_SHAPE, LINK_CODE, TOKEN_SHAPE
 
 MESSAGES = {
     "unclaimed": "This Hub has not claimed the daemon yet.",
@@ -583,8 +583,12 @@ def administration_view(operation: str, body: Any, secrets: tuple[str, ...] = ()
             candidate["promotion_available"] = bool(candidate.get("id") and candidate.get("suggested_slug")
                                                     and all(raw.get(k) == candidate.get(k)
                                                             for k in ("path", "markers")))
-    if operation == "google_invite" and (not shown.get("code") or shown.get("expires_at") is None):
-        raise ValueError("Invalid invitation response")
+    if operation == "google_invite":
+        code = body.get("code")
+        if (not isinstance(code, str) or not LINK_CODE.fullmatch(code) or shown.get("expires_at") is None
+                or any(secret and secret in code for secret in secrets)):
+            raise ValueError("Invalid invitation response")  # Never show a redaction marker as if it were the code.
+        shown["code"] = code  # The owner's one-time code: redacting a lookalike substring would hide the only copy.
     return shown
 
 
