@@ -401,17 +401,19 @@ Run the isolated browser regressions with Playwright installed locally:
 ### Marketplace
 
 Marketplace lists the owner's local Hub entries ([agent-harness #520](https://github.com/dflippojr/agent-harness/issues/520))
-from the daemon's `GET /hub`, under the line **Being listed here grants nothing.** Each entry shows the manifest's app
-name, publisher, summary and version, its declared scopes and browser origins, "Local entry, not verified", and its
-state: **Paired** (with the matching key ids) or **Not paired**, with **Pending** beside it when applicable.
+from the daemon's `GET /hub`, under an info line, **Being listed here grants nothing.**, and an **Entries** header with
+their count. Each entry is one card with the manifest's app name, publisher, version and catalog id, its summary, its
+declared scopes as chips (elevated ones in red) and how it runs (a native app, or a browser app at its origins), "Local ·
+not verified", and its state: **Paired** (with the matching key ids) or **Not paired**, with **Pending** beside it when
+applicable.
 A pending request without an armed slot names a requester-chosen catalog id and is explicitly unverified.
 Native keys and requests that match only the catalog id are listed separately under "Native keys and requests (origin not verified)", as the daemon reports
 them under `unverified_origin`. Only display fields reach the browser: the manifest's URLs, e-mail addresses and
 review evidence do not, and nothing named by an entry is ever fetched. An icon is shown only when it is an inline
 `data:` PNG, JPEG, GIF or WebP image; anything else becomes a letter.
 
-**Set up** opens a consent screen before anything is armed: the scopes the app will get, each with its `standard` or
-`elevated` badge, the daemon's disclosure text and the publisher's stated reason; the exact origin a browser app's
+**Set up** opens a consent screen inside that entry's card before anything is armed: the scopes the app will get,
+each with its **Standard** or **Elevated** badge, the daemon's disclosure text and the publisher's stated reason; the exact origin a browser app's
 slot is bound to (chosen from the entry's origins when it lists several); and a separate acknowledgement for elevated
 scopes and any scope without Hub disclosure text. Initially the disclosure text is the Hub's copy of the daemon's
 (agent-harness `harness/pairing_requests.py`). Every successful arm reply is checked for identical scope, tier and
@@ -431,7 +433,8 @@ the raw daemon entry. An entry whose binding fields would be truncated or redact
 text has Unicode control and format characters removed before display caps and before the name reaches the daemon.
 The consent heading includes the catalog id beside the name.
 
-After arming, the page shows the request id and the daemon URL as copyable text, with "Give this only to <app>; it
+After arming, the hand-off replaces the consent in the same card and shows the request id and the daemon URL as
+copyable text, with "Give this only to <app>; it
 lets that app claim the slot once." No secret exists then: the app claims the slot with its own PKCE challenge and
 fetches its own token from the daemon. Arming grants scope consent; both browser and native claims then wait for
 **Confirm** with the code the app is showing right now, typed into an empty field. Browser claims and redemption
@@ -440,7 +443,9 @@ forge that header. As on Pairing requests, the Hub never shows an App's code, an
 If the app shows no code or an error, withdraw the slot. If it reports the slot was already claimed, list requests
 with `harness pairing-requests list`; revoke a redeemed row's `key_id` with `harness keys revoke <key_id>`, or deny
 an approved or claimed row with `harness pairing-requests deny <id>`.
-**Withdraw** ends a slot after an in-page confirmation. Every action has its CLI equivalent behind a **Host command** button
+Each slot shows in its entry's card with the same countdown chip and match-code field as Pairing requests, and
+**Withdraw** ends it after a confirmation inside that slot. The recovery steps sit in a closed **Troubleshooting**
+disclosure at the foot of the page. Every action has its CLI equivalent behind a **Host command** button
 (`harness hub status`, `harness hub entries init|validate`, `harness pairing-requests arm|confirm|deny`).
 
 A stale or unreadable entries file makes `GET /hub` answer 400 with a named error (`hub.entries: invalid JSON`,

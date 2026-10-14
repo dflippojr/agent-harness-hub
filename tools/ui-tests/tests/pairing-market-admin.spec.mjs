@@ -72,25 +72,28 @@ test("an elevated request needs the acknowledgement; deny asks first and Cancel 
 test("marketplace: consent can be cancelled; arming lists the slot until it is withdrawn", async ({ signedIn: page, errors }) => {
   await openSection(page, "marketplace");
   await expect(page.getByText("Being listed here grants nothing.")).toBeVisible();
-  await page.getByRole("button", { name: "Set up financial-planner" }).click();
-  const consent = page.getByRole("region", { name: /^Set up financial-planner/ });
+  // Consent, hand-off and the withdraw question all render inside the entry's own card (Hub design 10).
+  const entry = page.getByRole("region", { name: "financial-planner", exact: true });
+  await entry.getByRole("button", { name: "Set up financial-planner" }).click();
+  const consent = entry.getByRole("region", { name: /^Set up financial-planner/ });
   await expect(consent).toContainText("Nothing is armed until you approve.");
   await consent.getByRole("button", { name: "Cancel" }).click();
   await expect(consent).toHaveCount(0);
+  await expect(entry.getByRole("button", { name: "Set up financial-planner" })).toBeFocused();
 
-  await page.getByRole("button", { name: "Set up financial-planner" }).click();
+  await entry.getByRole("button", { name: "Set up financial-planner" }).click();
   for (const box of await consent.getByRole("checkbox").all()) await box.check();
   const origins = consent.getByRole("radio");
   if (await origins.count()) await origins.first().check();
   await consent.getByRole("button", { name: "Approve" }).click();
-  const handoff = page.getByRole("region", { name: "Slot armed for financial-planner" });
+  const handoff = entry.getByRole("region", { name: "Slot armed for financial-planner" });
   await expect(handoff).toBeVisible();
   await handoff.getByRole("button", { name: "Done" }).click();
   await page.reload();
-  await page.getByRole("button", { name: "Withdraw slot for financial-planner" }).click();
-  await page.getByRole("button", { name: "Confirm withdraw" }).click();
+  await entry.getByRole("button", { name: "Withdraw slot for financial-planner" }).click();
+  await entry.getByRole("alert").getByRole("button", { name: "Confirm withdraw" }).click();
   await page.reload();
-  await expect(page.getByRole("button", { name: "Set up financial-planner" })).toBeVisible();
+  await expect(entry.getByRole("button", { name: "Set up financial-planner" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Withdraw slot for financial-planner" })).toHaveCount(0);
   expect(errors).toEqual([]);
 });
