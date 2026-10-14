@@ -535,6 +535,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         if leaks(json.dumps(shown).encode(), store.secrets()):
             return _error(502, "Spend withheld: it contained a credential-like string.")
         return {"error": error, "stale": bool(error) and body is not None, "fetched_at": fetched_at,
+                # Any read the daemon answered shows it is up; the shell's status reads this, not the error text.
+                "reachable": not all(isinstance(result, DaemonUnreachable) for result in (reply, backends)),
                 "backends_error": "" if backend_rows is not None else "The daemon's backend usage was unavailable.",
                 **shown}
 

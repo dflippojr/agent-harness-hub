@@ -59,6 +59,13 @@ test("banner: bad is an alert, the others are status", () => {
   assert.equal(dom.banner("info", "Plain").children[0].className, "banner-text");
 });
 
+test("every rail section has an icon, and an unknown name is a bug rather than a blank", () => {
+  for (const id of ["overview", "pairing", "apps", "spend", "marketplace", "settings", "modules", "admin"]) {
+    assert.ok(dom.icon(id).children.length > 0, id);
+  }
+  assert.throws(() => dom.icon("no-such-icon"), TypeError);
+});
+
 test("toggle is a checkbox with role=switch and reports changes", () => {
   let seen;
   const row = dom.toggle("Show host commands", { checked: true, onchange: (on) => { seen = on; } });

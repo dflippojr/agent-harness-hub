@@ -101,6 +101,20 @@ def test_an_inventory_outage_keeps_the_backend_windows(claimed, fake_daemon, mon
     data = claimed.get("/api/spend").json()
     assert data["error"] == "The daemon did not answer." and data["apps"] is None
     assert data["backends_error"] == "" and data["backends"][0]["week"] == HOSTED["week"]
+    assert data["reachable"] is True  # the backend read answered, so the daemon is up
+
+
+def test_spend_says_when_no_read_reached_the_daemon(claimed, monkeypatch):
+    from harness_hub.daemon import DaemonClient, DaemonUnreachable
+
+    async def unreachable(self, *args, **kwargs):
+        raise DaemonUnreachable("synthetic outage")
+
+    assert claimed.get("/api/spend").json()["reachable"] is True
+    for read in ("inventory", "settings"):
+        monkeypatch.setattr(DaemonClient, read, unreachable)
+    data = claimed.get("/api/spend").json()
+    assert data["reachable"] is False and data["error"] == "The daemon did not answer."
 
 
 def test_a_rejected_cap_read_goes_through_the_key_refusal(claimed, fake_daemon, monkeypatch):

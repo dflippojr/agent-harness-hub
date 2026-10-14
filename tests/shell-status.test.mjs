@@ -179,6 +179,18 @@ test("an inventory read reports whether the daemon answered, whatever its state"
   }
 });
 
+test("a Spend read reports whether the daemon answered, like the inventory pages", () => {
+  resetStatus();
+  noteRead("pairing", 503, GONE);
+  noteRead("spend", 200, { error: "", stale: false, reachable: true, apps: [], backends: [] });
+  assert.equal(daemonBanner(), null);
+  noteRead("overview", 200, answer());
+  noteRead("spend", 200, { error: "The daemon did not answer.", stale: true, reachable: false, apps: [], backends: [] });
+  assert.deepEqual(daemonChip(), { tone: "bad", text: "Daemon not answering" });
+  noteRead("spend", 200, { error: "", stale: false, reachable: true, apps: [], backends: [] });
+  assert.equal(daemonChip().tone, "ok");
+});
+
 test("a Settings config reply older than the health that settled the restart cannot restore it", () => {
   resetStatus();
   noteRead("settings/config", 200, { revision: 1, pending_revision: 2, restart_required: true }, 1);

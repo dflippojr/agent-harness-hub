@@ -112,7 +112,7 @@ export function renderSpend(main) {
       return;
     }
     clear(apps, h("table", {},
-      h("caption", { class: "sr-only" }, "App usage, sortable by any column"),
+      h("caption", { class: "visually-hidden" }, "App usage, sortable by any column"),
       h("thead", {}, h("tr", {}, COLUMNS.map(header))),
       h("tbody", {}, sorted(rows).map((row) => h("tr", { "data-app-id": row.id, class: row.caps?.near ? "near" : null },
         COLUMNS.map((column, i) => h(i ? "td" : "th", { scope: i ? null : "row", class: column.numeric ? "num" : null },
@@ -127,7 +127,7 @@ export function renderSpend(main) {
     }
     const windows = [["today", "Today"], ["week", "7 days"]];
     clear(backends, h("table", {},
-      h("caption", { class: "sr-only" }, "Backend usage today and over the last 7 days"),
+      h("caption", { class: "visually-hidden" }, "Backend usage today and over the last 7 days"),
       h("thead", {}, h("tr", {}, h("th", { scope: "col" }, "Backend"),
         windows.flatMap(([, name]) => [h("th", { scope: "col", class: "num" }, name + " requests"),
           h("th", { scope: "col", class: "num" }, name + " tokens"),

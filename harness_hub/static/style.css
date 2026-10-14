@@ -987,4 +987,3 @@ body.signed-out .topbar { display: none; }
   min-height: var(--tap); padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer;
 }
 .sort:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
