@@ -456,7 +456,7 @@ SCAN = {"id": IDENTIFIER, "revision": NUMBER, "status": TEXT, "visited": NUMBER,
 # Audit metadata is deliberately narrower than free text or caller-defined objects.
 AUDIT = {**dict.fromkeys(("actor_id", "actor_kind", "key_id", "source", "target_id", "target_kind", "action",
                           "outcome"), TEXT),
-         "id": NUMBER, "at": NUMBER, "timestamp": NUMBER, "created_at": NUMBER,
+         "id": NUMBER, "ts": NUMBER, "at": NUMBER, "timestamp": NUMBER, "created_at": NUMBER, "detail": TEXT,
          "metadata": {"fields": NAMES, "reason": TEXT, "operation_id": TEXT, "category": TEXT,
                       **dict.fromkeys(("count", "removed", "kept", "expired", "new_max_running", "old_max_running",
                                       "new_max_queued", "old_max_queued", "new_disk_quota_bytes",

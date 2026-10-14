@@ -170,6 +170,14 @@ def test_hash_and_phrase_are_forwarded_exactly_with_stale_refusal(claimed, fake_
     )
 
 
+def test_audit_rows_keep_the_daemons_time_and_detail(claimed, fake_daemon):
+    audit = call(claimed, "audit").json()["items"][0]
+    household = call(claimed, "account_audit").json()[0]
+    for row in (audit, household):
+        assert row["ts"] == 1700000000.5 and row["detail"] == "added member"
+    assert set(audit["metadata"]) == {"fields", "new_max_running"}
+
+
 def test_audit_cursor_filters_and_bounded_queries(claimed, fake_daemon):
     filters = {
         "limit": 10,
