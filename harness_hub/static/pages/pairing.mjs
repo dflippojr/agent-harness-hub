@@ -1,59 +1,75 @@
-// Pairing requests (agent-harness #519): the owner types the App code and approves, confirms or denies. The daemon
-// then hands each App its own token; this page never sees one. Every daemon string goes in as a text node.
+// Pairing requests (agent-harness #519, Hub design 6): Needs you first, one card per decision in two halves (who and
+// what on the left; the typed match code and Deny or Approve on the right), then Waiting for the app, then History as a
+// table. The owner types the App code and approves, confirms or denies; the daemon then hands each App its own token,
+// and this page never sees one. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { clear, command, emphasis, h, reveal, when } from "../lib/dom.mjs";
-import { pairingRecovery } from "../lib/pairing.mjs";
+import { clear, command, emphasis, h, icon, pill, reveal, sectionHead, table } from "../lib/dom.mjs";
+import { expiry, pairingRecovery, tickExpiries } from "../lib/pairing.mjs";
 import { poller } from "../lib/poll.mjs";
 
-const GROUPS = [
-  ["pending", "Waiting for approval"], ["armed", "Armed slots"], ["claimed", "Claimed slots to confirm"],
-  ["approved", "Approved, waiting for the app"], ["redeemed", "Paired"], ["denied", "Denied or withdrawn"],
-  ["expired", "Expired"], ["unknown", "Other"],
-];
-const ACTIVE = ["pending", "armed", "claimed", "approved"];
+const NEEDS_YOU = ["pending", "claimed"];
+const WAITING = ["armed", "approved"];
+const ACTIVE = [...NEEDS_YOU, ...WAITING];
+const LABELS = { pending: "Needs approval", claimed: "Needs confirmation", armed: "Waiting for the app",
+  approved: "Approved", redeemed: "Paired", denied: "Denied", expired: "Expired" };
 const POLL_MS = 5000;
 
-function nextStep(row) {
-  if (row.kind === "hub") {
-    return row.state === "pending" ? "Approve or deny this Hub claim on the daemon host." :
-      row.state === "approved" ? "Approved: the Hub fetches its own key." : "Nothing to do.";
-  }
-  return {
-    approve: "Type the code the app is showing right now. If the app shows no code or an error, deny.",
-    claim: "Waiting for the app to claim this slot.",
-    confirm: "An app claimed this slot. Redemption is waiting for confirmation. " +
-      "Type the code the app is showing right now. If the app shows no code or an error, deny.",
-    redeem: "Approved: waiting for the app to fetch its own token from the daemon.",
-  }[row.needs] || {
-    redeemed: "Paired. The app received its token directly from the daemon.",
-    denied: "Denied or withdrawn. The app cannot use this request.",
-    expired: "Expired before it finished. The app must ask again.",
-  }[row.state] || "Nothing to do.";
+const label = (row) => LABELS[row.state] || "Unknown";
+const kind = (row) => row.kind === "hub" ? "Hub claim" : row.kind === "app" ? "App" : "Unknown";
+const source = (row) => (row.origin || "Native app") + (row.catalog_app_id ? ` · catalog ${row.catalog_app_id}` : "");
+const withheld = (row) => [row.name, row.origin, row.catalog_app_id].some((value) => value?.startsWith("[withheld:"));
+
+function stamp(seconds) {
+  return typeof seconds === "number" ? new Date(seconds * 1000).toLocaleString(undefined,
+    { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
 }
 
-function countdown(seconds) {
-  if (seconds <= 0) return "Expired; refreshing";
-  const minutes = Math.floor(seconds / 60), rest = Math.floor(seconds % 60);
-  return `${minutes}:${String(rest).padStart(2, "0")} left`;
+// What the app (or Hub) does next, for a request that waits on it rather than on the owner.
+function waitingFor(row) {
+  if (row.kind === "hub") return "Approved: the Hub fetches its own key";
+  return row.state === "armed" ? "Waiting for the app to claim this slot" :
+    "Waiting for the app to fetch its own token from the daemon";
+}
+
+// Said once per card instead of inside every label: who stated the name, origin and catalog id.
+function caveat(row) {
+  if (row.kind === "hub") {
+    return [icon("hub"), "Hub claim: the name is supplied by the requester. It is decided only on the daemon host, with " +
+      "the code from that Hub's own screen."];
+  }
+  if (row.kind !== "app") return [icon("alert"), "The Hub does not know this kind of request. Review it on the daemon host."];
+  if (row.armed) {
+    return [icon("check"), "You armed this slot and set its origin and catalog app id; an app has claimed it. " +
+      "Redemption is waiting for confirmation: confirm only if the code matches the app on your screen."];
+  }
+  return [icon("shield"), "Name, origin and catalog id are stated by the app, not verified. Only the match code on " +
+    "your app's screen proves this is your app."];
 }
 
 export function renderPairing(main) {
   let stopped = false, busy = false, ticker, data = null, offset = 0, signature = "";
+  let confirming = null; // the request whose Deny or Withdraw is asking for confirmation, inside its own card
   const drafts = new Map();
   const poll = poller(() => load());
+  const updated = h("span", { class: "muted refreshed" });
   const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true });
   const problem = h("p", { class: "notice bad", role: "alert", hidden: true });
   const groups = h("div", { class: "pairing-groups" });
-  const confirmation = h("div");
-  const refresh = button("Refresh requests", () => load(true));
-  clear(main, h("header", { class: "page-head" }, h("h1", {}, "Pairing requests"), refresh),
-    h("p", { class: "muted" }, "Apps asking to pair in the last day. Approving changes the request's state only: " +
+  const refresh = h("button", { type: "button", class: "btn ghost refresh", onclick: () => load(true) },
+    icon("refresh"), "Refresh requests");
+  clear(main, h("header", { class: "page-head" }, h("h1", {}, "Pairing requests"), updated, refresh),
+    h("p", { class: "lede" }, "Apps asking to pair in the last day. Approving changes only the request's state: " +
       "the app then fetches its own token from the daemon, and this Hub never sees it."),
-    pairingRecovery(), notice, problem, confirmation, groups);
+    notice, problem, groups, pairingRecovery());
 
-  function button(label, action, extra = {}) {
-    return h("button", { type: "button", class: "btn", onclick: action, ...extra }, label);
+  function button(text, action, extra = {}) {
+    return h("button", { type: "button", class: "btn", onclick: action, ...extra }, text);
+  }
+  // A button whose visible text is a verb; the request's name completes its accessible name (and, where the class
+  // allows, shows beside the verb).
+  function verbButton(verb, name, action, extra = {}, nameClass = "visually-hidden") {
+    return button([`${verb} `, h("span", { class: nameClass }, name)], action, extra);
   }
   function message(value, bad = false) {
     notice.textContent = value;
@@ -65,9 +81,6 @@ export function renderPairing(main) {
     problem.hidden = !value;
   }
   function now() { return Date.now() / 1000 + offset; }
-  function schedule() {
-    poll.schedule(POLL_MS);
-  }
   async function load(force = false) {
     if (stopped || busy && !force) return;
     poll.cancel();
@@ -77,17 +90,13 @@ export function renderPairing(main) {
       data = result;
       offset = typeof result.now === "number" ? result.now - Date.now() / 1000 : 0;
       showProblem(result.confirmation_warning || "");
+      updated.textContent = `Updated ${new Date().toLocaleTimeString()} · every ${POLL_MS / 1000} s`;
     } catch (error) {
       if (stopped) return;
       showProblem(error.message + (data ? " Showing the last list." : ""));
     }
     draw(force);
-    schedule();
-  }
-  function tick() {
-    for (const el of groups.querySelectorAll("[data-expires]")) {
-      el.textContent = countdown(Number(el.dataset.expires) - now());
-    }
+    poll.schedule(POLL_MS);
   }
   function draw(force) {
     const next = JSON.stringify(data?.requests ?? null);
@@ -97,105 +106,110 @@ export function renderPairing(main) {
     const active = document.activeElement;
     const focused = active?.dataset?.field ? [active.closest("[data-request-id]")?.dataset.requestId,
       active.dataset.field, active.selectionStart] : null;
-    clear(groups);
     const rows = data?.requests || [];
-    for (const [state, label] of GROUPS) {
-      const members = rows.filter((row) => (GROUPS.some(([s]) => s === row.state) ? row.state : "unknown") === state);
-      if (!members.length) continue;
-      groups.append(h("section", { class: "pairing-group", "data-state": state },
-        h("h2", {}, `${label} (${members.length})`), h("div", { class: "grid pairing-list" }, members.map(card))));
-    }
-    if (!rows.length) groups.append(h("p", { class: "muted" }, data ? "No pairing requests in the last day." :
-      "The pairing list is not available."));
-    if (focused) {
-      const target = [...groups.querySelectorAll("[data-field]")].find((el) =>
-        el.dataset.field === focused[1] && el.closest("[data-request-id]")?.dataset.requestId === focused[0]);
-      if (target) {
-        target.focus();
-        if (typeof focused[2] === "number" && target.setSelectionRange) target.setSelectionRange(focused[2], focused[2]);
-      }
-    }
-    tick();
+    if (confirming && !rows.some((row) => row.id === confirming && ACTIVE.includes(row.state))) confirming = null;
+    const needs = rows.filter((row) => NEEDS_YOU.includes(row.state));
+    const waiting = rows.filter((row) => WAITING.includes(row.state));
+    const done = rows.filter((row) => !ACTIVE.includes(row.state));
+    clear(groups,
+      needs.length ? group("needs", sectionHead("Needs you", needs.length, { tone: "warn" }), needs.map(decisionCard)) : null,
+      waiting.length ? group("waiting", sectionHead("Waiting for the app", waiting.length), waiting.map(waitingRow)) : null,
+      done.length ? group("history", sectionHead("History · last day", done.length), history(done)) : null,
+      rows.length ? null : empty());
+    if (focused) focus(focused[0], focused[1], focused[2]);
+    tickExpiries(groups, now());
+  }
+  function focus(id, field, caret) {
+    const target = [...groups.querySelectorAll("[data-field]")].find((el) =>
+      el.dataset.field === field && el.closest("[data-request-id]")?.dataset.requestId === id);
+    if (!target) return;
+    target.focus();
+    if (typeof caret === "number" && target.setSelectionRange) target.setSelectionRange(caret, caret);
+  }
+  function group(name, head, content) {
+    return h("section", { class: "pairing-group", "data-group": name }, head, content);
+  }
+  function empty() {
+    if (!data) return h("p", { class: "muted" }, "The pairing list is not available.");
+    return h("section", { class: "card empty" }, icon("pairing"), h("h2", {}, "No pairing requests in the last day"),
+      h("p", {}, "Apps start pairing from their own setup screen, or you arm a slot from Marketplace. " +
+        "New requests appear here within 5 seconds."),
+      h("a", { class: "btn", href: "#/marketplace" }, "Open Marketplace"));
+  }
+  function countdown(row) {
+    return typeof row.expires_at === "number" ? expiry(row.expires_at, now()) : null;
   }
   function facts(rows) {
-    return h("dl", { class: "facts module-facts" }, rows.map(([key, value]) => [h("dt", {}, key), h("dd", {}, value)]));
+    return h("dl", { class: "facts" }, rows.map(([key, value]) => [h("dt", {}, key), h("dd", {}, value)]));
   }
-  function card(row) {
+  function tier(item) {
+    return item.tier === "elevated" ? pill("Elevated", "bad") : pill("Standard", "muted");
+  }
+
+  // Needs you: who and what, then the decision. On a phone the decision comes right after the head and its scope chips.
+  function decisionCard(row) {
     const name = row.name || row.id;
-    const box = h("section", { class: "card" + (row.elevated.length ? " warn" : ""), "data-request-id": row.id },
-      h("h3", {}, `${name} · ${row.id}`),
-      h("p", { class: "muted" }, row.kind === "hub" ? "Hub claim · name supplied by the requester" :
-        "App-supplied name · only the match code on your app's screen proves this is your app"),
-      h("p", {}, "State: ", h("span", { class: "pill " + (row.state === "redeemed" ? "ok" :
-        ACTIVE.includes(row.state) ? "wait" : "off") }, row.state)),
-      h("p", { class: "pairing-next" }, "Next step: " + nextStep(row)),
-      facts([["Kind", row.kind === "hub" ? "Hub claim" : row.kind === "app" ? "App" : "Unknown"],
-        ...(row.kind === "app" ? [["Started from", row.armed ? "this Hub" : "the app"]] : []),
-        [row.kind === "app" && !row.armed ? "Origin (stated by the requester, not verified)" : "Origin",
-          row.origin || "native app"],
-        [row.kind === "app" && !row.armed ? "Catalog app (stated by the requester, not verified)" : "Catalog app",
-          row.catalog_app_id || "None"],
-        ["Scopes", row.scopes.join(", ") || "None"], ["Created", when(row.created_at)],
-        ACTIVE.includes(row.state) && typeof row.expires_at === "number" ?
-          ["Expires", h("span", { "data-expires": row.expires_at }, countdown(row.expires_at - now()))] :
-          ["Finished", when(row.finished_at)],
-        ...(row.key_id ? [["Key id", row.key_id]] : [])]));
-    if (row.kind === "app" && row.armed) {
-      box.append(h("p", { class: "muted" }, "You set the origin and catalog app id when you armed this slot."));
-    }
-    if (row.disclosures.length) {
-      box.append(h("h4", {}, "What each scope allows"), h("ul", { class: "disclosures" }, row.disclosures.map((item) =>
-        h("li", { "data-scope": item.scope },
-          h("p", { class: "disclosure-head" }, h("span", { class: "pill " + (item.tier === "elevated" ? "bad" : "off") },
-            item.tier), " ", h("code", {}, item.scope)),
-          h("p", { class: "disclosure-text" }, emphasis(item.text || "The daemon supplied no description for this scope."))))));
-    }
-    if (row.kind === "hub") {
-      if (ACTIVE.includes(row.state)) {
-        box.append(h("p", {}, "Hub claims are decided only on the daemon host. Read the code off that Hub's own screen."),
-          command(`harness hub approve ${row.id} --match <code>`), command(`harness hub deny ${row.id}`));
-      }
-    } else if (row.kind === "app") {
-      const withheld = [row.name, row.origin, row.catalog_app_id].some(value => value?.startsWith("[withheld:"));
-      if (withheld && ["pending", "claimed"].includes(row.state)) {
-        box.append(h("p", { class: "notice bad" },
-          "Review this request with harness pairing-requests list on the host."),
-          command("harness pairing-requests list"));
-      } else if (row.state === "pending") box.append(decision(row, "approve"));
-      else if (row.state === "claimed") box.append(decision(row, "confirm"));
-      if (ACTIVE.includes(row.state)) {
-        const verb = ["pending", "claimed"].includes(row.state) ? "Deny" : "Withdraw";
-        box.append(h("div", { class: "settings-actions" }, button(`${verb} ${name}`, () => confirmDeny(row, verb),
-          { "data-action": "deny" })), command(`harness pairing-requests deny ${row.id}`, { parity: true }));
-      }
-    }
-    if (row.kind === "app" && row.state === "redeemed" && row.key_id) {
-      box.append(command(`harness keys revoke ${row.key_id}`));
-    }
-    return box;
+    const heading = `request-${row.id}`;
+    return h("section", { class: "card decision", "data-request-id": row.id, "data-state": row.state,
+      "aria-labelledby": heading },
+    h("div", { class: "decision-head" }, h("h3", { id: heading }, name), pill(label(row)),
+      row.elevated.length ? pill("Elevated scope", "bad") : null, countdown(row)),
+    h("div", { class: "chips decision-scopes", "aria-hidden": "true" }, row.scopes.map((scope) =>
+      row.elevated.includes(scope) ? pill(`${scope} · elevated`, "bad") : pill(scope, "muted"))),
+    about(row), h("div", { class: "decision-act" }, confirming === row.id ? confirmation(row) : act(row, name)));
   }
-  function decision(row, operation) {
+  function about(row) {
+    const owned = row.kind === "app" && row.armed;
+    const rows = owned ? [["Slot", h("span", { class: "mono" }, row.id)], ["Bound to", `${source(row)} (set by you)`],
+      ["Scopes", row.disclosures.length ? h("span", { class: "chips" }, row.disclosures.map((item) =>
+        h("span", { class: "scope-chip" }, tier(item), " ", item.scope))) : row.scopes.join(", ") || "None"]] :
+      [["Request", h("span", { class: "mono" }, row.id)],
+        ["From", row.kind === "hub" ? "Hub claim" : source(row)],
+        row.kind === "app" ? ["Started from", `The app · ${stamp(row.created_at)}`] : ["Created", stamp(row.created_at)],
+        ...(row.disclosures.length ? [] : [["Scopes", row.scopes.join(", ") || "None"]])];
+    if (row.key_id) rows.push(["Key id", h("span", { class: "mono" }, row.key_id)]);
+    return h("div", { class: "decision-about" }, h("p", { class: "caveat" }, caveat(row)), facts(rows),
+      !owned && row.disclosures.length ? [h("h4", { class: "card-sub" }, "What each scope allows"),
+        h("ul", { class: "disclosures" }, row.disclosures.map((item) => h("li", { "data-scope": item.scope },
+          h("p", { class: "disclosure-head" }, tier(item), " ", h("code", {}, item.scope)),
+          h("p", { class: "disclosure-text" },
+            emphasis(item.text || "The daemon supplied no description for this scope.")))))] : null);
+  }
+  function act(row, name) {
+    if (row.kind === "hub") {
+      return [h("p", {}, "Hub claims are decided only on the daemon host. Read the code off that Hub's own screen."),
+        command(`harness hub approve ${row.id} --match <code>`), command(`harness hub deny ${row.id}`)];
+    }
+    if (row.kind !== "app") return [command("harness pairing-requests list")];
+    const deny = verbButton("Deny", name, () => askDeny(row), { class: "btn danger", "data-action": "deny", "data-field": "deny" });
+    if (withheld(row)) {
+      return [h("p", { class: "notice bad" }, "Review this request with harness pairing-requests list on the host."),
+        command("harness pairing-requests list"), h("div", { class: "decision-buttons" }, deny),
+        command(`harness pairing-requests deny ${row.id}`, { parity: true })];
+    }
+    return decision(row, name, row.state === "pending" ? "approve" : "confirm", deny);
+  }
+  function decision(row, name, operation, deny) {
     const draft = drafts.get(row.id) || { match: "", ack: false };
     drafts.set(row.id, draft);
     const elevated = operation === "approve" && row.elevated.length > 0;
-    const label = operation === "approve" ? "Approve" : "Confirm";
+    const help = `match-help-${row.id}`;
     // Never pre-filled from the listing: the owner types what the app's own screen shows.
-    const input = h("input", { type: "text", inputmode: "numeric", autocomplete: "off", spellcheck: "false",
-      maxlength: "32", "data-field": "match", "aria-describedby": `match-help-${row.id}` });
+    const input = h("input", { type: "text", class: "match-input", id: `match-${row.id}`, inputmode: "numeric",
+      autocomplete: "off", spellcheck: "false", maxlength: "32", "data-field": "match", "aria-describedby": help });
     input.value = draft.match;
     const ack = elevated ? h("input", { type: "checkbox", "data-field": "ack" }) : null;
     if (ack) ack.checked = draft.ack;
-    const submit = button(`${label} ${row.name || row.id}`, () => {
+    const submit = verbButton(operation === "approve" ? "Approve" : "Confirm", name, () => {
       if (submit.disabled) return;
       const body = { match: input.value.trim() };
       if (elevated) body.acknowledge_elevated = true;
       perform(async () => {
         await api(`pairing/${row.id}/${operation}`, { method: "POST", body });
         drafts.delete(row.id);
-        message(operation === "approve" ? `Approved ${row.name || row.id}. The app now fetches its own token.` :
-          `Confirmed ${row.name || row.id}. The app now fetches its own token.`);
+        message(`${operation === "approve" ? "Approved" : "Confirmed"} ${name}. The app now fetches its own token.`);
       });
-    }, { class: "btn primary", "data-action": operation });
+    }, { class: "btn primary", "data-action": operation }, "button-name");
     const update = () => {
       draft.match = input.value;
       if (ack) draft.ack = ack.checked;
@@ -204,37 +218,76 @@ export function renderPairing(main) {
     input.addEventListener("input", update);
     ack?.addEventListener("change", update);
     update();
+    const scopes = row.elevated.length === 1 ? "scope" : "scopes";
     const cli = `harness pairing-requests ${operation} ${row.id} --match <code>` + (elevated ? " --acknowledge-elevated" : "");
-    return h("div", { class: "pairing-decision" },
-      h("div", { class: "setting-field" }, h("label", {}, "Match code the app shows", input),
-        h("p", { class: "setting-meta", id: `match-help-${row.id}` },
-          "Type the code the app is showing right now. If the app shows no code or an error, deny.")),
-      ack ? h("label", { class: "pairing-ack" }, ack,
-        h("span", {}, `I understand the elevated scopes above (${row.elevated.join(", ")}) and still want to approve.`)) : null,
-      h("div", { class: "settings-actions" }, submit), command(cli, { parity: true }));
+    return [h("label", { class: "label", for: input.id }, "Match code the app shows"), input,
+      h("p", { class: "hint", id: help }, "Type the code the app is showing right now. If the app shows no code or an " +
+        "error, deny."),
+      ack ? h("label", { class: "decision-ack" }, ack,
+        h("span", {}, `I understand the elevated ${scopes} (${row.elevated.join(", ")}) and still want to approve.`)) : null,
+      h("div", { class: "decision-buttons" }, deny, submit),
+      command([cli, `harness pairing-requests deny ${row.id}`], { parity: true })];
   }
-  function confirmDeny(row, verb) {
-    if (busy) return;
+
+  // Waiting for the app: one row each, with the time left and, for an App, Withdraw.
+  function waitingRow(row) {
     const name = row.name || row.id;
-    const cancel = button("Cancel", () => clear(confirmation));
+    const heading = `request-${row.id}`;
+    const app = row.kind === "app";
+    const withdraw = app && confirming !== row.id ? verbButton("Withdraw", name, () => askDeny(row),
+      { class: "btn withdraw", "data-action": "deny", "data-field": "deny" }) : null;
+    return h("section", { class: "card waiting", "data-request-id": row.id, "data-state": row.state,
+      "aria-labelledby": heading },
+    h("div", { class: "waiting-main" },
+      h("div", { class: "waiting-text" },
+        h("div", { class: "waiting-title" }, h("h3", { id: heading }, name), pill(label(row))),
+        h("p", { class: "muted" }, `${waitingFor(row)} · ${row.scopes.join(", ") || "no scopes"}`)),
+      countdown(row), withdraw),
+    confirming === row.id ? confirmation(row) :
+      app ? command(`harness pairing-requests deny ${row.id}`, { parity: true }) : null);
+  }
+
+  function history(rows) {
+    return h("div", { class: "card pairing-history" }, table("Finished pairing requests",
+      ["Name", "Kind", "State", "Scopes", "Finished", "Key"], rows.map((row) =>
+        h("tr", { "data-request-id": row.id, "data-state": row.state },
+          h("td", { class: "history-name" }, row.name || row.id), h("td", {}, kind(row)), h("td", {}, pill(label(row))),
+          h("td", {}, row.scopes.join(", ") || "None"), h("td", {}, stamp(row.finished_at)),
+          h("td", { class: row.key_id ? "mono" : "muted" }, row.key_id || "—")))));
+  }
+
+  // Deny and Withdraw ask first, inside the card that was acted on (decision 5 of #65).
+  function askDeny(row) {
+    if (busy) return;
+    confirming = row.id;
+    draw(true);
+    focus(row.id, "confirm-deny");
+  }
+  function confirmation(row) {
+    const name = row.name || row.id;
+    const verb = NEEDS_YOU.includes(row.state) ? "Deny" : "Withdraw";
+    const cancel = button("Cancel", () => {
+      confirming = null;
+      draw(true);
+      focus(row.id, "deny");
+    }, { "data-field": "cancel" });
     const ok = button(`Confirm ${verb.toLowerCase()}`, () => perform(async () => {
       await api(`pairing/${row.id}/deny`, { method: "POST", body: { confirm: true } });
       message(`${verb === "Deny" ? "Denied" : "Withdrew"} ${name}.`);
-    }), { class: "btn primary" });
-    clear(confirmation, h("section", { class: "card warn pairing-confirm", role: "alert" },
-      h("h2", {}, `${verb} ${name}?`),
-      h("p", {}, `${verb === "Deny" ? "Deny" : "Withdraw"} pairing request ${row.id} from ` +
+    }), { class: "btn destructive", "data-field": "confirm-deny" });
+    return h("div", { class: "decision-confirm", role: "alert" },
+      h("h4", {}, `${verb} ${name}?`),
+      h("p", {}, `${verb} ${row.kind === "app" && row.armed ? "slot" : "pairing request"} ${row.id} from ` +
         `${row.origin || "a native app"}. The app cannot use it afterwards; it must ask again.`),
-      h("div", { class: "settings-actions" }, ok, cancel),
-      command(`harness pairing-requests deny ${row.id}`, { parity: true })));
-    ok.focus();
+      h("div", { class: "decision-buttons" }, cancel, ok),
+      command(`harness pairing-requests deny ${row.id}`, { parity: true }));
   }
   async function perform(action) {
     if (busy || stopped) return;
     busy = true;
     poll.cancel();
     for (const control of groups.querySelectorAll("button,input")) control.disabled = true;
-    clear(confirmation);
+    confirming = null;
     let refused = false;
     try {
       await action();
@@ -250,7 +303,7 @@ export function renderPairing(main) {
     await load(true);
     if (refused && !stopped) reveal(notice);
   }
-  ticker = setInterval(tick, 1000);
+  ticker = setInterval(() => tickExpiries(groups, now()), 1000);
   load(true);
   return () => { stopped = true; poll.stop(); clearInterval(ticker); };
 }

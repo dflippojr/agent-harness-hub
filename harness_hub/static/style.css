@@ -503,7 +503,7 @@ body.show-host-commands .host-command-toggle { display: none; }
 details summary { min-height: var(--tap); display: flex; align-items: center; cursor: pointer; }
 
 @media (prefers-reduced-motion: reduce) {
-  .nav, .switch-track i::after, .signin-docker .chevron { transition: none; }
+  .nav, .switch-track i::after, .signin-docker .chevron, .troubleshoot .chevron { transition: none; }
 }
 
 /* Overview (Hub design 4): the Needs you card, three status tiles, then Capabilities and Details side by side. On a
@@ -802,16 +802,145 @@ body.signed-out .topbar { display: none; }
 .admin-form { max-width: 760px; }
 .admin-form > .btn { margin-top: 16px; }
 
-/* Pairing requests reuse the card, form and touch-target tokens. */
-.pairing-group { margin-top: 24px; }
-.pairing-group > h2 { margin: 0; font-size: 1.15rem; }
-.pairing-list .card h3 { margin-top: 0; overflow-wrap: anywhere; font-size: 1.15rem; color: var(--text); }
-.pairing-list .card h4 { margin: 16px 0 6px; font-size: .95rem; }
+/* Pairing requests (Hub design 6): Needs you as two-half decision cards (who and what, then the decision on a grey
+   half), Waiting for the app as rows, the History table, then Troubleshooting closed at the foot. Below 1200px the
+   halves stack; on a phone the decision comes straight after the card head, so one approval fits on the first screen. */
+.lede { max-width: 780px; margin: 0 0 8px; color: var(--muted); font-size: .92rem; }
+.pairing-group > .section-head:first-child { margin-top: 22px; }
+.card.decision { display: flex; flex-direction: column; margin-bottom: 12px; padding: 0; overflow: hidden; border-radius: 14px; }
+.decision-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 18px 22px 0; }
+.card .decision-head h3 { margin: 0; font-size: 1.12rem; color: var(--text); overflow-wrap: anywhere; }
+.decision-head .countdown { margin-left: auto; }
+.decision-scopes { display: none; }
+.decision-about { min-width: 0; padding: 10px 22px 18px; }
+.caveat { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 14px; font-size: .88rem; color: var(--muted); }
+.caveat .icon { margin-top: 3px; }
+.decision-about .facts { grid-template-columns: max-content minmax(0, 1fr); gap: 8px 24px; margin: 0; font-size: .9rem; }
+.decision-about .card-sub { margin-top: 18px; }
+.scope-chip { display: inline-flex; align-items: center; gap: 6px; }
+.decision-act {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 18px 20px;
+  background: var(--panel-2);
+  border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.decision-act > * { margin: 0; }
+.decision-act .command { margin: 0; }
+.match-input {
+  width: 100%;
+  min-height: 56px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font: 600 1.6rem/1 var(--mono);
+  letter-spacing: .35em;
+  text-align: center;
+}
+.match-input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.decision-ack {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px 0 4px;
+  border-radius: var(--radius);
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: .85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.decision-ack input { flex: none; width: var(--tap); height: var(--tap); margin: 0; accent-color: var(--ok-solid); }
+.decision-ack span { padding: 10px 0; }
+.decision-buttons { display: flex; gap: 10px; }
+.decision-buttons .btn {
+  flex: 1 1 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .3em;
+  min-width: 0;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+.decision-buttons .btn.primary, .decision-buttons .btn.destructive { flex-grow: 2; }
+.button-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A confirmed destructive action: filled red, after the outlined Deny that asked for it. */
+.btn.destructive { background: var(--bad); border-color: var(--bad); color: var(--bg); }
+.decision-confirm { display: flex; flex-direction: column; gap: 10px; overflow-wrap: anywhere; }
+.decision-confirm h4 { margin: 0; font-size: 1rem; color: var(--text); }
+.decision-confirm p, .decision-confirm .host-command { margin: 0; }
+.decision-confirm p { font-size: .9rem; }
+
+@media (min-width: 1200px) {
+  .card.decision {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 400px;
+    grid-template-rows: auto 1fr;
+    grid-template-areas: "head act" "about act";
+  }
+  .decision-head { grid-area: head; }
+  .decision-about { grid-area: about; }
+  .decision-act { grid-area: act; border-top: 0; border-left: 1px solid var(--line); }
+}
+
+.card.waiting { margin-bottom: 10px; padding: 8px 12px 8px 18px; border-radius: 14px; }
+.waiting-main { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-height: 52px; }
+.waiting-text { flex: 1 1 16em; min-width: 0; }
+.waiting-title { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.card .waiting-title h3 { margin: 0; font-size: 1rem; color: var(--text); overflow-wrap: anywhere; }
+.waiting-text p { margin: 2px 0 0; font-size: .85rem; overflow-wrap: anywhere; }
+.btn.withdraw { border-color: transparent; background: transparent; color: var(--bad); }
+.card.waiting .decision-confirm { margin: 8px 0 4px; padding-top: 12px; border-top: 1px solid var(--line); }
+.card.waiting .host-command { margin: 0; }
+
+.card.pairing-history { padding: 0; overflow: hidden; border-radius: 14px; }
+.history-name { font-weight: 650; }
+
+.card.empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 36px 24px; text-align: center; color: var(--muted); }
+.card.empty .icon { width: 28px; height: 28px; }
+.card.empty h2 { margin: 0; font-size: 1rem; color: var(--text); }
+.card.empty p { max-width: 440px; margin: 0 0 4px; font-size: .9rem; }
+.card.empty .btn { display: inline-flex; align-items: center; text-decoration: none; }
+
+/* Troubleshooting: a closed disclosure with a chevron, shared with Marketplace. */
+.card.troubleshoot { margin-top: 16px; padding: 0; border-radius: 14px; }
+.troubleshoot summary { gap: 10px; min-height: 48px; padding: 0 16px; font-size: .92rem; font-weight: 600; list-style: none; }
+.troubleshoot summary::-webkit-details-marker { display: none; }
+.troubleshoot .chevron { color: var(--muted); transition: transform .15s ease; }
+.troubleshoot[open] .chevron { transform: rotate(90deg); }
+.troubleshoot-body { padding: 0 16px 12px; overflow-wrap: anywhere; }
+.troubleshoot-body p { margin: 0 0 4px; }
+
+@media (max-width: 699px) {
+  .decision-head { padding: 14px 14px 0; }
+  .decision-scopes { display: flex; margin: 10px 14px 0; }
+  .decision-act { order: 2; padding: 12px 14px 14px; background: transparent; border-top: 0; }
+  .decision-about { order: 3; padding: 14px; border-top: 1px solid var(--line); }
+  .decision-buttons .btn { min-height: 50px; }
+  /* The card's heading already names the request; the verb is enough on a phone's narrow buttons. */
+  .button-name {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .card.waiting { padding: 8px 10px 8px 14px; }
+}
+
 .pairing-confirm { margin-top: 16px; overflow-wrap: anywhere; }
 .disclosures { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
-.disclosures li { border-top: 1px solid var(--line); padding-top: 8px; }
+.disclosures li { border-top: 1px solid var(--line); padding-top: 10px; }
 .disclosure-head { margin: 0; }
-.disclosure-text { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.disclosure-text { margin: 4px 0 0; font-size: .9rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.disclosures code { font: .82rem var(--mono); }
 .pairing-decision .setting-field { margin-top: 12px; }
 .pairing-ack { display: flex; align-items: flex-start; gap: 10px; min-height: var(--tap); margin: 12px 0; cursor: pointer; }
 .pairing-ack input { flex: none; width: var(--tap); height: var(--tap); margin: 0; accent-color: var(--accent); }

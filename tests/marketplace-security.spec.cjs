@@ -160,7 +160,9 @@ test("elevated scopes need the acknowledgement and a browser app needs its exact
   await expect(page.locator('.market-consent [data-field="origin"]')).toHaveText("https://web.example.test");
   await expect(page.locator(".market-consent")).toContainText("typed-code confirmation is also required");
   await expect(page.locator(".market-consent")).not.toContainText("no match code is needed");
-  const recovery = page.locator(".pairing-recovery");
+  // The shared recovery steps sit in a closed Troubleshooting disclosure (Hub design 6).
+  const recovery = page.locator("details.pairing-recovery");
+  await recovery.getByText("Troubleshooting: the app says the slot was already claimed").click();
   await expect(recovery).toContainText("For a redeemed row, revoke its key_id. For an approved or claimed row, deny it.");
   for (const cli of ["harness pairing-requests list", "harness keys revoke <key_id>", "harness pairing-requests deny <id>"]) {
     await expect(recovery.getByText(cli, { exact: true })).toBeVisible();

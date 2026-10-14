@@ -9,7 +9,7 @@ export const SECTIONS = [
   { id: "settings", label: "Settings", ready: (page) => page.getByRole("spinbutton", { name: "Maximum turns" }) },
   { id: "modules", label: "Modules", ready: (page) => page.getByRole("heading", { name: "Module switches" }) },
   { id: "apps", label: "Apps", ready: (page) => page.getByRole("heading", { name: "Paired apps and keys" }) },
-  { id: "pairing", label: "Pairing requests", ready: (page) => page.getByRole("heading", { name: /^Paired \(/ }) },
+  { id: "pairing", label: "Pairing requests", ready: (page) => page.getByRole("heading", { name: /^History · last day/ }) },
   { id: "marketplace", label: "Marketplace", ready: (page) => page.getByRole("button", { name: "Set up financial-planner" }) },
   { id: "admin", label: "Accounts and maintenance", ready: (page) => page.getByRole("heading", { name: "Synthetic member" }) },
 ];
