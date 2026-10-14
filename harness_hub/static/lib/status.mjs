@@ -1,7 +1,7 @@
 // What the shell shows about the daemon (the rail's status chip, the Pairing badge and the banner under each page
 // head), worked out from answers the pages already read: Overview's last answer, the Pairing list, the Settings
-// revision, the Settings health poll, and any read the Hub refused with 503 because the daemon did not answer. The
-// newest evidence about reachability wins, by when its request started. It is held in memory only and makes no calls
+// revision, the Settings health poll, and any read the Hub refused with 503 because the daemon did not answer. For each
+// piece of state the newest evidence wins, by when its request started. It is held in memory only and makes no calls
 // of its own.
 
 // Mirrors MIN_OWNER_API in views.py; the server classifies the reported version as ownership.compatibility.
@@ -10,17 +10,18 @@ export const MIN_OWNER_API = "1.24";
 let overview = null; // the last overview answer
 let lastGood = null; // the last overview answer that reached the daemon
 let attention = null; // { approve, confirm }: App pairing requests waiting on the owner
-let config = null; // the last Settings revision read: { revision, pending_revision, restart_required }
+let config = null; // the last Settings revision read (saved, not running): { revision, pending_revision, restart_required }
+let running = null; // the settings revision the daemon reported in its last health answer
 let silent = null; // whether the latest evidence says the daemon is not answering; null before any
+let ownerError = ""; // Overview's owner API failure behind a healthy /health, until an owner API read answers
 let restarting = false; // whether a restart the Hub started is still under way
-let evidenceAt = 0; // when the request behind the latest evidence started; older replies cannot overwrite it
-let configAt = 0; // when the request behind `config` (or the health that settled it) started
+let at = {}; // per piece of state, when the request behind its current value started
 let reads = 0; // request counter for callers that pass no start order (tests)
 const listeners = new Set();
 
-// Whether a 2xx answer to this Hub read could only have come from the daemon. Overview and the health poll report
-// reachability in their bodies instead; Apps, Modules and Marketplace answer from the Hub's last good inventory unless
-// their state is "ready" (read just now); the Accounts catalog never asks the daemon.
+// Whether a 2xx answer to this Hub read could only have come from the daemon's owner API. Overview and the health poll
+// report reachability in their bodies instead; Apps, Modules and Marketplace answer from the Hub's last good inventory
+// unless their state is "ready" (read just now); the Accounts catalog never asks the daemon.
 const INVENTORY = new Set(["apps", "modules", "marketplace"]);
 function daemonAnswered(path, body) {
   if (INVENTORY.has(path)) return Boolean(body) && body.state === "ready";
@@ -29,10 +30,11 @@ function daemonAnswered(path, body) {
     || (path.startsWith("manage/") && path !== "manage/catalog");
 }
 
-// Let evidence from a request that started at `started` decide reachability, unless newer evidence already has.
-function fresh(started) {
-  if (started < evidenceAt) return false;
-  evidenceAt = started;
+// Let a reply to a request that started at `started` set this piece of state, unless a newer request already has. A
+// slower reply to an older request never overwrites what a newer one said.
+function newer(key, started) {
+  if (started < (at[key] || 0)) return false;
+  at[key] = started;
   return true;
 }
 
@@ -42,44 +44,49 @@ export function noteRead(path, status, data, started = ++reads) {
   const ok = status >= 200 && status < 300;
   const body = ok && data && typeof data === "object" ? data : null;
   if (status === 503) {
-    if (fresh(started)) silent = true;
+    if (newer("reach", started)) silent = true;
   } else if (path === "overview" && body) {
-    if (fresh(started)) {
-      overview = body;
+    if (newer("overview", started)) overview = body;
+    if (body.reachable && newer("lastGood", started)) lastGood = body;
+    if (newer("reach", started)) {
       silent = !body.reachable;
-      restarting = body.restarting === true;
-      if (body.reachable) {
-        lastGood = body;
-        settle(body.health, started);
-      }
-      if (body.attention !== undefined) attention = body.attention;
+      ownerError = body.reachable ? body.error || "" : "";
     }
+    if (newer("restart", started)) restarting = body.restarting === true;
+    if (body.reachable) health(body.health, started);
+    if (body.attention !== undefined && newer("attention", started)) attention = body.attention;
   } else if (path === "settings/health" && body) {
-    // Settings polls health around a restart; the Hub answers 200 even when the daemon does not.
-    if (typeof body.reachable === "boolean" && fresh(started)) {
-      silent = !body.reachable;
-      restarting = body.restarting === true;
-      if (body.reachable) settle(body.health, started);
+    // Settings polls health around a restart; the Hub answers 200 even when the daemon does not. A healthy /health
+    // says nothing about the owner API, so it leaves an owner API failure standing.
+    if (typeof body.reachable === "boolean") {
+      if (newer("reach", started)) silent = !body.reachable;
+      if (newer("restart", started)) restarting = body.restarting === true;
+      if (body.reachable) health(body.health, started);
     }
   } else if (ok && daemonAnswered(path, body)) {
-    if (fresh(started)) silent = false;
+    if (newer("reach", started)) {
+      silent = false;
+      ownerError = "";
+    }
   }
-  if (body && path === "pairing" && Array.isArray(body.requests)) attention = pairingAttention(body);
-  if (body && path === "settings/config" && started >= configAt) {
-    config = body;
-    configAt = started;
+  if (body && path === "pairing" && Array.isArray(body.requests) && newer("attention", started)) {
+    attention = pairingAttention(body);
   }
+  if (body && path === "settings/config" && newer("config", started)) config = body;
   for (const listener of listeners) listener();
 }
 
-// A daemon that reports a confirmed revision at or past the saved (pending) one needs no restart for it, whatever the last
-// Settings read said.
-function settle(health, started) {
-  if (!config || !config.restart_required || !health || health.config_confirmed !== true || started < configAt) return;
+// A health answer from the daemon: the revision it runs, and whether that settles a restart the saved settings need.
+// A daemon that reports a confirmed revision at or past the saved (pending) one needs no restart for it, whatever an
+// older Settings read said.
+function health(reported, started) {
+  if (!reported || typeof reported.config_revision !== "number") return;
+  if (newer("running", started)) running = reported.config_revision;
+  if (!config || !config.restart_required || reported.config_confirmed !== true || started < (at.config || 0)) return;
   const saved = config.pending_revision;
-  if (typeof health.config_revision === "number" && typeof saved === "number" && health.config_revision >= saved) {
-    config = { ...config, restart_required: false, revision: health.config_revision, pending_revision: null };
-    configAt = started;
+  if (typeof saved === "number" && reported.config_revision >= saved) {
+    config = { ...config, restart_required: false, pending_revision: null };
+    at.config = started;
   }
 }
 
@@ -90,9 +97,11 @@ export function subscribe(listener) {
 
 // Forget everything (tests).
 export function resetStatus() {
-  overview = lastGood = attention = config = silent = null;
+  overview = lastGood = attention = config = running = silent = null;
+  ownerError = "";
   restarting = false;
-  evidenceAt = configAt = reads = 0;
+  at = {};
+  reads = 0;
 }
 
 // The same count the server makes for Overview (views.pairing_attention): unexpired App requests that need an
@@ -115,7 +124,8 @@ export function pairingCount() {
 export function daemonChip() {
   if (silent) return { tone: "bad", text: "Daemon not answering" };
   if (!overview) return null;
-  const version = overview.ownership && overview.ownership.api_version;
+  // Ownership as of the newest Overview answer that reached the daemon: an unreachable one reports none.
+  const version = lastGood && lastGood.ownership && lastGood.ownership.api_version;
   return { tone: "ok", text: version ? `Daemon live · API ${version}` : "Daemon live" };
 }
 
@@ -137,12 +147,12 @@ export function daemonBanner() {
         : "Repeat a change only once it answers.",
     };
   }
-  const ownership = overview ? overview.ownership : null;
+  const ownership = lastGood ? lastGood.ownership : null;
   const compatibility = ownership ? ownership.compatibility : null;
-  if (overview && overview.reachable && overview.error) {
+  if (ownerError) {
     // The daemon answered /health, but the owner API refused or failed (Overview names the HTTP status).
     return { tone: "bad", title: "The daemon answered, but its owner API did not.",
-      detail: `${overview.error[0].toUpperCase()}${overview.error.slice(1)}. Overview shows what the Hub last read.` };
+      detail: `${ownerError[0].toUpperCase()}${ownerError.slice(1)}. Overview shows what the Hub last read.` };
   }
   if (compatibility === "too_old") {
     return {
@@ -156,12 +166,15 @@ export function daemonBanner() {
       detail: "The Hub checks its health until it answers with confirmed settings." };
   }
   if (config && config.restart_required) {
-    const saved = config.pending_revision, running = config.revision;
+    // The running revision comes only from the daemon's health; the Settings read's `revision` is the saved one.
+    const saved = config.pending_revision;
+    const known = typeof saved === "number";
     return {
       tone: "warn",
       title: "Restart needed to apply saved settings.",
-      detail: typeof saved === "number" && typeof running === "number"
-        ? `Revision ${saved} is saved; the daemon still runs revision ${running}.` : "",
+      detail: known && typeof running === "number" && running < saved
+        ? `Revision ${saved} is saved; the daemon still runs revision ${running}.`
+        : known ? `Revision ${saved} is saved; restart the daemon to apply it.` : "",
       action: { label: "Restart in Settings", href: "#/settings" },
     };
   }
