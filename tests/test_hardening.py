@@ -15,7 +15,7 @@ import pytest
 
 from harness_hub import auth
 from harness_hub.auth import Sessions, create_signin_code
-from harness_hub.config import Settings, normalize_daemon_url
+from harness_hub.config import Settings, normalize_daemon_url, normalize_public_url
 from harness_hub.daemon import DaemonUnreachable, Reply
 from harness_hub.server import MAX_SIGNIN_BODY, create_app
 from harness_hub.state import StateStore, prepare_dir, read_json, write_private
@@ -52,6 +52,49 @@ def test_remote_daemon_requires_https(url):
 @pytest.mark.parametrize("url", ["http://localhost:8100", "http://127.0.0.1:8100", "http://[::1]:8100"])
 def test_loopback_daemon_allows_http(url):
     assert normalize_daemon_url(url) == url
+
+
+@pytest.mark.parametrize("port", ["abc", "0", "65536", "99999", "-1"])
+def test_urls_reject_invalid_ports(port):
+    with pytest.raises(ValueError, match="port"):
+        normalize_daemon_url(f"http://127.0.0.1:{port}")
+    with pytest.raises(ValueError, match="port"):
+        normalize_public_url(f"https://hub.example:{port}")
+    with pytest.raises(ValueError, match="port"):
+        Settings(daemon_url=f"http://127.0.0.1:{port}")
+    with pytest.raises(ValueError, match="port"):
+        Settings(public_url=f"https://hub.example:{port}")
+    with pytest.raises(ValueError, match="port"):
+        Settings(public_url="https://hub.example", extra_hosts=(f"hub.example:{port}",))
+
+
+@pytest.mark.parametrize("port", ["1", "8100", "65535"])
+def test_urls_accept_valid_ports(port):
+    assert normalize_daemon_url(f"http://127.0.0.1:{port}") == f"http://127.0.0.1:{port}"
+    assert Settings(public_url=f"https://hub.example:{port}").public_url == f"https://hub.example:{port}"
+
+
+@pytest.mark.parametrize("flag", ["--daemon-url", "--public-url", "--allowed-host"])
+def test_cli_reports_invalid_port_as_usage_error(tmp_path, flag):
+    value = "hub.example:abc" if flag == "--allowed-host" else "https://hub.example:abc"
+    extra = [] if flag == "--public-url" else ["--public-url", "https://hub.example"]
+    if flag == "--daemon-url":
+        value, extra = "http://127.0.0.1:abc", []
+    result = subprocess.run(
+        [sys.executable, "-m", "harness_hub", flag, value, *extra, "--state-dir", str(tmp_path)],
+        capture_output=True, text=True, timeout=60, check=False)
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert "harness_hub: error:" in result.stderr
+
+
+def test_signin_link_rejects_invalid_port(tmp_path):
+    result = subprocess.run(
+        [sys.executable, "-m", "harness_hub", "signin-link", "--url", "http://127.0.0.1:99999",
+         "--state-dir", str(tmp_path)],
+        capture_output=True, text=True, timeout=60, check=False)
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
 
 
 def test_signin_body_limit_does_not_spend_code(hub):

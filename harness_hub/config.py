@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 DEFAULT_DAEMON_URL = "http://127.0.0.1:8100"
 DEFAULT_HOST = "127.0.0.1"
@@ -22,7 +22,18 @@ def normalize_daemon_url(value: str) -> str:
         raise ValueError("daemon URL must be an origin only (no credentials, path, query or fragment)")
     if parts.scheme == "http" and not _is_loopback(parts.hostname):
         raise ValueError("daemon URL must be https unless it is a loopback address")
+    _check_port(parts)
     return f"{parts.scheme}://{parts.netloc}"
+
+
+def _check_port(parts: SplitResult) -> None:
+    """Reject a port urlsplit cannot read (`:abc`, `:99999`) and port 0, which nothing listens on."""
+    try:
+        port = parts.port
+    except ValueError:
+        raise ValueError("URL port must be a number from 1 to 65535") from None
+    if port == 0:
+        raise ValueError("URL port must be a number from 1 to 65535")
 
 
 def normalize_public_url(value: str) -> str:
