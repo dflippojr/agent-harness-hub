@@ -252,8 +252,8 @@ export function renderPairing(main) {
       ["Name", "Kind", "State", "Scopes", "Finished", "Key"], rows.map((row) =>
         h("tr", { "data-request-id": row.id, "data-state": row.state },
           h("td", { class: "history-name" }, row.name || row.id), h("td", {}, kind(row)), h("td", {}, pill(label(row))),
-          h("td", {}, row.scopes.join(", ") || "None"), h("td", {}, stamp(row.finished_at)),
-          h("td", { class: row.key_id ? "mono" : "muted" }, row.key_id || "—")))));
+          h("td", {}, row.scopes.join(", ") || "None"), h("td", { class: "nowrap" }, stamp(row.finished_at)),
+          h("td", { class: row.key_id ? "mono nowrap" : "muted" }, row.key_id || "—")))));
   }
 
   // Deny and Withdraw ask first, inside the card that was acted on (decision 5 of #65).

@@ -901,6 +901,9 @@ body.signed-out .topbar { display: none; }
 
 .card.pairing-history { padding: 0; overflow: hidden; border-radius: 14px; }
 .history-name { font-weight: 650; }
+/* Words wrap only at spaces, and dates and key ids not at all: a narrow screen scrolls the table inside its box. */
+.pairing-history .table td { overflow-wrap: normal; }
+.pairing-history .table td.nowrap { white-space: nowrap; }
 
 .card.empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 36px 24px; text-align: center; color: var(--muted); }
 .card.empty .icon { width: 28px; height: 28px; }
