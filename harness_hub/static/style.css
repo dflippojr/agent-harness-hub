@@ -766,8 +766,7 @@ body.signed-out .topbar { display: none; }
   .card.signin-card { padding: 20px 18px; }
 }
 
-/* Settings uses the shell's colour and touch-target tokens. */
-.settings-registry { display: grid; gap: 16px; }
+/* Form fields shared by the Settings controls, Marketplace and Accounts and maintenance. */
 .settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .setting-field { border-top: 1px solid var(--line); padding-top: 16px; margin-top: 16px; overflow-wrap: anywhere; }
 .setting-field label { display: grid; gap: 6px; font-weight: 600; }
@@ -780,11 +779,167 @@ body.signed-out .topbar { display: none; }
   outline: 3px solid var(--accent); outline-offset: 2px;
 }
 .setting-meta { color: var(--muted); font-size: .9rem; }
-.setting-field .reset-setting { display: flex; align-items: center; min-height: var(--tap); font-weight: 400; }
-.reset-setting input { width: var(--tap); min-height: var(--tap); margin: 0; }
 .field-error { color: var(--bad); }
 .setting-field [aria-invalid="true"] { border-color: var(--bad); }
 @media (max-width: 699px) { .page-head { flex-wrap: wrap; } }
+
+/* Settings (Hub design 8): the revision chip, Roll back and Restart in the page head; a category list with a filter
+   beside one category's rows from 1100px, and a row of category buttons that scrolls sideways above them below that.
+   Each row puts label and help beside its input once the pane is wide enough; an edited row is tinted, with a Changed
+   pill. The save bar sticks to the bottom of the page while there are edits or a result to read. */
+.settings-head h1 { flex: 1; }
+.revision-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 10px 0 9px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: .78rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.revision-chip::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.revision-chip.ok::before { background: var(--ok); }
+.revision-chip.warn { background: var(--warn-bg); color: var(--warn); }
+.revision-chip.warn::before { background: var(--warn); }
+/* Hidden parts of the page stay hidden whatever display their classes give them. */
+.revision-chip[hidden], .settings-layout [hidden], .settings-dock[hidden], .settings-dock [hidden] { display: none !important; }
+.settings-health:empty { display: none; }
+.card.settings-confirm { margin-bottom: 16px; overflow-wrap: anywhere; }
+
+.settings-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px 28px; align-items: start; margin-top: 16px; }
+.settings-cats { min-width: 0; }
+.settings-filter {
+  display: block;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: .95rem;
+}
+.settings-filter::placeholder { color: var(--muted); }
+.settings-filter:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.settings-cat-lists { display: flex; gap: 6px; margin-top: 8px; padding-bottom: 4px; overflow-x: auto; }
+.settings-cat-lists .nav-group { display: none; }
+.settings-cats ul { flex: none; display: flex; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.settings-cat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: .9rem;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.settings-cat:hover { background: var(--panel-2); }
+.settings-cat[aria-current="true"] { border-color: transparent; background: var(--info-bg); color: var(--accent); font-weight: 650; }
+.settings-cat:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.settings-cat-label { flex: 1; min-width: 0; }
+.count.changed { background: var(--info-bg); color: var(--accent); }
+.count.bad { background: var(--bad-bg); color: var(--bad); }
+
+@media (min-width: 1100px) {
+  .settings-layout { grid-template-columns: 230px minmax(0, 1fr); }
+  .settings-cat-lists { display: block; overflow: visible; }
+  .settings-cat-lists .nav-group { display: block; margin: 14px 12px 4px; }
+  .settings-cats ul { display: grid; gap: 2px; }
+  .settings-cat { padding: 0 10px 0 12px; border-color: transparent; background: transparent; white-space: normal; }
+}
+
+.settings-main { min-width: 0; container-type: inline-size; }
+.card.settings-group, .card.settings-control { padding: 0; overflow: hidden; border-radius: 14px; }
+.settings-group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 16px 20px 12px; }
+.card .settings-group-head h2 { flex: 1; margin: 0; font-size: 1.06rem; }
+.settings-group-head .muted { font-size: .82rem; }
+.setting-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px 24px; padding: 16px 20px; border-top: 1px solid var(--line); }
+.setting-row.changed { background: color-mix(in srgb, var(--info-bg) 55%, var(--panel)); }
+.setting-text, .setting-control { min-width: 0; overflow-wrap: anywhere; }
+.card .setting-row h3 { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; font-size: .95rem; font-weight: 650; color: var(--text); }
+.setting-help { margin: 3px 0 0; font-size: .86rem; color: var(--muted); }
+.setting-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 6px; font-size: .78rem; color: var(--muted); }
+.setting-facts .mono { font-size: .78rem; overflow-wrap: anywhere; }
+/* A link-sized Reset that is still a 44px target: the negative margins keep the facts line short. */
+.btn.text.setting-reset { margin: -12px 0; padding: 0 6px; font-size: .82rem; }
+.setting-caption { display: block; margin: 0 0 6px; font-size: .82rem; font-weight: 650; color: var(--muted); }
+.setting-control input, .setting-control select, .setting-control textarea {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--tap);
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: .95rem;
+}
+.setting-control textarea { padding: 10px 12px; resize: vertical; }
+.setting-control input::placeholder, .setting-control textarea::placeholder { color: var(--muted); }
+.setting-control input:focus-visible, .setting-control select:focus-visible, .setting-control textarea:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+.setting-control :disabled { opacity: .7; cursor: not-allowed; }
+.setting-row.changed .setting-control :is(input, select, textarea) { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.setting-control [aria-invalid="true"], .setting-row.changed .setting-control [aria-invalid="true"] { border-color: var(--bad); box-shadow: 0 0 0 1px var(--bad); }
+.setting-control .hint { margin-top: 6px; }
+.setting-control .field-error { margin: 6px 0 0; font-size: .85rem; }
+.setting-control .field-error:empty { display: none; }
+@container (min-width: 560px) {
+  .setting-row { grid-template-columns: minmax(0, 1fr) 240px; }
+  .setting-row.wide { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+
+.settings-control-body { display: grid; gap: 12px; padding: 0 20px 18px; overflow-wrap: anywhere; }
+.settings-control-body > * { margin: 0; }
+.settings-control-body .setting-field { margin: 0; padding-top: 0; border-top: 0; }
+.card .settings-control-body h3 { margin: 6px 0 0; color: var(--text); }
+.settings-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.settings-control > .notice { margin: 0 20px 18px; }
+
+.settings-dock {
+  position: sticky;
+  z-index: 1;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  margin-top: 20px;
+  padding: 10px 10px 10px 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 10px 30px var(--shadow);
+}
+.settings-dock .notice { margin: 0 0 8px; overflow-wrap: anywhere; }
+.settings-dock .notice ul { margin: 6px 0 0; padding-left: 20px; }
+.savebar { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 10px; }
+.savebar-text { flex: 1 1 16em; min-width: 0; font-size: .9rem; overflow-wrap: anywhere; }
+.savebar-detail { color: var(--muted); }
+
+@media (max-width: 699px) {
+  /* The title, then the revision, then Roll back and Restart side by side. */
+  .settings-head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .settings-head h1, .settings-head .revision-chip { grid-column: 1 / -1; justify-self: start; }
+  .setting-row { padding: 14px 16px; }
+  .settings-group-head { padding: 14px 16px 10px; }
+  .settings-control-body { padding: 0 16px 16px; }
+  .settings-dock { padding: 10px; }
+  .savebar .btn { flex: 1 1 auto; }
+}
 
 .module-facts { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
 .module-facts dt, .grid .card h2 { overflow-wrap: anywhere; }

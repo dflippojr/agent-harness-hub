@@ -51,20 +51,24 @@ export async function appAsksToPair(request, name, scopes = ["sessions"]) {
   return asked.json();
 }
 
-// HUB-04's save and rollback of Maximum turns, shared by settings.spec.mjs and the verify skill's drive step.
+// HUB-04's save and rollback of Maximum turns, shared by settings.spec.mjs and the verify skill's drive step. The save
+// bar reports Validate and Save; the notice under the page head reports Roll back and Restart.
 export const settingsControls = (page) => ({
   turns: page.getByRole("spinbutton", { name: "Maximum turns" }),
-  status: page.locator("main p.notice[aria-live]").first(),
+  saveBar: page.getByRole("region", { name: "Settings changes" }),
+  status: page.locator("main > p.notice[aria-live]"),
 });
 
 export async function saveMaxTurns(page, from, to) {
-  const { turns, status } = settingsControls(page);
+  const { turns, saveBar } = settingsControls(page);
   await turns.fill(String(to));
-  await page.getByRole("button", { name: "Validate", exact: true }).click();
-  await expect(status).toContainText(`sessions.max_turns: ${from} → ${to}`);
-  await expect(status).toContainText("Validated.");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(status).toContainText("Saved.");
+  await expect(saveBar).toContainText(`1 unsaved change · sessions.max_turns ${from} → ${to}`);
+  await saveBar.getByRole("button", { name: "Validate", exact: true }).click();
+  await expect(saveBar).toContainText(`sessions.max_turns: ${from} → ${to}`);
+  await expect(saveBar).toContainText("Validated.");
+  await saveBar.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(saveBar).toContainText("Saved.");
+  await expect(saveBar.getByRole("button", { name: "Save", exact: true })).toBeHidden();
   await page.reload();
   await expect(turns).toHaveValue(String(to));
 }

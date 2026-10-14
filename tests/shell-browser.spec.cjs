@@ -82,10 +82,11 @@ test("Modules with a healthy inventory shows no empty error box", async ({ page 
 
 test("Settings explains an absent memory library module instead of an error", async ({ page }) => {
   const { errors } = await mount(page, "#/settings", { memoryReply: { ...memory, installed: false, enabled: false, profile: "" } });
+  await page.getByRole("button", { name: "Memory agent profile" }).click();
   const box = page.locator("section.card").filter({ has: page.getByRole("heading", { name: "Memory agent profile" }) });
   await expect(box).toContainText("The memory library module (memory_library) is not installed or is switched off");
   await expect(box.getByText("harness config set memory_library.enabled=true", { exact: true })).toBeVisible();
-  await expect(box.getByLabel("Agent profile")).toHaveCount(0);
+  await expect(box.getByLabel("Agent profile", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Not Found")).toHaveCount(0);
   await expect(box.locator(".notice.bad")).toHaveCount(0);
   expect(errors).toEqual([]);
@@ -93,7 +94,8 @@ test("Settings explains an absent memory library module instead of an error", as
 
 test("Settings still offers the profile editor when the module is present", async ({ page }) => {
   await mount(page, "#/settings");
-  await expect(page.getByLabel("Agent profile")).toHaveValue("Synthetic profile");
+  await page.getByRole("button", { name: "Memory agent profile" }).click();
+  await expect(page.getByLabel("Agent profile", { exact: true })).toHaveValue("Synthetic profile");
   await expect(page.getByRole("button", { name: "Save profile" })).toBeVisible();
 });
 
