@@ -16,10 +16,6 @@ const valueText = (value) => value === null || value === undefined ? "" :
 const APPLY = { live: ["Live", "ok"], daemon_restart: ["Restart", "warn"], installer_only: ["Installer only", "muted"] };
 const RECOVERY = { lkg_restore: "restored its last good settings",
   overlay_quarantined: "set aside saved settings it could not load" };
-// The daemon's other controls, listed after the registry's categories.
-const CONTROLS = [["smart-approvals", "Smart approvals mode"], ["backends", "Backend defaults"],
-  ["memory", "Memory agent profile"], ["github", "Member GitHub access"], ["google", "Google sign-in"],
-  ["notify", "Notifications"]];
 const sentence = (text) => text ? text[0].toUpperCase() + text.slice(1) : "";
 const isList = (spec) => spec.type.endsWith("_list");
 
@@ -97,19 +93,18 @@ export function renderSettings(main) {
     h("div", { class: "settings-main" }, pane, empty)), dock);
   filter.addEventListener("input", () => setQuery(filter.value));
   drawHead();
-  const controls = CONTROLS.map(([id, title]) => {
+  const controls = controlCards().map((card) => {
     const body = h("div", { class: "settings-control-body" });
     const status = h("p", { "aria-live": "polite", class: "notice" });
-    const group = listItem("control:" + id, "control", title, controlList);
-    group.section = h("section", { class: "card settings-control", hidden: true, "aria-labelledby": `control-${id}` },
-      h("div", { class: "settings-group-head" }, h("h2", { id: `control-${id}` }, title)), body, status);
-    group.body = body;
-    group.report = (text, bad = false) => {
+    const group = listItem("control:" + card.id, "control", card.title, controlList);
+    group.section = h("section", { class: "card settings-control", hidden: true, "aria-labelledby": `control-${card.id}` },
+      h("div", { class: "settings-group-head" }, h("h2", { id: `control-${card.id}` }, card.title)), body, status);
+    Object.assign(group, { card, body, report: (text, bad = false) => {
       status.textContent = text;
       status.className = bad ? "notice bad" : "notice";
-    };
+    } });
     pane.append(group.section);
-    return [id, group];
+    return group;
   });
   applyView();
 
@@ -471,83 +466,89 @@ export function renderSettings(main) {
     ok.focus();
   }
 
+  // The daemon's other controls, listed after the registry's categories: each one's title, the read that fills it
+  // with its host command, and how it draws. Notifications has no read.
+  function controlCards() {
+    return [
+      { id: "smart-approvals", title: "Smart approvals mode", read: "smart-approvals", cli: "harness smart-approvals show",
+        draw: (data, box, report) => {
+          const mode = h("select", {}, ["off", "shadow", "auto"].map((v) => h("option", { value: v }, sentence(v))));
+          mode.value = data.mode;
+          box.append(field("Mode", mode), h("p", { class: "hint" }, data.secret_ref ? "Token file path: " + data.secret_ref :
+            "No token file path configured."),
+          h("div", { class: "settings-actions" }, button("Save approvals mode",
+            () => perform(() => saveControl("smart-approvals", { mode: mode.value }, report), report))),
+          command("harness smart-approvals set <mode>", { parity: true }));
+        } },
+      { id: "backends", title: "Backend defaults", read: "backends", cli: "harness backends list",
+        draw: (rows, box, report) => {
+          if (!rows.length) box.append(h("p", { class: "muted" }, "This daemon reports no backends."));
+          for (const row of rows) {
+            const model = h("input", { type: "text" }); model.value = row.model;
+            const effort = h("input", { type: "text" }); effort.value = row.effort;
+            box.append(h("h3", {}, row.name), h("div", { class: "settings-pair" }, field("Default model", model),
+              field("Default effort", effort)),
+            row.popular_models?.length ? h("p", { class: "hint" }, "Suggested models: " +
+              row.popular_models.map((m) => m.id).join(", ")) : null,
+            h("div", { class: "settings-actions" }, button("Save " + row.name, () => perform(() => saveControl("backend",
+              { name: row.name, model: model.value, effort: effort.value }, report), report))),
+            command("harness backends set " + row.name + " --model <model> --effort <effort>", { parity: true }));
+          }
+        } },
+      { id: "memory", title: "Memory agent profile", read: "memory", cli: "harness memory show",
+        draw: (data, box, report) => {
+          if (data.installed === false) {
+            box.append(h("p", { class: "muted" }, "The memory library module (memory_library) is not installed or is " +
+              "switched off on this daemon, so there is no agent profile to edit. Turn on memory_library.enabled, or " +
+              "add the module with the daemon installer's --enable-modules option."),
+            command("harness config set memory_library.enabled=true"),
+            command("bash install/install.sh --enable-modules memory_library"));
+            return;
+          }
+          const profile = h("textarea", { rows: 8, disabled: !data.enabled }); profile.value = data.profile;
+          box.append(field("Agent profile", profile), h("p", { class: "hint" },
+            data.enabled ? "Saving commits and pushes this profile to the memory library." : "Memory library is disabled."),
+          data.refresh_error ? h("p", { class: "notice bad" }, data.refresh_error) : null);
+          if (data.enabled) box.append(h("div", { class: "settings-actions" }, button("Save profile", () => perform(() =>
+            saveControl("memory", { content: profile.value, summary: "Update agent profile from Hub Settings" }, report), report))));
+          box.append(command("harness memory set-profile <content>", { parity: true }));
+        } },
+      { id: "github", title: "Member GitHub access", read: "github", cli: "harness github-member-auth show",
+        draw: (data, box, report) => {
+          const enabled = h("select", {}, h("option", { value: "true" }, "Allowed"), h("option", { value: "false" }, "Stopped"));
+          enabled.value = String(data.enabled);
+          box.append(field("Members may connect GitHub", enabled),
+            h("div", { class: "settings-actions" }, button("Save GitHub access", () => perform(() =>
+              saveControl("github", { enabled: enabled.value === "true" }, report), report))),
+            command("harness github-member-auth set <enabled>", { parity: true }));
+          preflight(data, box);
+        } },
+      { id: "google", title: "Google sign-in", read: "google", cli: "harness google-signin status",
+        draw: (data, box) => {
+          box.append(h("div", { class: "chips" }, pill(data.enabled ? "On" : "Off", data.enabled ? "ok" : "muted"),
+            pill(data.ready ? "Ready" : "Not ready", data.ready ? "ok" : "warn")),
+          h("p", { class: "hint" }, "Read-only here. Google sign-in is set up on the daemon host."));
+          preflight(data, box);
+        } },
+      { id: "notify", title: "Notifications", draw: (_, box, report) => box.append(
+        h("p", { class: "muted" }, "Send a test message through the daemon's notification channel."),
+        h("div", { class: "settings-actions" }, button("Send test notification", () => perform(async () => {
+          const answer = await api("settings/notify", { method: "POST", body: {} });
+          if (!stopped) report(answer.sent ? "Test notification sent." : "The daemon did not report a sent notification.");
+        }, report))), command("harness notify test", { parity: true })) },
+    ];
+  }
   async function loadControls() {
-    const draw = {
-      "smart-approvals": (data, box, report) => {
-        const mode = h("select", {}, ["off", "shadow", "auto"].map((v) => h("option", { value: v }, sentence(v))));
-        mode.value = data.mode;
-        box.append(field("Mode", mode), h("p", { class: "hint" }, data.secret_ref ? "Token file path: " + data.secret_ref :
-          "No token file path configured."),
-        h("div", { class: "settings-actions" }, button("Save approvals mode",
-          () => perform(() => saveControl("smart-approvals", { mode: mode.value }, report), report))),
-        command("harness smart-approvals set <mode>", { parity: true }));
-      },
-      backends: (rows, box, report) => {
-        if (!rows.length) box.append(h("p", { class: "muted" }, "This daemon reports no backends."));
-        for (const row of rows) {
-          const model = h("input", { type: "text" }); model.value = row.model;
-          const effort = h("input", { type: "text" }); effort.value = row.effort;
-          box.append(h("h3", {}, row.name), h("div", { class: "settings-pair" }, field("Default model", model),
-            field("Default effort", effort)),
-          row.popular_models?.length ? h("p", { class: "hint" }, "Suggested models: " +
-            row.popular_models.map((m) => m.id).join(", ")) : null,
-          h("div", { class: "settings-actions" }, button("Save " + row.name, () => perform(() => saveControl("backend",
-            { name: row.name, model: model.value, effort: effort.value }, report), report))),
-          command("harness backends set " + row.name + " --model <model> --effort <effort>", { parity: true }));
-        }
-      },
-      memory: (data, box, report) => {
-        if (data.installed === false) {
-          box.append(h("p", { class: "muted" }, "The memory library module (memory_library) is not installed or is " +
-            "switched off on this daemon, so there is no agent profile to edit. Turn on memory_library.enabled, or " +
-            "add the module with the daemon installer's --enable-modules option."),
-          command("harness config set memory_library.enabled=true"),
-          command("bash install/install.sh --enable-modules memory_library"));
-          return;
-        }
-        const profile = h("textarea", { rows: 8, disabled: !data.enabled }); profile.value = data.profile;
-        box.append(field("Agent profile", profile), h("p", { class: "hint" },
-          data.enabled ? "Saving commits and pushes this profile to the memory library." : "Memory library is disabled."),
-        data.refresh_error ? h("p", { class: "notice bad" }, data.refresh_error) : null);
-        if (data.enabled) box.append(h("div", { class: "settings-actions" }, button("Save profile", () => perform(() =>
-          saveControl("memory", { content: profile.value, summary: "Update agent profile from Hub Settings" }, report), report))));
-        box.append(command("harness memory set-profile <content>", { parity: true }));
-      },
-      github: (data, box, report) => {
-        const enabled = h("select", {}, h("option", { value: "true" }, "Allowed"), h("option", { value: "false" }, "Stopped"));
-        enabled.value = String(data.enabled);
-        box.append(field("Members may connect GitHub", enabled),
-          h("div", { class: "settings-actions" }, button("Save GitHub access", () => perform(() =>
-            saveControl("github", { enabled: enabled.value === "true" }, report), report))),
-          command("harness github-member-auth set <enabled>", { parity: true }));
-        preflight(data, box);
-      },
-      google: (data, box) => {
-        box.append(h("div", { class: "chips" }, pill(data.enabled ? "On" : "Off", data.enabled ? "ok" : "muted"),
-          pill(data.ready ? "Ready" : "Not ready", data.ready ? "ok" : "warn")),
-        h("p", { class: "hint" }, "Read-only here. Google sign-in is set up on the daemon host."));
-        preflight(data, box);
-      },
-    };
-    const reads = { "smart-approvals": ["smart-approvals", "harness smart-approvals show"], backends: ["backends",
-      "harness backends list"], memory: ["memory", "harness memory show"], github: ["github", "harness github-member-auth show"],
-    google: ["google", "harness google-signin status"] };
-    await Promise.all(controls.map(async ([id, group]) => {
-      const { body, report } = group;
+    await Promise.all(controls.map(async ({ card, body, report }) => {
       report("");
-      if (id === "notify") {
-        clear(body, h("p", { class: "muted" }, "Send a test message through the daemon's notification channel."),
-          h("div", { class: "settings-actions" }, button("Send test notification", () => perform(async () => {
-            const answer = await api("settings/notify", { method: "POST", body: {} });
-            if (!stopped) report(answer.sent ? "Test notification sent." : "The daemon did not report a sent notification.");
-          }, report))), command("harness notify test", { parity: true }));
+      clear(body, card.read ? command(card.cli, { parity: true }) : null);
+      if (!card.read) {
+        card.draw(null, body, report);
         return;
       }
-      const [path, cli] = reads[id];
-      clear(body, command(cli, { parity: true }));
       try {
-        const data = await api("settings/" + path);
-        if (!stopped) draw[id](data, body, report);
+        const data = await api("settings/" + card.read);
+        if (!stopped) card.draw(data, body, report);
       } catch (error) { if (!stopped) body.append(h("p", { class: "notice bad", role: "alert" }, error.message)); }
     }));
   }
