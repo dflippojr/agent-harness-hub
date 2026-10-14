@@ -130,3 +130,35 @@ def test_absent_memory_module_is_a_state_not_a_fault(claimed, fake_daemon):
     assert "Not Found" not in absent.text
     saved = write(hub, "PUT", "memory", {"content": "Synthetic", "summary": "Synthetic"})
     assert saved.status_code == 404
+
+
+def test_errors_say_whether_the_daemon_answered(claimed, fake_daemon):
+    # The shell tells "the Hub could not reach the daemon" from "the daemon answered with an error" by this marker,
+    # never by the status alone: the Hub also forwards the daemon's own 503.
+    fake_daemon.down = True
+    for path in ("/api/settings/config", "/api/pairing"):
+        gone = claimed.get(path)
+        assert gone.status_code == 503 and gone.json()["reachable"] is False
+    fake_daemon.down = False
+    stale = write(claimed, "POST", "validate", {"revision": 1, "changes": {}})
+    assert stale.status_code == 409 and stale.json()["reachable"] is True
+    assert stale.json()["error"]["code"] == "revision_conflict"
+    # A refusal of the Hub's own never says either way.
+    assert "reachable" not in claimed.get("/api/settings/nothing").json()
+
+
+def test_overview_ends_a_restart_that_recovery_resolved_at_a_lower_revision(claimed, fake_daemon):
+    saved = write(claimed, "PATCH", "config", {"revision": 3, "changes": {"listen.idle": 2.0}})
+    assert saved.json()["pending_revision"] == 4
+    started = write(claimed, "POST", "restart", {"revision": 4, "confirm": True})
+    assert started.status_code == 202 and started.json()["target_revision"] == 4
+    # Revision 4 fails to boot: the daemon restores its last good revision 3 and drops the pending one.
+    fake_daemon.restart_requested, fake_daemon.restart_polls = False, 0
+    fake_daemon.revision, fake_daemon.pending, fake_daemon.pending_revision = 3, {}, None
+    fake_daemon.recovery = {"recovery": "lkg_restore", "reason": "synthetic boot failure", "at": 50}
+    assert claimed.get("/api/overview").json()["restarting"] is True
+    time.sleep(1.05)
+    # The owner left Settings: Overview alone ends the restart, so its banner does not stay up.
+    shown = claimed.get("/api/overview").json()
+    assert shown["restarting"] is False
+    assert claimed.get("/api/settings/health").json()["restarting"] is False

@@ -1,8 +1,7 @@
 // What the shell shows about the daemon (the rail's status chip, the Pairing badge and the banner under each page
 // head), worked out from answers the pages already read: Overview's last answer, the Pairing list, the Settings
-// revision, the Settings health poll, and any read the Hub refused with 503 because the daemon did not answer. For each
-// piece of state the newest evidence wins, by when its request started. It is held in memory only and makes no calls
-// of its own.
+// revision, the Settings health poll, and any error the Hub marks with whether the daemon answered. For each piece of
+// state the newest evidence wins, by when its request started. It is held in memory only and makes no calls of its own.
 
 // Mirrors MIN_OWNER_API in views.py; the server classifies the reported version as ownership.compatibility.
 export const MIN_OWNER_API = "1.24";
@@ -10,12 +9,13 @@ export const MIN_OWNER_API = "1.24";
 let overview = null; // the last overview answer
 let lastGood = null; // the last overview answer that reached the daemon
 let attention = null; // { approve, confirm }: App pairing requests waiting on the owner
-let config = null; // the last Settings revision read (saved, not running): { revision, pending_revision, restart_required }
+let config = null; // the last Settings read: { revision, pending_revision, restart_required, recovery }
 let running = null; // the settings revision the daemon reported in its last health answer
-let confirmed = null; // { revision, started }: the newest health answer with a confirmed settings revision
+let confirmed = null; // { revision, recovery, idle, started }: the newest health answer with a confirmed revision
 let silent = null; // whether the latest evidence says the daemon is not answering; null before any
 let ownerError = ""; // Overview's owner API failure behind a healthy /health, until an owner API read answers
 let restarting = false; // whether a restart the Hub started is still under way
+let restartSeen = 0; // when the newest request that found a Hub restart under way started, in whatever order it came
 let at = {}; // per piece of state, when the request behind its current value started
 let reads = 0; // request counter for callers that pass no start order (tests)
 const listeners = new Set();
@@ -43,24 +43,28 @@ export function noteRead(path, status, data, started = ++reads) {
   reads = Math.max(reads, started);
   const ok = status >= 200 && status < 300;
   const body = ok && data && typeof data === "object" ? data : null;
-  if (status === 503) {
-    if (newer("reach", started)) silent = true;
+  if (!ok) {
+    // The Hub marks an error with whether the daemon answered: reachable false on its own 503 when it could not reach
+    // the daemon, true on an error the daemon answered with (whatever its status, 503 included). Any other refusal
+    // (signed out, unclaimed, a bad request) says nothing about the daemon.
+    const reached = data && typeof data === "object" ? data.reachable : undefined;
+    if (typeof reached === "boolean" && newer("reach", started)) silent = !reached;
   } else if (path === "overview" && body) {
     if (newer("overview", started)) overview = body;
     if (body.reachable && newer("lastGood", started)) lastGood = body;
     if (newer("reach", started)) silent = !body.reachable;
     // Owner API evidence has its own order: a health poll says nothing about the owner API, so it cannot hide this.
     if (newer("owner", started)) ownerError = body.reachable ? body.error || "" : "";
-    if (newer("restart", started)) restarting = body.restarting === true;
-    if (body.reachable) health(body.health, started);
+    restart(body.restarting === true, started);
+    if (body.reachable) health(body.health, body.restarting === true, started);
     if (body.attention !== undefined && newer("attention", started)) attention = body.attention;
   } else if (path === "settings/health" && body) {
     // Settings polls health around a restart; the Hub answers 200 even when the daemon does not. A healthy /health
     // says nothing about the owner API, so it leaves an owner API failure standing.
     if (typeof body.reachable === "boolean") {
       if (newer("reach", started)) silent = !body.reachable;
-      if (newer("restart", started)) restarting = body.restarting === true;
-      if (body.reachable) health(body.health, started);
+      restart(body.restarting === true, started);
+      if (body.reachable) health(body.health, body.restarting === true, started);
     }
   } else if (INVENTORY.has(path) && body) {
     if (typeof body.reachable === "boolean" && newer("reach", started)) silent = !body.reachable;
@@ -80,22 +84,45 @@ export function noteRead(path, status, data, started = ++reads) {
   for (const listener of listeners) listener();
 }
 
-// A health answer from the daemon: the revision it runs, and the newest confirmed one, which may settle a restart.
-function health(reported, started) {
-  if (!reported || typeof reported.config_revision !== "number") return;
-  if (newer("running", started)) running = reported.config_revision;
-  if (reported.config_confirmed === true && newer("confirmed", started)) {
-    confirmed = { revision: reported.config_revision, started };
+// Whether a restart the Hub started is under way, as of a reply to a request that started at `started`.
+function restart(active, started) {
+  if (newer("restart", started)) restarting = active;
+  if (active && started > restartSeen) {
+    restartSeen = started;
     settle();
   }
 }
 
-// A daemon that confirmed a revision at or past the saved (pending) one needs no restart for it, whatever an older
-// Settings read said, in whichever order the two answers arrive.
+// A health answer from the daemon: the revision it runs, and the newest confirmed one, which may settle a restart.
+// `active` is whether the same reply said a Hub restart was still under way.
+function health(reported, active, started) {
+  if (!reported || typeof reported.config_revision !== "number") return;
+  if (newer("running", started)) running = reported.config_revision;
+  if (reported.config_confirmed === true && newer("confirmed", started)) {
+    confirmed = { revision: reported.config_revision, recovery: recoveryKey(reported.recovery), idle: !active, started };
+    settle();
+  }
+}
+
+// Which recovery the daemon reports (health and the Settings read both carry it), or "" for none.
+function recoveryKey(recovery) {
+  return recovery && recovery.recovery ? JSON.stringify([recovery.recovery, recovery.at ?? null, recovery.reason ?? ""])
+    : "";
+}
+
+// A confirmed health answer newer than the Settings read settles the restart that read asked for, in whichever order
+// the answers arrive, when the daemon reports any of: running the saved (pending) revision or a later one, so it was
+// applied; a recovery the read did not report, so the daemon restarted since and threw the pending revision out
+// (lkg_restore or overlay_quarantined), whatever lower revision it now runs; or, with no Hub restart under way any more,
+// the end of one that began after the read (the Hub ends one only on confirmed health at its target or a recovery), which
+// also settles a read that needed a restart with no pending revision.
 function settle() {
   if (!config || !config.restart_required || !confirmed || confirmed.started < (at.config || 0)) return;
   const saved = config.pending_revision;
-  if (typeof saved === "number" && confirmed.revision >= saved) {
+  const applied = typeof saved === "number" && confirmed.revision >= saved;
+  const recovered = confirmed.recovery !== "" && confirmed.recovery !== recoveryKey(config.recovery);
+  const restarted = confirmed.idle && restartSeen > (at.config || 0) && confirmed.started > restartSeen;
+  if (applied || recovered || restarted) {
     config = { ...config, restart_required: false, pending_revision: null };
     at.config = confirmed.started;
   }
@@ -111,6 +138,7 @@ export function resetStatus() {
   overview = lastGood = attention = config = running = confirmed = silent = null;
   ownerError = "";
   restarting = false;
+  restartSeen = 0;
   at = {};
   reads = 0;
 }

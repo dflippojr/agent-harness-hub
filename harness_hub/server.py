@@ -119,6 +119,16 @@ def _error(status: int, detail: str, **extra: Any) -> JSONResponse:
     return JSONResponse({"detail": detail, **extra}, status_code=status)
 
 
+# An error says whether the daemon answered, so the shell's status tells "the Hub could not reach the daemon" (a 503 of
+# the Hub's own, reachable false) from "the daemon answered with an error" (forwarded, any status, reachable true).
+def _unreachable(detail: str, **extra: Any) -> JSONResponse:
+    return _error(503, detail, reachable=False, **extra)
+
+
+def _forwarded(reply: Any) -> JSONResponse:
+    return JSONResponse({**settings_error(reply.body, reply.status), "reachable": True}, status_code=reply.status)
+
+
 async def concurrently(*reads: Any) -> list[Any]:
     """Await independent daemon reads together, so a slow daemon costs one round trip instead of one per read.
 
@@ -170,6 +180,13 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     app.state.inventory = inventory
     restart = {"active": False, "target": None, "not_before": 0.0}
 
+    def observe_restart(shown: dict | None) -> None:
+        """End a restart the Hub started once the daemon answers healthy with confirmed settings, at the target revision
+        or after a recovery. Overview and the Settings health poll both look, so neither page has to stay open."""
+        if time.monotonic() >= restart["not_before"] and shown and shown["ok"] and shown["config_confirmed"] and (
+                restart["target"] is None or shown["config_revision"] == restart["target"] or shown["recovery"]):
+            restart["active"] = False
+
     @app.middleware("http")
     async def require_owner(request: Request, call_next):
         path = request.url.path
@@ -210,8 +227,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         try:
             reply = await daemon.admin(token)
         except DaemonUnreachable:
-            return _error(503, f"the daemon at {settings.daemon_url} did not answer; use a sign-in link",
-                          signin_command=SIGNIN_COMMAND)
+            return _unreachable(f"the daemon at {settings.daemon_url} did not answer; use a sign-in link",
+                                signin_command=SIGNIN_COMMAND)
         if not reply.ok:
             return _error(502, f"the owner API answered HTTP {reply.status}; use a sign-in link",
                           signin_command=SIGNIN_COMMAND)
@@ -395,6 +412,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 pairing_task.cancel()
                 await concurrently(pairing_task)
         result = overview(claims, settings.daemon_url, health, ownership, error)
+        observe_restart(health["health"] if health else None)
         result["restarting"] = restart["active"]
         result["attention"] = attention
         return result
@@ -613,7 +631,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if reply.status == 401:
                 return await refused(key["token"])
         except DaemonUnreachable:
-            return _error(503, "The daemon did not answer. Refresh the Marketplace before setting up again.")
+            return _unreachable("The daemon did not answer. Refresh the Marketplace before setting up again.")
         if not reply.ok:
             error = settings_error(reply.body, reply.status)
             if error["error"]["code"] == "acknowledgement_required":
@@ -634,8 +652,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             try:
                 denied = await daemon.pairing(key["token"], "deny", rid=unsafe["id"])
             except DaemonUnreachable:
-                return _error(503, "Disclosure review failed and the slot could not be withdrawn. "
-                              "Withdraw it on Pairing requests before trying again.")
+                return _unreachable("Disclosure review failed and the slot could not be withdrawn. "
+                                    "Withdraw it on Pairing requests before trying again.")
             if not denied.ok or pairing_request_view(denied.body)["state"] != "denied":
                 return _error(502, "Disclosure review failed and the daemon refused to withdraw the slot. "
                               "Withdraw it on Pairing requests before trying again.")
@@ -712,7 +730,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if reply.status == 401:
                 return await refused(key["token"])
             if not reply.ok:
-                return JSONResponse(settings_error(reply.body, reply.status), status_code=reply.status)
+                return _forwarded(reply)
             if operation == "revoke":
                 return Response(status_code=204)
             if operation == "erasures":
@@ -729,7 +747,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 if keys.status == 401:
                     return await refused(key["token"])
                 if not keys.ok:
-                    return _error(keys.status, f"App detail could not be read (HTTP {keys.status}).")
+                    return _error(keys.status, f"App detail could not be read (HTTP {keys.status}).", reachable=True)
                 if not isinstance(keys.body, list):
                     return _error(502, "The daemon returned invalid App detail.")
                 row = next((row for row in keys.body if isinstance(row, dict) and row.get("id") == app_id), None)
@@ -738,7 +756,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return {**shown, "retention_days": app_view(row)["retention_days"]}
             return {"id": app_view(reply.body)["id"], "retention_days": app_view(reply.body)["retention_days"]}
         except DaemonUnreachable:
-            return _error(503, "The daemon did not answer. Refresh the state before repeating a write.")
+            return _unreachable("The daemon did not answer. Refresh the state before repeating a write.")
 
     @app.api_route("/api/pairing", methods=["GET"])
     @app.api_route("/api/pairing/{rid}/{action}", methods=["POST"])
@@ -809,9 +827,9 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if reply.status == 401:
                 return await refused(key["token"])
         except DaemonUnreachable:
-            return _error(503, "The daemon did not answer. Refresh the list before repeating a decision.")
+            return _unreachable("The daemon did not answer. Refresh the list before repeating a decision.")
         if not reply.ok:
-            return JSONResponse(settings_error(reply.body, reply.status), status_code=reply.status)
+            return _forwarded(reply)
         if operation == "list":
             if not isinstance(reply.body, list):
                 return _error(502, "The daemon returned invalid pairing requests.")
@@ -886,7 +904,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if reply.status == 401:
                 return await refused(key["token"])
             if not reply.ok:
-                return JSONResponse(settings_error(reply.body, reply.status), status_code=reply.status)
+                return _forwarded(reply)
             if reply.status == 204:
                 return Response(status_code=204)
             try:
@@ -895,7 +913,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return _error(502, "The daemon returned invalid administration data. Refresh before repeating a write.")
             return JSONResponse(shown, status_code=reply.status)
         except DaemonUnreachable:
-            return _error(503, "The daemon did not answer. Read its current state before repeating a write.")
+            return _unreachable("The daemon did not answer. Read its current state before repeating a write.")
 
     @app.get("/api/settings/health")
     async def settings_health():
@@ -904,9 +922,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         except DaemonUnreachable:
             return {"reachable": False, "restarting": restart["active"], "health": None}
         shown = health_view(reply.body)["health"] if reply.ok else None
-        if time.monotonic() >= restart["not_before"] and shown and shown["ok"] and shown["config_confirmed"] and (
-                restart["target"] is None or shown["config_revision"] == restart["target"] or shown["recovery"]):
-            restart["active"] = False
+        observe_restart(shown)
         return {"reachable": reply.ok, "restarting": restart["active"], "health": shown}
 
     @app.api_route("/api/settings/{resource:path}", methods=["GET", "POST", "PUT", "PATCH"])
@@ -964,11 +980,11 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             if reply.status == 401:
                 return await refused(key["token"])
         except DaemonUnreachable:
-            return _error(503, "The daemon did not answer. Check its health before repeating a write.")
+            return _unreachable("The daemon did not answer. Check its health before repeating a write.")
         if operation == "memory" and reply.status == 404 and memory_route_absent(reply.body):
             return JSONResponse(control_view(operation, {"enabled": False}, installed=False))
         if not reply.ok:
-            return JSONResponse(settings_error(reply.body, reply.status), status_code=reply.status)
+            return _forwarded(reply)
         if operation == "restart" and isinstance(reply.body, dict) and reply.body.get("accepted") is True:
             restart.update(active=True, target=reply.body.get("target_revision"),
                            not_before=time.monotonic() + 1)
