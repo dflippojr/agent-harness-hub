@@ -9,6 +9,7 @@ import { renderApps } from "./pages/apps.mjs";
 import { renderMarketplace } from "./pages/marketplace.mjs";
 import { renderModules } from "./pages/modules.mjs";
 import { renderPairing } from "./pages/pairing.mjs";
+import { renderSpend } from "./pages/spend.mjs";
 import { INVALID_LINK, renderSignin, signinFromHash } from "./pages/signin.mjs";
 
 const SECTIONS = [
@@ -16,6 +17,7 @@ const SECTIONS = [
   { id: "settings", label: "Settings", render: renderSettings },
   { id: "modules", label: "Modules", render: renderModules },
   { id: "apps", label: "Apps", render: renderApps },
+  { id: "spend", label: "Spend", render: renderSpend },
   { id: "pairing", label: "Pairing requests", render: renderPairing },
   { id: "marketplace", label: "Marketplace", render: renderMarketplace },
   { id: "admin", label: "Accounts and maintenance", render: renderAdmin },

@@ -408,6 +408,58 @@ def limits_view(body: Any) -> dict:
     return out
 
 
+USAGE_FIELDS = ("requests", "prompt_tokens", "completion_tokens", "cost_usd")
+SPEND_NEAR = 0.8  # an App whose session-cap use reaches this share of a cap is flagged as near its limit
+
+
+def usage_tally(value: Any, local: bool = False) -> dict:
+    """One usage tally; a local-model tally shows tokens only, so its cost is None (the owner's choice in #61)."""
+    value = value if isinstance(value, dict) else {}
+    out = {key: _finite(value.get(key)) for key in USAGE_FIELDS}
+    if local:
+        out["cost_usd"] = None
+    return out
+
+
+def cap_use(limits: Any) -> dict | None:
+    """Sessions counted against an App's effective caps; parked sessions count toward both (as the daemon counts)."""
+    if not valid_limits(limits):
+        return None
+    shown = limits_view(limits)
+    running, queued, parked = (shown[key] or 0 for key in ("running", "queued", "parked"))
+    caps = shown["effective"]
+    used = {"running": running + parked, "queued": queued + parked}
+    share = max(used["running"] / caps["max_running"], used["queued"] / caps["max_queued"])
+    return {"max_running": caps["max_running"], "max_queued": caps["max_queued"], "running": used["running"],
+            "queued": used["queued"], "parked": parked, "share": round(share, 4), "near": share >= SPEND_NEAR}
+
+
+def spend_view(inventory: Any, backends: Any, limits: dict, key_id: str, secrets: tuple[str, ...] = ()) -> dict:
+    """Every App's lifetime usage and session-cap use, and each backend's today and 7-day usage.
+
+    The daemon has no per-App time windows yet (agent-harness#686), so per-App rows carry lifetime totals only."""
+    rows = inventory.get("apps", []) if isinstance(inventory, dict) else []
+    apps = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("kind") not in ("app", "device") or row.get("role") == "hub":
+            continue
+        shown = app_view(row, key_id, secrets)
+        if not shown["id"] or shown["this_hub"]:
+            continue
+        apps.append({"id": shown["id"], "name": shown["name"], "kind": shown["kind"], "state": shown["state"],
+                     "usage": shown["store"]["usage"], "caps": cap_use(limits.get(shown["id"]))})
+    out_backends = []
+    for row in backends if isinstance(backends, list) else []:
+        if not isinstance(row, dict):
+            continue
+        billing = _str(row.get("billing"), 32)
+        local = billing == "local"
+        out_backends.append({"name": _app_text(row.get("name"), 80, secrets), "billing": billing, "local": local,
+                             "today": usage_tally(row.get("today"), local),
+                             "week": usage_tally(row.get("week"), local)})
+    return {"apps": apps, "backends": out_backends}
+
+
 TEXT = "text"
 NUMBER = "number"
 BOOL = "bool"

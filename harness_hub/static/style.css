@@ -322,3 +322,19 @@ details summary { min-height: var(--tap); display: flex; align-items: center; cu
 .origin-choice { border: 1px solid var(--line); border-radius: var(--radius); margin: 8px 0; padding: 4px 12px 8px; }
 .origin-choice legend { font-weight: 600; padding: 0 4px; }
 .origin-choice .pairing-ack { align-items: center; margin: 4px 0; }
+
+/* Spend: wide tables scroll inside their own box, so the page never scrolls sideways on a phone. */
+.spend-table { overflow-x: auto; margin: 8px 0 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.spend-table table { width: 100%; border-collapse: collapse; }
+.spend-table th, .spend-table td { padding: 8px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.spend-table tbody tr:last-child > * { border-bottom: 0; }
+.spend-table thead th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.spend-table tbody th { font-weight: 600; overflow-wrap: anywhere; min-width: 10em; }
+.spend-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.spend-table tr.near > * { background: var(--warn-bg); }
+.spend-id { font-weight: 400; font-size: .85rem; }
+.sort {
+  min-height: var(--tap); padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer;
+}
+.sort:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
