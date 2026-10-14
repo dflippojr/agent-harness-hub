@@ -160,8 +160,9 @@ export function clock(seconds) {
 // re-renders it, so this adds no timers.
 export function countdown(secondsLeft) {
   if (typeof secondsLeft !== "number" || !Number.isFinite(secondsLeft)) return null;
-  if (secondsLeft <= 0) return h("span", { class: "countdown" }, "Expired");
-  return h("span", { class: secondsLeft < 60 ? "countdown warn" : "countdown" }, `${clock(secondsLeft)} left`);
+  if (secondsLeft <= 0) return h("span", { class: "countdown" }, icon("clock"), "Expired");
+  return h("span", { class: secondsLeft < 60 ? "countdown warn" : "countdown" }, icon("clock"),
+    `${clock(secondsLeft)} left`);
 }
 
 // Irreversible actions, set apart in a red-outlined box under their own heading.
@@ -183,6 +184,8 @@ const ICONS = {
   refresh: [["path", { d: "M20 11a8 8 0 1 0-2.3 5.7" }], ["path", { d: "M20 4v7h-7" }]],
   check: [["path", { d: "m5 12 5 5 9-10" }]],
   alert: [["path", { d: "M12 3 2 20h20z" }], ["path", { d: "M12 10v4M12 17h.01" }]],
+  clock: [["circle", { cx: 12, cy: 12, r: 9 }], ["path", { d: "M12 7v5l3 2" }]],
+  chevron: [["path", { d: "m9 6 6 6-6 6" }]],
   hub: [["rect", { x: 5, y: 11, width: 14, height: 10, rx: 2 }], ["path", { d: "M8 11V7a4 4 0 0 1 8 0v4" }]],
   daemon: [["rect", { x: 3, y: 4, width: 18, height: 6, rx: 2 }], ["rect", { x: 3, y: 14, width: 18, height: 6, rx: 2 }],
     ["path", { d: "M7 7h.01M7 17h.01" }]],

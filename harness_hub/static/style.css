@@ -291,7 +291,6 @@ body.menu-open::after {
 .card.wait { border-color: var(--accent); }
 .card.warn { border-color: var(--warn); }
 .card.bad { border-color: var(--bad); }
-.signin { max-width: 640px; margin: 24px auto; }
 
 .lead { font-size: 1.05rem; }
 .muted { color: var(--muted); }
@@ -299,12 +298,6 @@ body.menu-open::after {
 .notice.bad { background: var(--bad-bg); color: var(--bad); }
 /* An empty notice (no message yet) takes no space: only a real message shows its box. */
 .notice:empty { display: none; }
-
-.match {
-  font: 700 2.4rem/1.1 var(--mono);
-  letter-spacing: .25em;
-  margin: 4px 0 12px;
-}
 
 .command {
   display: flex;
@@ -510,7 +503,7 @@ body.show-host-commands .host-command-toggle { display: none; }
 details summary { min-height: var(--tap); display: flex; align-items: center; cursor: pointer; }
 
 @media (prefers-reduced-motion: reduce) {
-  .nav, .switch-track i::after { transition: none; }
+  .nav, .switch-track i::after, .signin-docker .chevron { transition: none; }
 }
 
 /* Overview (Hub design 4): the Needs you card, three status tiles, then Capabilities and Details side by side. On a
@@ -615,8 +608,9 @@ details summary { min-height: var(--tap); display: flex; align-items: center; cu
 @media (min-width: 1200px) { .overview-cards { grid-template-columns: 1fr 1fr; } }
 
 @media (min-width: 700px) {
-  /* The tiles speak for themselves on a wide screen; the Status header stays for screen readers. */
-  .overview > .section-head {
+  /* The tiles speak for themselves on a wide screen; the Status header stays for screen readers. Before the claim,
+     the Before you claim header shows. */
+  .overview:not(.unclaimed) > .section-head {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -650,6 +644,124 @@ details summary { min-height: var(--tap); display: flex; align-items: center; cu
   .tile-key { font-size: 1rem; font-weight: 500; color: var(--text); }
   .tile-value { justify-content: flex-end; gap: 6px; font-size: .9rem; font-weight: 500; color: var(--muted); }
   .tile-meta, .tile .notice { grid-column: 1 / -1; }
+}
+
+/* First-run claim (Hub design 5): a three-step strip, then the boxed match code with its live countdown and a quiet
+   Stop waiting, beside the approve command. One column below 1200px, and the steps stack on a phone. */
+.card.claim { padding: 0; overflow: hidden; border-radius: 14px; }
+.claim-steps {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  padding: 0;
+  border-bottom: 1px solid var(--line);
+}
+.claim-steps li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 50px;
+  padding: 12px 20px;
+  color: var(--muted);
+  font-size: .9rem;
+  font-weight: 600;
+}
+.claim-steps li.done { color: var(--ok); font-weight: 650; }
+.claim-steps li.current { background: var(--info-bg); color: var(--accent); font-weight: 700; }
+.step-number {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1.5px solid var(--line);
+  border-radius: 50%;
+  font-size: .75rem;
+  line-height: 1;
+}
+.claim-steps li.current .step-number { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.claim-body { display: grid; gap: 24px 32px; padding: 26px 28px; }
+@media (min-width: 1200px) { .claim-body.two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.claim-main, .claim-side { min-width: 0; }
+.claim-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.card .claim-head h2 { flex: 1; margin: 0; font-size: 1.25rem; }
+.claim .lead { margin: 8px 0 18px; font-size: .95rem; overflow-wrap: anywhere; }
+.label { margin: 0 0 6px; font-size: .82rem; font-weight: 650; color: var(--muted); }
+.hint { margin: 6px 0 0; font-size: .82rem; color: var(--muted); overflow-wrap: anywhere; }
+.claim-side .command { margin-top: 0; }
+.claim-side .command + .hint { margin-top: 14px; }
+.match-code { display: flex; gap: 8px; max-width: 400px; }
+.match-digit {
+  flex: 0 1 56px;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  height: 68px;
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  font: 700 2.1rem/1 var(--mono);
+}
+.match-digit.gap { margin-left: 10px; }
+.claim-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px; }
+.claim-main > .claim-actions:first-child { margin-top: 0; }
+/* A quiet action in link colour, still a full 44px target. */
+.btn.text { padding: 0 8px; border-color: transparent; background: transparent; color: var(--accent); }
+
+@media (max-width: 699px) {
+  .claim-steps { grid-template-columns: 1fr; }
+  .claim-steps li { min-height: 40px; padding: 8px 16px; }
+  .claim-body { padding: 18px 16px; }
+  .match-code { gap: 6px; }
+  .match-digit { height: 56px; font-size: 1.7rem; }
+  .match-digit.gap { margin-left: 6px; }
+}
+
+/* Sign in (Hub design 5): the brand over one centred card with numbered steps; the error is a banner of sentences,
+   and the Docker variant opens from a chevron. Signed out there is no top bar at any width. */
+body.signed-out .topbar { display: none; }
+.signin { max-width: 560px; margin: 0 auto; padding: 72px 0 24px; }
+.signin-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 0 0 22px;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+.card.signin-card { padding: 26px 28px; border-radius: 14px; }
+.signin-card h1 { margin: 0 0 6px; font-size: 1.4rem; }
+.signin-lede { margin: 0 0 18px; font-size: .92rem; }
+.signin-card .banner { margin-bottom: 18px; }
+.banner-icon { width: 20px; height: 20px; }
+.signin-tailnet { margin-bottom: 18px; }
+.signin-tailnet p { margin: 0 0 10px; }
+.signin-tailnet .btn { margin-bottom: 10px; }
+.signin-steps { list-style: none; display: grid; gap: 16px; margin: 0; padding: 0; }
+.signin-step { display: flex; align-items: flex-start; gap: 14px; }
+.signin-step .step-number {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: var(--info-bg);
+  color: var(--accent);
+  font-size: .88rem;
+  font-weight: 700;
+}
+.signin-step-text { flex: 1; min-width: 0; }
+.signin-step-text p { margin: 3px 0 0; font-size: .92rem; }
+.signin-docker { margin-top: 16px; border-top: 1px solid var(--line); }
+.signin-docker summary { gap: 10px; min-height: 48px; font-size: .92rem; font-weight: 600; list-style: none; }
+.signin-docker summary::-webkit-details-marker { display: none; }
+.signin-docker .chevron { color: var(--muted); transition: transform .15s ease; }
+.signin-docker[open] .chevron { transform: rotate(90deg); }
+.signin-docker p { margin: 0 0 4px; font-size: .92rem; }
+
+@media (max-width: 699px) {
+  .signin { padding-top: 24px; }
+  .card.signin-card { padding: 20px 18px; }
 }
 
 /* Settings uses the shell's colour and touch-target tokens. */

@@ -2,7 +2,7 @@
 // settings), the capabilities summary and the details behind them. Until the claim completes, its card leads the page.
 
 import { api, ApiError } from "../lib/api.mjs";
-import { clear, command, h, icon, pill, sectionHead } from "../lib/dom.mjs";
+import { clear, command, countdown, h, icon, pill, sectionHead } from "../lib/dom.mjs";
 import { poller } from "../lib/poll.mjs";
 
 const REFRESH_MS = 30000;
@@ -16,6 +16,7 @@ export function renderOverview(main) {
   // The owner is approving on the daemon host or waiting out a restart: keep polling in a hidden tab. A failed read
   // keeps the last known answer, so one dropped request does not pause the wait.
   let whileHidden = false;
+  let ticker = null; // the pending claim's countdown, redrawn every second between polls
   const poll = poller(load);
   const claimBox = h("div", { id: "claim", class: "claim-box" });
   const body = h("div", { class: "overview" });
@@ -65,16 +66,21 @@ export function renderOverview(main) {
 
   function draw(data) {
     const claimed = data.claim.state === "claimed";
-    clear(claimBox, claimed ? null : claimCard(data, load));
+    stopTime();
+    clear(claimBox, claimed ? null : claimCard(data, load, keepTime));
     const shown = data.reachable ? data : lastGood;
     // The shell's banner slot says when the daemon is not answering or restarting, or its Owner API is too old.
+    // Before the claim the tiles sit under a visible Before you claim header, and say what the claim opens.
+    body.className = claimed ? "overview" : "overview unclaimed";
     clear(body,
       attentionCard(data.attention),
-      sectionHead("Status", null, { id: "status-title" }),
+      sectionHead(claimed ? "Status" : "Before you claim", null, { id: "status-title" }),
       h("div", { class: "tiles", role: "group", "aria-labelledby": "status-title" },
         claimed ? hubTile(data) : null,
         daemonTile(data, shown),
-        shown ? settingsTile(shown, data.restarting) : null),
+        shown ? settingsTile(shown, data.restarting) : null,
+        claimed ? null : tile("Other sections", "Open after the claim",
+          "Settings, Apps and Pairing requests need the Hub key")),
       h("div", { class: "overview-cards" },
         shown ? capabilitiesCard(shown) : null,
         detailsCard(data, shown)));
@@ -84,15 +90,52 @@ export function renderOverview(main) {
       : `Last answer ${clockTime(lastGood.fetched_at)} · retrying every ${every}`;
   }
 
+  function keepTime(slot, expiresAt) {
+    const tick = () => clear(slot, countdown(expiresAt - Date.now() / 1000));
+    tick();
+    ticker = setInterval(tick, 1000);
+  }
+
+  function stopTime() {
+    if (ticker !== null) clearInterval(ticker);
+    ticker = null;
+  }
+
   refresh.addEventListener("click", load);
   load();
   return () => {
     stopped = true;
     poll.stop();
+    stopTime();
   };
 }
 
-function claimCard(data, reload) {
+// The claim's three steps, each with its label before and after it is done.
+const CLAIM_STEPS = [
+  ["Start the claim", "Claim started"],
+  ["Check the code on the daemon host", "Code checked on the daemon host"],
+  ["Approved: this Hub is the daemon's Hub", "Approved: this Hub is the daemon's Hub"],
+];
+
+function claimSteps(current) {
+  return h("ol", { class: "claim-steps", "aria-label": "Claim steps" }, CLAIM_STEPS.map(([todo, done], i) => {
+    if (i < current) {
+      return h("li", { class: "done" }, icon("check"), done, h("span", { class: "visually-hidden" }, " (done)"));
+    }
+    return h("li", { class: i === current ? "current" : null, "aria-current": i === current ? "step" : null },
+      h("span", { class: "step-number", "aria-hidden": "true" }, String(i + 1)), todo);
+  }));
+}
+
+// Six digits in boxes, read out one by one, with a gap after the third like the daemon host's prompt.
+function matchCode(code) {
+  const digits = code.split("");
+  return h("div", { class: "match-code", role: "img", "aria-label": `Match code ${digits.join(" ")}` },
+    digits.map((digit, i) => h("span", { class: i === 3 ? "match-digit gap" : "match-digit" }, digit)));
+}
+
+// The claim card leads Overview until the claim completes. keepTime(slot, expiresAt) makes the slot a live countdown.
+function claimCard(data, reload, keepTime) {
   const claim = data.claim;
   const start = async (button) => {
     button.disabled = true;
@@ -103,50 +146,71 @@ function claimCard(data, reload) {
     }
     reload();
   };
-  const startButton = (label = "Start claim") => {
-    const button = h("button", { type: "button", class: "btn primary" }, label);
+  // A claim needs the daemon's answer, so Start claim waits, with the reason, while it is not answering.
+  const silent = !data.reachable && data.answered !== true;
+  const startButton = (label) => {
+    const button = h("button", { type: "button", class: "btn primary", disabled: silent,
+      "aria-describedby": silent ? "claim-start-why" : null }, label);
     button.addEventListener("click", () => start(button));
-    return button;
+    const why = silent
+      ? h("p", { class: "hint", id: "claim-start-why" }, "The daemon is not answering, so a claim cannot start yet.")
+      : null;
+    return [h("div", { class: "claim-actions" }, button), why];
   };
-  const title = h("h2", { id: "claim-title" }, "This Hub");
-  const card = (cls, ...children) => h("section", { class: `card claim ${cls}`, "aria-labelledby": "claim-title" }, title, ...children);
+  const head = (status) => h("div", { class: "claim-head" },
+    h("h2", { id: "claim-title" }, "Claim this daemon"), status);
+  const card = (cls, step, main, side) =>
+    h("section", { class: `card claim ${cls}`.trim(), "aria-labelledby": "claim-title" },
+      claimSteps(step),
+      h("div", { class: side ? "claim-body two" : "claim-body" }, h("div", { class: "claim-main" }, main),
+        side ? h("div", { class: "claim-side" }, side) : null));
 
   switch (claim.state) {
     case "persisting":
-      return card("warn",
-        h("p", { class: "lead", role: "alert" }, h("span", { class: "pill wait" }, "Waiting to save key"),
-          " ", claim.message),
-        command(claim.release_command));
+      return card("warn", 2,
+        [head(pill("Waiting to save key", "warn")), h("p", { class: "lead", role: "alert" }, claim.message)],
+        [h("p", { class: "label" }, "To release it, on the daemon host run"), command(claim.release_command)]);
     case "pending": {
-      const left = Math.max(0, Math.round(claim.expires_at - Date.now() / 1000));
-      return card("wait",
-        h("p", { class: "lead" }, h("span", { class: "pill wait" }, "Waiting for approval"), " ", claim.message),
-        h("p", {}, "Match code"),
-        h("p", { class: "match", "aria-label": `Match code ${claim.match_code.split("").join(" ")}` }, claim.match_code),
-        h("p", {}, "On the daemon host, check that the code matches, then run:"),
-        command(claim.approve_command),
-        h("p", { class: "muted" }, left > 0 ? `This claim expires in about ${Math.ceil(left / 60)} min.` : "This claim is about to expire."),
-        forgetButton(reload));
+      const offset = typeof data.fetched_at === "number" ? data.fetched_at - Date.now() / 1000 : 0;
+      const left = h("span", { class: "claim-clock" });
+      keepTime(left, claim.expires_at - offset);
+      return card("", 1,
+        [head(pill("Waiting for approval", "run")),
+          h("p", { class: "lead" }, "On the daemon host, check that the code it shows matches this one, then approve."),
+          h("p", { class: "label" }, "Match code"),
+          matchCode(claim.match_code),
+          h("div", { class: "claim-actions" }, left, forgetButton(reload))],
+        [h("p", { class: "label" }, "On the daemon host, run"),
+          command(claim.approve_command),
+          h("p", { class: "hint" }, "Claiming makes this Hub the daemon's one admin console. This page notices the ",
+            "approval by itself, also in a background tab."),
+          h("p", { class: "hint" }, "Wrong code on the host? Stop waiting here and deny it there with ",
+            h("span", { class: "mono" }, `harness hub deny ${claim.request_id}`), ".")]);
     }
     case "refused":
-      return card("bad",
-        h("p", { class: "lead" }, h("span", { class: "pill bad" }, "Already claimed"), " ", claim.message),
-        h("p", {}, "To replace that Hub with this one, on the daemon host run:"),
-        command(claim.release_command),
-        h("p", { class: "muted" }, "Then start a new claim here."),
-        startButton("Start a new claim"));
-    default:
-      return card(claim.state === "unclaimed" ? "" : "warn",
-        h("p", { class: "lead" }, claim.message),
-        claim.state === "unclaimed"
-          ? h("p", { class: "muted" }, "Claiming makes this Hub the daemon's one admin console. You approve it on the daemon host with harness hub approve; the Hub shows the command and its match code.")
-          : null,
-        startButton(claim.state === "unclaimed" ? "Start claim" : "Start a new claim"));
+      return card("bad", 0,
+        [head(pill("Already claimed", "bad")), h("p", { class: "lead" }, claim.message),
+          startButton("Start a new claim")],
+        [h("p", { class: "label" }, "To replace that Hub with this one, on the daemon host run"),
+          command(claim.release_command),
+          h("p", { class: "hint" }, "Then start a new claim here.")]);
+    default: {
+      const unclaimed = claim.state === "unclaimed";
+      const outcome = { expired: "Expired", denied: "Denied" }[claim.state];
+      return card(unclaimed ? "" : "warn", 0,
+        [head(outcome ? pill(outcome) : null),
+          h("p", { class: "lead" }, claim.message),
+          unclaimed
+            ? h("p", { class: "hint" }, "Claiming makes this Hub the daemon's one admin console. You approve it on ",
+              "the daemon host with harness hub approve; the Hub shows the command and its match code.")
+            : null,
+          startButton(unclaimed ? "Start claim" : "Start a new claim")]);
+    }
   }
 }
 
 function forgetButton(reload) {
-  const button = h("button", { type: "button", class: "btn ghost" }, "Stop waiting");
+  const button = h("button", { type: "button", class: "btn text" }, "Stop waiting");
   button.addEventListener("click", async () => {
     button.disabled = true;
     await api("claim", { method: "DELETE" }).catch(() => {});
