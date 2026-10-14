@@ -116,9 +116,12 @@ def test_partial_or_secret_snapshot_never_replaces_good(claimed, fake_daemon):
 
 
 def test_error_secrets_fail_closed(claimed, fake_daemon):
-    for secret in (fake_daemon.hub_token, "ha-synthetic-secret", "hp-synthetic-secret"):
+    for secret in (fake_daemon.hub_token, "ha-" + "synthetic-secret" * 3, "hp-" + "synthetic-secret" * 2):
         fake_daemon.inventory_error = "hub.entries: " + secret
         assert claimed.get("/api/modules").status_code == 500
+    fake_daemon.inventory_error = "hub.entries: ha-synthetic-secret"
+    shown = claimed.get("/api/modules")
+    assert shown.status_code == 200 and "ha-synthetic" not in shown.text
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 
 

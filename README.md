@@ -199,8 +199,10 @@ module fields are sent to the browser.
 - The Hub's server holds the `hub` key, the claim's PKCE verifier and the sign-in codes' hashes in its owner-only
   state directory. The browser never receives the `hub` key, any `ha-`/`ho-`/`hp-` token or prefix, a PKCE verifier
   or a provider credential: responses are built field by field from allowlists, and a guard withholds (HTTP 500) any
-  `/api/` response that still contains one. Tests check every response in the claim flow, against a fake daemon and
-  a real one.
+  `/api/` response that still contains the `hub` key, the verifier or a full-length daemon token. Key display
+  prefixes are redacted in place (`[withheld: token-shaped]`) in the fields that can carry them, so an ordinary word
+  such as `ha-core` or `hp-laserjet` in a setting, model name or login never blanks a page. Tests check every
+  response in the claim flow, against a fake daemon and a real one.
 - The Hub never reads an App's token response and never claims or redeems an App's pairing request: App tokens go
   from the daemon straight to the App ([agent-harness #519](https://github.com/dflippojr/agent-harness/issues/519)).
   The only token response it reads is its own Hub claim's, and it keeps the key only if the daemon says its role is
