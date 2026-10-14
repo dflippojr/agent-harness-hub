@@ -25,7 +25,9 @@ const tier = (item) => item.tier === "elevated" ? pill("Elevated", "bad") : pill
 
 export function renderMarketplace(main) {
   let stopped = false, busy = false, ticker, data = null, offset = 0, signature = "";
-  let open = null; // { id, node }: the consent or hand-off open inside the card of entry `id`
+  // { id, node, handoff }: the consent or hand-off open inside the card of entry `id`. A hand-off stays until Done,
+  // even if its entry leaves the list: the slot is armed, and the owner still needs its request id.
+  let open = null;
   let confirming = null; // the slot whose Withdraw is asking for confirmation, inside its own card (decision 5 of #65)
   const drafts = new Map();
   const poll = poller(() => load());
@@ -91,7 +93,8 @@ export function renderMarketplace(main) {
     if (!force && next === signature) return;
     signature = next;
     const entries = data?.entries || [];
-    if (open && !entries.some((entry) => entry.catalog_app_id === open.id)) open = null;
+    const listed = open && entries.some((entry) => entry.catalog_app_id === open.id);
+    if (open && !listed && !open.handoff) open = null;
     if (confirming && !entries.some((entry) => entry.slots?.some((slot) => slot.id === confirming))) confirming = null;
     // Keep the owner's typing and focus across a poll that changed the list. The open consent is the same node, put
     // back in its new card; any other control is found again by its slot or entry and its data-field.
@@ -100,7 +103,8 @@ export function renderMarketplace(main) {
     const focused = !kept && active?.dataset?.field && list.contains(active) ?
       [owner(active), active.dataset.field, active.selectionStart] : null;
     clear(count, data?.entries ? sectionHead("Entries", entries.length) : null);
-    clear(list, entries.map(card));
+    clear(list, open && !listed ? h("section", { class: "card market-entry open", "data-entry": open.id }, open.node) : null,
+      entries.map(card));
     if (data?.withheld) {
       list.append(h("p", { class: "notice warn" }, `${data.withheld} ${data.withheld === 1 ? "entry was" :
         "entries were"} withheld: the daemon's answer did not match the entries contract.`));
@@ -332,10 +336,10 @@ export function renderMarketplace(main) {
       scopeDetails(slot.disclosures),
       h("div", { class: "consent-actions" }, button("Done", () => close(id))));
     message(`Armed a slot for ${name}.`);
-    show(id, node);
+    show(id, node, true);
   }
-  function show(id, node) {
-    open = { id, node };
+  function show(id, node, handoff = false) {
+    open = { id, node, handoff };
     draw(true);
     node.querySelector("h3").focus();
   }

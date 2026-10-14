@@ -180,6 +180,25 @@ test("a slot shows Pairing's countdown chip, and Withdraw asks inside its own sl
   expect(errors).toEqual([]);
 });
 
+test("the hand-off stays until Done even when its entry leaves the list after arming", async ({ page }) => {
+  const armed = slot("pr-kept");
+  const { writes, errors } = await mount(page, view([entry("test.example.native"), entry("test.example.other")]),
+    { answer: () => ({ status: 201, json: { request: armed, daemon_url: "https://daemon.test", name: "Synthetic native" },
+      view: view([entry("test.example.other")]) }) });
+  await card(page, "test.example.native").getByRole("button", { name: /^Set up/ }).click();
+  await page.locator(".market-consent").getByRole("button", { name: "Approve" }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  const handoff = page.getByRole("region", { name: "Slot armed for Synthetic native" });
+  await expect(handoff).toBeVisible();
+  await expect(handoff.getByText("pr-kept", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Set up Synthetic native" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Entries 1" })).toBeVisible();
+  await handoff.getByRole("button", { name: "Done" }).click();
+  await expect(handoff).toHaveCount(0);
+  await expect(page.locator("[data-entry]")).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
 test("elevated scopes need the acknowledgement and a browser app needs its exact origin chosen", async ({ page }) => {
   const ops = entry("test.example.ops", { scopes: [SESSIONS, HOMELAB], elevated: ["homelab"],
     browser_origins: ["https://ops.example.test", "https://ops2.example.test"] });
