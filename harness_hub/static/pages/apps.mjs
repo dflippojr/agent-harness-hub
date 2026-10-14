@@ -159,7 +159,10 @@ export function renderApps(main) {
   async function perform(action) {
     if (busy || stopped || inventory?.state !== "ready") return;
     busy = true; poll.cancel();
-    for (const control of main.querySelectorAll("button,input")) control.disabled = true;
+    // load() redraws the inventory, details and erasures, but the header controls (Refresh, a Host commands button) stay
+    // in place: whatever is disabled here that still exists after the reload is enabled again below.
+    const disabled = [...main.querySelectorAll("button,input")].filter(control => !control.disabled);
+    for (const control of disabled) control.disabled = true;
     clear(confirmation);
     let refused = false;
     try { await action(); }
@@ -170,6 +173,7 @@ export function renderApps(main) {
     if (stopped) return;
     busy = false;
     await load();
+    for (const control of disabled) control.disabled = false;
     if (refused && !stopped) reveal(notice);
   }
   async function manageApp(row) {
