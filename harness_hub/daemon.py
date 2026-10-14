@@ -135,8 +135,13 @@ class DaemonClient:
     def __init__(self, base_url: str, transport: httpx.AsyncBaseTransport | None = None):
         self.base_url = base_url
         # No Origin header is ever sent: the Hub claims as a native client, so its key is not bound to a browser.
+        # trust_env=False: proxy settings (HTTP_PROXY and friends, or the Windows system proxy) must never
+        # see the Hub key or the claim verifier, and a proxy cannot reach the loopback daemon anyway.
+        # The SSL context still honours SSL_CERT_FILE / SSL_CERT_DIR, so a private-CA HTTPS daemon keeps working.
         self._client = httpx.AsyncClient(base_url=base_url, timeout=TIMEOUT, transport=transport,
-                                         follow_redirects=False, headers={"Accept": "application/json"})
+                                         follow_redirects=False, trust_env=False,
+                                         verify=httpx.create_ssl_context(trust_env=True),
+                                         headers={"Accept": "application/json"})
 
     async def aclose(self) -> None:
         await self._client.aclose()

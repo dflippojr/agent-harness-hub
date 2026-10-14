@@ -6,9 +6,13 @@ import asyncio
 import json
 import os
 import re
+import socket
+import ssl
 import subprocess
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
@@ -16,7 +20,7 @@ import pytest
 from harness_hub import auth
 from harness_hub.auth import Sessions, create_signin_code
 from harness_hub.config import Settings, normalize_daemon_url
-from harness_hub.daemon import DaemonUnreachable, Reply
+from harness_hub.daemon import DaemonClient, DaemonUnreachable, Reply
 from harness_hub.server import MAX_SIGNIN_BODY, create_app
 from harness_hub.state import StateStore, prepare_dir, read_json, write_private
 
@@ -52,6 +56,95 @@ def test_remote_daemon_requires_https(url):
 @pytest.mark.parametrize("url", ["http://localhost:8100", "http://127.0.0.1:8100", "http://[::1]:8100"])
 def test_loopback_daemon_allows_http(url):
     assert normalize_daemon_url(url) == url
+
+
+class _Daemon(BaseHTTPRequestHandler):
+    def _reply(self):
+        self.server.seen.append((self.command, self.path, self.headers.get("Authorization", "")))
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        body = b"{}"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = do_POST = _reply
+
+    def log_message(self, *args):
+        pass
+
+
+def test_daemon_client_ignores_proxy_settings(monkeypatch):
+    proxy = socket.create_server(("127.0.0.1", 0))
+    proxy.settimeout(0.2)
+    proxied = []
+    stop = threading.Event()
+
+    def accept():
+        while not stop.is_set():
+            try:
+                conn, _ = proxy.accept()
+            except TimeoutError:
+                continue
+            with conn:
+                conn.settimeout(1)
+                proxied.append(conn.recv(4096))
+                conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+
+    daemon = ThreadingHTTPServer(("127.0.0.1", 0), _Daemon)
+    daemon.seen = []
+    threads = [threading.Thread(target=accept, daemon=True),
+               threading.Thread(target=daemon.serve_forever, daemon=True)]
+    for thread in threads:
+        thread.start()
+    proxy_url = f"http://127.0.0.1:{proxy.getsockname()[1]}"
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.setenv(name, proxy_url)
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+
+    async def calls():
+        client = DaemonClient(f"http://127.0.0.1:{daemon.server_address[1]}")
+        try:
+            return [await client.health(), await client.admin("ho-SECRETHUBKEY"),
+                    await client.start_hub_claim("Hub", "challenge"),
+                    await client.redeem_hub_claim("req-1", "SECRETVERIFIER")]
+        finally:
+            await client.aclose()
+
+    try:
+        replies = asyncio.run(calls())
+    finally:
+        stop.set()
+        daemon.shutdown()
+        daemon.server_close()
+        for thread in threads:
+            thread.join(5)
+        proxy.close()
+    assert proxied == []
+    assert [reply.status for reply in replies] == [200, 200, 200, 200]
+    assert [(method, path.split("/")[-1]) for method, path, _ in daemon.seen] == [
+        ("GET", "health"), ("GET", "v1"), ("POST", "requests"), ("POST", "token")]
+    assert daemon.seen[1][2] == "Bearer ho-SECRETHUBKEY"
+
+
+@pytest.mark.parametrize(("variable", "argument"), [("SSL_CERT_FILE", "cafile"), ("SSL_CERT_DIR", "capath")])
+def test_daemon_client_keeps_ssl_cert_environment(monkeypatch, tmp_path, variable, argument):
+    # Ignoring proxy settings must not also drop a private CA configured for an HTTPS daemon.
+    for name in ("SSL_CERT_FILE", "SSL_CERT_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(variable, str(tmp_path / "private-ca"))
+    calls = []
+    real = ssl.create_default_context
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs)
+        return real()
+
+    monkeypatch.setattr(ssl, "create_default_context", spy)
+    asyncio.run(DaemonClient("https://daemon.example").aclose())
+    assert calls == [{argument: str(tmp_path / "private-ca")}]
 
 
 def test_signin_body_limit_does_not_spend_code(hub):
