@@ -57,14 +57,15 @@ function sessions(row) {
 
 export function renderApps(main) {
   let stopped = false, busy = false, inventory = null, erasures = null, signature = "";
-  let loading = null; // the read in flight, which an action waits for instead of being dropped
+  let inventoryRead = null; // the inventory read in flight, which an action waits for instead of being dropped
   let selected = null; // the key whose detail is open
   let confirming = null; // "revoke" or "retention": the question asked inside the open detail (decision 5 of #65)
+  let askedDays = null; // the retention the open question applies, fixed when Save retention was pressed
   let detail = null; // { id, data } or { id, error } or { id, loading }: the open App's session caps and retention
   // The open detail's fields the owner has typed in, by name. A redraw puts the same element back, so the browser keeps
   // its raw text and validity (an unfinished "1e" stays invalid instead of reading as blank).
   let drafts = new Map();
-  let reading = 0; // the newest caps and retention read; an older reply that lands later is dropped
+  let detailReadVersion = 0; // the newest caps and retention read; an older reply that lands later is dropped
   const poll = poller(() => load());
   const updated = h("span", { class: "muted refreshed" });
   const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true });
@@ -96,7 +97,7 @@ export function renderApps(main) {
   // Drop the open App's caps and retention, and any read of them still in flight, so the next draw reads them afresh.
   function forgetDetail() {
     detail = null;
-    reading++;
+    detailReadVersion++;
   }
   function ready() {
     return !busy && inventory?.state === "ready";
@@ -105,9 +106,9 @@ export function renderApps(main) {
   // sees the daemon as it is now.
   function load(force = false) {
     if (stopped || busy) return Promise.resolve();
-    if (loading) return force ? loading.then(() => load(true)) : loading;
-    loading = readInventory(force).finally(() => { loading = null; });
-    return loading;
+    if (inventoryRead) return force ? inventoryRead.then(() => load(true)) : inventoryRead;
+    inventoryRead = readInventory(force).finally(() => { inventoryRead = null; });
+    return inventoryRead;
   }
   async function readInventory(force) {
     poll.cancel();
@@ -233,7 +234,7 @@ export function renderApps(main) {
 
   // A row's button opens its detail, and closes it again when it is already open.
   function openDetail(id) {
-    if (stopped) return;
+    if (stopped || busy) return; // an action's reset of the typed fields must not reach another App's
     if (selected === id) { closeDetail(); return; }
     drafts = new Map();
     forgetDetail();
@@ -245,6 +246,7 @@ export function renderApps(main) {
     heading?.scrollIntoView?.({ block: "nearest" });
   }
   function closeDetail() {
+    if (busy) return;
     const id = selected;
     selected = null; confirming = null; drafts = new Map();
     forgetDetail();
@@ -252,13 +254,13 @@ export function renderApps(main) {
     focusField(`open-${id}`);
   }
   async function readDetail(id) {
-    const turn = ++reading;
+    const turn = ++detailReadVersion;
     try {
       const data = await api("apps/" + id + "/limits");
-      if (stopped || selected !== id || turn !== reading) return;
+      if (stopped || selected !== id || turn !== detailReadVersion) return;
       detail = { id, data };
     } catch (error) {
-      if (stopped || selected !== id || turn !== reading) return;
+      if (stopped || selected !== id || turn !== detailReadVersion) return;
       detail = { id, error: error.message };
     }
     draw(true);
@@ -330,11 +332,14 @@ export function renderApps(main) {
     }, { class: "btn primary", "data-field": "save-caps", disabled: !ready() });
     const saveRetention = button("Save retention", () => {
       if (!retention.input.reportValidity() || !ready()) return;
+      askedDays = numberValue(retention.input);
       confirming = "retention";
       draw(true);
       focusField("confirm-retention");
     }, { class: "btn", "data-field": "save-retention", disabled: !ready() });
-    const days = numberValue(retention.input);
+    // While the question is open the field is locked: the question applies the value it names, nothing typed later.
+    retention.input.disabled = confirming === "retention";
+    const days = askedDays;
     return [
       sectionHead("Session caps", null, { level: 3 }),
       h("div", { class: "card apps-form" },
@@ -459,7 +464,7 @@ export function renderApps(main) {
     confirming = null;
     let refused = false;
     // A poll still reading finishes first; the action then runs only if management is still available.
-    if (loading) await loading;
+    if (inventoryRead) await inventoryRead;
     if (stopped) return;
     try {
       if (inventory?.state !== "ready") throw new Error("The app inventory could not be refreshed.");

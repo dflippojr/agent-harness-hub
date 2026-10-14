@@ -364,3 +364,34 @@ test("an unfinished number stays invalid across a redraw, and an unchanged form 
   expect(writes).toHaveLength(0);
   expect(errors).toEqual([]);
 });
+
+test("the retention question locks the field it applies, and a row click waits while a save runs", async ({ page }) => {
+  const { writes, errors } = await mount(page, [app("k-a", "App A"), app("k-b", "App B")]);
+  const a = await open(page, "k-a");
+  const days = a.getByLabel("Retention days");
+  await days.fill("7");
+  await a.getByRole("button", { name: "Save retention" }).click();
+  await expect(days).toBeDisabled();
+  await page.getByRole("button", { name: "Refresh apps" }).click();
+  await expect(a.getByRole("heading", { name: "Change retention for App A?" })).toBeVisible();
+  await expect(days).toBeDisabled();
+  await a.getByRole("button", { name: "Confirm change retention for App A" }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0].body).toEqual({ retention_days: 7, confirm: true });
+  await expect(days).toBeEnabled();
+
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route("http://hub.test/api/apps/k-a/limits", async route => {
+    if (route.request().method() === "PUT") await held;
+    return route.fallback();
+  });
+  await a.getByLabel("Maximum queued (1–1000)").fill("12");
+  await a.getByRole("button", { name: "Save session caps" }).click();
+  await row(page, "k-b").click();
+  await expect(page.locator('[data-detail-id="k-b"]')).toHaveCount(0);
+  release();
+  await expect(page.getByText("Session caps saved.", { exact: true })).toBeVisible();
+  await expect(a).toBeVisible();
+  expect(errors).toEqual([]);
+});

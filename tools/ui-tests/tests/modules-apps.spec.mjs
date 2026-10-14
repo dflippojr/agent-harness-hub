@@ -32,7 +32,8 @@ test("app session caps and retention save after confirmation and persist", async
   await open();
   const running = detail.getByLabel(/^Maximum running/);
   await expect(running).toHaveAttribute("placeholder", /^(Default \d+|Daemon default)$/);
-  const value = String(2 + (Date.now() % 9));
+  // A value other than the current one (the projects share one instance): a save sends only a changed cap.
+  const value = String((Number(await running.inputValue()) || 1) % 9 + 2);
   await running.fill(value);
   await detail.getByRole("button", { name: "Save session caps" }).click();
   await expect(page.locator("main p.notice[aria-live]").first()).toHaveText("Session caps saved.");
