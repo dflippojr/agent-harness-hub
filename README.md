@@ -342,19 +342,24 @@ These specs intercept all network requests and start no servers.
 ### Pairing requests
 
 Pairing requests lists the App pairing requests of the last day ([agent-harness #519](https://github.com/dflippojr/agent-harness/issues/519)),
-newest first and grouped by state, with each one's name, scopes, catalog app id, origin (or "native app"), expiry
-countdown and next step. The Hub never projects or renders an App request's match code. Every scope shows the daemon's
-disclosure text exactly as given, as text, with its `standard` or `elevated` badge. The page polls every 5 seconds.
+newest first in three groups. **Needs you** holds the requests waiting on your decision, each a card in two halves:
+who and what on one side (name, origin or "Native app", catalog app id, scopes), the match code field and Deny or
+Approve on the other, with an expiry countdown in the card's head that turns amber in the last two minutes.
+**Waiting for the app** lists approved requests and armed slots, each with its countdown and Withdraw. **History**
+is a table of the paired, denied and expired requests. The Hub never projects or renders an App request's match
+code. Every scope shows the daemon's disclosure text exactly as given, as text, with its Standard or Elevated badge.
+The page polls every 5 seconds.
 Overview leads with a **Needs you** card ("2 pairing requests need you"), with a link here, counting the unexpired App requests that need you to
 approve or confirm; it shows counts only, never the requests themselves, and leaves out Hub claims.
-Started from distinguishes owner-armed slots from App-initiated requests. App-initiated origin and catalog ids are
-stated by the requester, not verified; only the match code on your App's screen proves this is your App. For an armed
-slot, the page explains that you set the origin and catalog id when arming it.
+Started from and Bound to distinguish App-initiated requests from owner-armed slots. A card says once that an
+App-initiated name, origin and catalog id are stated by the App, not verified; only the match code on your App's screen
+proves this is your App. For an armed slot, the card explains that you set the origin and catalog id when arming it.
 
 Approve and Confirm need the code the App is showing right now, typed into an empty field; the daemon compares it
 and refuses a wrong code. If the App shows no code or an error, deny. If your App reported that the slot was already
-claimed, list requests with `harness pairing-requests list`. For a `redeemed` row, revoke its `key_id` with
-`harness keys revoke <key_id>`; for `approved` or `claimed`, deny it with `harness pairing-requests deny <id>`.
+claimed, open **Troubleshooting** at the foot of the page (Marketplace has the same one): list requests with
+`harness pairing-requests list`. For a `redeemed` row, revoke its `key_id` with `harness keys revoke <key_id>`; for
+`approved` or `claimed`, deny it with `harness pairing-requests deny <id>`.
 
 If this Hub process observes a browser slot jump from `armed` to `approved` or `redeemed` without handling a
 successful confirmation, Marketplace and Pairing requests warn: "This daemon approved the claim without
@@ -365,7 +370,7 @@ Browser and native claims on armed slots both wait for typed-code confirmation b
 `memory_library`, `homelab`) need a separate acknowledgement: Approve stays disabled until it is ticked, and the
 server refuses an approval without it before calling the daemon. If a name, origin or catalog id is withheld,
 Approve and Confirm are unavailable; review the request with `harness pairing-requests list` on the host. Deny
-remains available. Deny and Withdraw ask for confirmation in the page.
+remains available. Deny and Withdraw ask for confirmation inside the card that was acted on.
 A request that changed state (409) or no longer exists (404) refreshes the list with a short note. Hub claims are
 read-only and show `harness hub approve <id> --match <code>`, because they are decided only on the daemon host.
 

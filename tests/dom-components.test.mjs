@@ -87,6 +87,9 @@ test("countdown reads time left, warns in the last minute, then expires", () => 
   assert.equal(dom.countdown(59.6).className, "countdown warn");
   assert.equal(dom.countdown(0).textContent, "Expired");
   assert.equal(dom.countdown(undefined), null);
+  // Pairing warns in the last two minutes.
+  assert.equal(dom.countdown(119, { warnBelow: 120 }).className, "countdown warn");
+  assert.equal(dom.countdown(120, { warnBelow: 120 }).className, "countdown");
 });
 
 test("danger zone holds its actions", () => {

@@ -157,12 +157,12 @@ export function clock(seconds) {
   return hours ? `${hours}:${pad(minutes)}:${pad(s % 60)}` : `${minutes}:${pad(s % 60)}`;
 }
 
-// A chip with the time left on a code or slot, warn in the last minute; none left reads Expired. The caller
-// re-renders it, so this adds no timers.
-export function countdown(secondsLeft) {
+// A chip with the time left on a code or slot, warn in the last minute (or the last warnBelow seconds); none left
+// reads Expired. The caller re-renders it, so this adds no timers.
+export function countdown(secondsLeft, { warnBelow = 60 } = {}) {
   if (typeof secondsLeft !== "number" || !Number.isFinite(secondsLeft)) return null;
   if (secondsLeft <= 0) return h("span", { class: "countdown" }, icon("clock"), "Expired");
-  return h("span", { class: secondsLeft < 60 ? "countdown warn" : "countdown" }, icon("clock"),
+  return h("span", { class: secondsLeft < warnBelow ? "countdown warn" : "countdown" }, icon("clock"),
     `${clock(secondsLeft)} left`);
 }
 
@@ -187,6 +187,7 @@ const ICONS = {
   alert: [["path", { d: "M12 3 2 20h20z" }], ["path", { d: "M12 10v4M12 17h.01" }]],
   clock: [["circle", { cx: 12, cy: 12, r: 9 }], ["path", { d: "M12 7v5l3 2" }]],
   chevron: [["path", { d: "m9 6 6 6-6 6" }]],
+  shield: [["path", { d: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" }]],
   hub: [["rect", { x: 5, y: 11, width: 14, height: 10, rx: 2 }], ["path", { d: "M8 11V7a4 4 0 0 1 8 0v4" }]],
   daemon: [["rect", { x: 3, y: 4, width: 18, height: 6, rx: 2 }], ["rect", { x: 3, y: 14, width: 18, height: 6, rx: 2 }],
     ["path", { d: "M7 7h.01M7 17h.01" }]],

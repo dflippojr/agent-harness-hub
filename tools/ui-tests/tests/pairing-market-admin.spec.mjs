@@ -2,14 +2,16 @@
 // and members with unique names, so the seeded rows stay as they are for the other projects.
 import { appAsksToPair, expect, openSection, test, unique } from "./fixtures.mjs";
 
-const card = (page, name) => page.locator("section.card").filter({ has: page.getByRole("heading", { name: new RegExp(`^${name} ·`) }) });
+// A request's card (Needs you, Waiting for the app) is named by its heading; a History row carries its name in a cell.
+const card = (page, name) => page.locator("[data-request-id]").filter({ has: page.getByRole("heading", { name, exact: true }) });
+const historyRow = (page, name) => page.locator('[data-group="history"] tr[data-request-id]').filter({ hasText: name });
 const notice = (page) => page.locator("main p.notice[aria-live]").first();
 // The daemon takes at most 10 pairing requests per source in 10 minutes and 3 pending ones, and the instance seeds
 // two. Two requests per project in three projects stay inside that.
 const PAIRING_PROJECTS = ["desktop-light", "desktop-dark", "phone-dark"];
 const pairingProject = (testInfo) => test.skip(!PAIRING_PROJECTS.includes(testInfo.project.name),
   "the daemon's per-source pairing request limit");
-const group = (page, title) => page.locator("section.pairing-group").filter({ has: page.getByRole("heading", { name: new RegExp(`^${title} \\(`) }) });
+const group = (page, title) => page.locator("section.pairing-group").filter({ has: page.getByRole("heading", { name: new RegExp(`^${title}`) }) });
 
 test("approve a request with the app's code; a wrong code is refused", async ({ signedIn: page, request, errors }, testInfo) => {
   pairingProject(testInfo);
@@ -22,7 +24,8 @@ test("approve a request with the app's code; a wrong code is refused", async ({ 
   await waiting.getByRole("link", { name: "Review requests" }).click();
   await expect(page).toHaveURL(/#\/pairing$/);
   const request_ = card(page, name);
-  await expect(group(page, "Waiting for approval").filter({ has: request_ })).toHaveCount(1);
+  await expect(group(page, "Needs you").filter({ has: request_ })).toHaveCount(1);
+  await expect(request_.getByText("Needs approval", { exact: true })).toBeVisible();
   await expect(request_).toContainText("This app can start agent tasks on your harness");
 
   await request_.getByLabel("Match code the app shows").fill(asked.match_code === "000000" ? "111111" : "000000");
@@ -33,7 +36,8 @@ test("approve a request with the app's code; a wrong code is refused", async ({ 
   await request_.getByRole("button", { name: `Approve ${name}` }).click();
   await expect(notice(page)).toHaveText(`Approved ${name}. The app now fetches its own token.`);
   await page.reload();
-  await expect(group(page, "Approved, waiting for the app").filter({ has: card(page, name) })).toHaveCount(1);
+  await expect(group(page, "Waiting for the app").filter({ has: card(page, name) })).toHaveCount(1);
+  await expect(card(page, name)).toContainText("Waiting for the app to fetch its own token from the daemon");
   expect(errors.filter((e) => !/status of 400/.test(e))).toEqual([]);
 });
 
@@ -50,15 +54,18 @@ test("an elevated request needs the acknowledgement; deny asks first and Cancel 
   await expect(request_.getByRole("button", { name: `Approve ${name}` })).toBeEnabled();
 
   await request_.getByRole("button", { name: `Deny ${name}` }).click();
-  const confirm = page.getByRole("alert").filter({ has: page.getByRole("button", { name: "Confirm deny" }) });
+  // The question renders inside the card that was clicked (decision 5 of #65).
+  const confirm = request_.getByRole("alert").filter({ has: page.getByRole("button", { name: "Confirm deny" }) });
+  await expect(confirm.getByRole("heading", { name: `Deny ${name}?` })).toBeVisible();
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await expect(confirm).toHaveCount(0);
-  await expect(group(page, "Waiting for approval").filter({ has: card(page, name) })).toHaveCount(1);
+  await expect(group(page, "Needs you").filter({ has: card(page, name) })).toHaveCount(1);
 
   await card(page, name).getByRole("button", { name: `Deny ${name}` }).click();
-  await page.getByRole("button", { name: "Confirm deny" }).click();
+  await card(page, name).getByRole("button", { name: "Confirm deny" }).click();
   await page.reload();
-  await expect(group(page, "Denied or withdrawn").filter({ has: card(page, name) })).toHaveCount(1);
+  await expect(historyRow(page, name)).toHaveCount(1);
+  await expect(historyRow(page, name).getByText("Denied", { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });
 
