@@ -1,8 +1,8 @@
-// Overview: this Hub's claim on the daemon, pairing requests waiting for the owner, the daemon's version, health and
-// capabilities.
+// Overview: pairing requests waiting for the owner, then three status tiles (this Hub's claim, the daemon, its
+// settings), the capabilities summary and the details behind them. Until the claim completes, its card leads the page.
 
 import { api, ApiError } from "../lib/api.mjs";
-import { clear, command, h, when } from "../lib/dom.mjs";
+import { clear, command, h, icon, pill, sectionHead } from "../lib/dom.mjs";
 import { poller } from "../lib/poll.mjs";
 
 const REFRESH_MS = 30000;
@@ -17,13 +17,13 @@ export function renderOverview(main) {
   // keeps the last known answer, so one dropped request does not pause the wait.
   let whileHidden = false;
   const poll = poller(load);
-  const claimBox = h("div", { id: "claim" });
-  const body = h("div", { class: "grid" });
-  const status = h("p", { class: "muted refreshed", "aria-live": "polite" });
-  const refresh = h("button", { type: "button", class: "btn ghost" }, "Refresh");
+  const claimBox = h("div", { id: "claim", class: "claim-box" });
+  const body = h("div", { class: "overview" });
+  const status = h("span", { class: "muted refreshed", "aria-live": "polite" });
+  const refresh = h("button", { type: "button", class: "btn ghost refresh" }, icon("refresh"), "Refresh");
   clear(main,
-    h("header", { class: "page-head" }, h("h1", {}, "Overview"), refresh),
-    claimBox, body, status);
+    h("header", { class: "page-head" }, h("h1", {}, "Overview"), status, refresh),
+    claimBox, body);
 
   async function load() {
     if (stopped) return;
@@ -49,6 +49,7 @@ export function renderOverview(main) {
     } catch (error) {
       if (stopped || reloadRequested) return;
       clear(body, h("section", { class: "card bad", role: "alert" }, h("h2", {}, "Could not load the overview"), h("p", {}, error.message)));
+      status.textContent = "";
     } finally {
       loading = false;
       if (!stopped) {
@@ -63,14 +64,24 @@ export function renderOverview(main) {
   }
 
   function draw(data) {
-    clear(claimBox, claimCard(data, load));
+    const claimed = data.claim.state === "claimed";
+    clear(claimBox, claimed ? null : claimCard(data, load));
     const shown = data.reachable ? data : lastGood;
     // The shell's banner slot says when the daemon is not answering or restarting, or its Owner API is too old.
     clear(body,
       attentionCard(data.attention),
-      shown ? daemonCard(shown) : null,
-      shown ? capabilitiesCard(shown) : null);
-    status.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+      sectionHead("Status", null, { id: "status-title" }),
+      h("div", { class: "tiles", role: "group", "aria-labelledby": "status-title" },
+        claimed ? hubTile(data) : null,
+        daemonTile(data, shown),
+        shown ? settingsTile(shown, data.restarting) : null),
+      h("div", { class: "overview-cards" },
+        shown ? capabilitiesCard(shown) : null,
+        detailsCard(data, shown)));
+    const every = ["pending", "persisting"].includes(data.claim.state) || data.restarting ? "2 s" : "30 s";
+    status.textContent = data.reachable || !lastGood
+      ? `Updated ${clockTime(Date.now() / 1000)} · every ${every}`
+      : `Last answer ${clockTime(lastGood.fetched_at)} · retrying every ${every}`;
   }
 
   refresh.addEventListener("click", load);
@@ -106,17 +117,6 @@ function claimCard(data, reload) {
         h("p", { class: "lead", role: "alert" }, h("span", { class: "pill wait" }, "Waiting to save key"),
           " ", claim.message),
         command(claim.release_command));
-    case "claimed": {
-      const own = data.ownership;
-      return card("ok",
-        h("p", { class: "lead" }, h("span", { class: "pill ok" }, "Claimed"), " ", claim.message),
-        h("dl", { class: "facts" },
-          fact("Hub key", claim.key_id),
-          fact("Claimed", when(claim.claimed_at)),
-          own ? fact("Daemon records this Hub", own.this_hub ? "Yes" : "No") : null,
-          own && own.record ? fact("Recorded name", own.record.name) : null),
-        own && !own.this_hub ? h("p", { class: "notice bad" }, "The daemon records a different Hub. Release it on the daemon host, then claim again.") : null);
-    }
     case "pending": {
       const left = Math.max(0, Math.round(claim.expires_at - Date.now() / 1000));
       return card("wait",
@@ -159,59 +159,149 @@ function fact(label, value) {
   return [h("dt", {}, label), h("dd", {}, value === undefined || value === null || value === "" ? "—" : value)];
 }
 
+function clockTime(seconds) {
+  return new Date(seconds * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function dayTime(seconds) {
+  return new Date(seconds * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+// Facts joined with dots; a missing one is left out.
+function line(...parts) {
+  return parts.filter((part) => part !== undefined && part !== null && part !== "").join(" · ");
+}
+
+function tile(name, value, meta, ...extra) {
+  const id = `tile-${name.toLowerCase().replaceAll(" ", "-")}`;
+  return h("section", { class: "tile", "aria-labelledby": id },
+    h("h3", { class: "tile-key", id }, name),
+    h("p", { class: "tile-value" }, value),
+    meta ? h("p", { class: "tile-meta" }, meta) : null,
+    extra);
+}
+
 // App pairing requests the owner must decide, counted on the server. A request expires unseen if nobody looks.
 function attentionCard(attention) {
   const parts = attention ? [[attention.approve, "to approve"], [attention.confirm, "to confirm"]].filter(([n]) => n > 0) : [];
   const total = parts.reduce((sum, [n]) => sum + n, 0);
   if (!total) return null;
-  return h("section", { class: "card warn span", role: "status", "aria-labelledby": "attention-title" },
-    h("h2", { id: "attention-title" }, "Waiting for you"),
-    h("p", { class: "lead" }, `${total} pairing ${total === 1 ? "request needs" : "requests need"} you: `,
-      parts.map(([n, label]) => `${n} ${label}`).join(", ")),
-    h("p", {}, h("a", { href: "#/pairing", class: "btn primary" }, "Open Pairing requests")));
+  return h("section", { class: "needs-you", role: "status", "aria-labelledby": "attention-title" },
+    h("span", { class: "needs-you-icon" }, icon("pairing")),
+    h("div", { class: "needs-you-text" },
+      h("h2", { id: "attention-title" }, `${total} pairing ${total === 1 ? "request needs" : "requests need"} you`),
+      h("p", {}, `${parts.map(([n, label]) => `${n} ${label}`).join(" · ")}. `,
+        "Apps wait on their match-code screen until you decide.")),
+    h("a", { href: "#/pairing", class: "btn primary" }, "Review requests"));
 }
 
-function daemonCard(data) {
-  const d = data.daemon || {};
-  const health = data.health || {};
-  const protocols = Object.entries(d.protocols || {}).map(([name, span]) => `${name} ${span.min}–${span.max}`).join(", ");
-  return h("section", { class: "card", "aria-labelledby": "daemon-title" },
-    h("h2", { id: "daemon-title" }, "Daemon"),
-    h("p", { class: "lead" }, health.ok ? h("span", { class: "pill ok" }, "Healthy") : h("span", { class: "pill bad" }, "Not healthy")),
-    h("dl", { class: "facts" },
-      fact("Address", data.hub.daemon_url),
-      fact("Release", d.release),
-      fact("Build", d.build_id),
-      fact("Owner API", data.ownership ? data.ownership.api_version : null),
-      fact("Profile", d.profile),
-      fact("Protocols", protocols),
-      fact("Settings revision", health.config_revision),
-      fact("Settings confirmed", yesNo(health.config_confirmed)),
-      fact("Supervised restart", yesNo(health.supervised_restart)),
-      health.recovery ? fact("Recovery", health.recovery.recovery === "overlay_quarantined"
-        ? "Managed settings quarantined; the daemon started on file defaults"
-        : "The daemon started from its last good settings") : null,
-      fact("Hub version", data.hub.version)));
+// This Hub's claim, once complete. Ownership is what the newest answer confirmed: none while the daemon is silent.
+function hubTile(data) {
+  const claim = data.claim;
+  const own = data.ownership;
+  const name = own && own.this_hub && own.record ? own.record.name : "";
+  return tile("This Hub", [pill("Claimed", "ok"), name],
+    line(claim.key_id ? `Key ${claim.key_id}` : null, typeof claim.claimed_at === "number" ? `since ${dayTime(claim.claimed_at)}` : null),
+    own && !own.this_hub
+      ? h("p", { class: "notice bad" }, "The daemon records a different Hub. Release it on the daemon host, then claim again.")
+      : null);
+}
+
+// How the Hub's minimum compares with the Owner API version the daemon reports (ownership.compatibility).
+const COMPATIBILITY = {
+  supported: "supported",
+  no_tailnet_signin: "no tailnet sign-in",
+  too_old: "too old for this Hub",
+  unknown: "version not reported",
+};
+
+// Whether the daemon answers now; its release, Owner API and profile from the last answer that reached it.
+function daemonTile(data, shown) {
+  const health = shown && shown.health ? shown.health : {};
+  let state = pill("Not healthy", "bad");
+  if (!data.reachable) state = pill("Not answering", "bad");
+  else if (health.ok) state = pill("Healthy", "ok");
+  const d = shown && shown.daemon ? shown.daemon : {};
+  const own = shown ? shown.ownership : null;
+  const ownerApi = own ? line(own.api_version ? `Owner API ${own.api_version}` : "Owner API", COMPATIBILITY[own.compatibility]) : null;
+  return tile("Daemon", [state, d.release || null], line(ownerApi, d.profile ? `profile ${d.profile}` : null));
+}
+
+function settingsTile(shown, restarting) {
+  const health = shown.health || {};
+  const revision = typeof health.config_revision === "number" ? `Revision ${health.config_revision}` : "Revision unknown";
+  let confirmed = null;
+  if (health.config_confirmed === true) confirmed = pill("Confirmed", "ok");
+  else if (health.config_confirmed === false) confirmed = pill("Not confirmed", "warn");
+  let restart = null;
+  if (restarting) restart = "Restarting now";
+  else if (health.supervised_restart === true) restart = "Restarts are supervised";
+  else if (health.supervised_restart === false) restart = "Restart is manual here";
+  let recovery = null;
+  if (health.recovery) {
+    recovery = health.recovery.recovery === "overlay_quarantined"
+      ? "Managed settings quarantined; the daemon started on file defaults"
+      : "The daemon started from its last good settings";
+  }
+  return tile("Settings", [revision, confirmed], restart, recovery ? h("p", { class: "notice warn" }, recovery) : null);
+}
+
+function plural(n, word) {
+  return n === 1 ? word : `${word.replace(/y$/, "ie")}s`;
 }
 
 function capabilitiesCard(data) {
   const caps = data.capabilities || {};
   const required = Object.entries(caps.required || {});
   const modules = Object.entries(caps.modules || {});
+  const missing = required.filter(([, present]) => !present).map(([name]) => name.replaceAll("_", " "));
+  const on = modules.filter(([, enabled]) => enabled).length;
+  // Core capabilities collapse to one line; a missing one turns it red and names it.
+  const core = missing.length
+    ? [icon("alert"), `${missing.length} of ${required.length} core ${plural(required.length, "capability")} missing: ${missing.join(", ")}`]
+    : [icon("check"), `All ${required.length} core ${plural(required.length, "capability")} present`];
   return h("section", { class: "card", "aria-labelledby": "caps-title" },
     h("h2", { id: "caps-title" }, "Capabilities"),
-    h("h3", {}, "Modules"),
+    h("h3", { class: "card-sub" }, modules.length ? `Modules · ${on} of ${modules.length} on` : "Modules"),
     modules.length
-      ? h("ul", { class: "chips" }, modules.map(([name, on]) => h("li", { class: `pill ${on ? "ok" : "off"}` }, `${name}: ${on ? "on" : "off"}`)))
+      ? h("ul", { class: "chips" }, modules.map(([name, enabled]) =>
+        h("li", { class: enabled ? "pill ok" : "pill muted" }, enabled ? name : `${name} · off`)))
       : h("p", { class: "muted" }, "No optional modules reported."),
-    h("h3", {}, "Core"),
-    h("ul", { class: "chips" }, required.map(([name, on]) => h("li", { class: `pill ${on ? "ok" : "bad"}` }, name.replaceAll("_", " ")))),
-    h("h3", {}, "Hosted backends"),
+    h("p", { class: "card-link" }, h("a", { href: "#/modules" }, "Manage modules")),
+    h("h3", { class: "card-sub" }, "Core"),
+    required.length
+      ? h("details", { class: missing.length ? "core bad" : "core", open: missing.length > 0 },
+        h("summary", {}, core),
+        h("ul", { class: "chips" }, required.map(([name, present]) =>
+          h("li", { class: present ? "pill ok" : "pill bad" }, name.replaceAll("_", " ")))))
+      : h("p", { class: "muted" }, "No core capabilities reported."),
+    h("h3", { class: "card-sub" }, "Hosted backends"),
     (caps.hosted_backends || []).length
       ? h("ul", { class: "chips" }, caps.hosted_backends.map((name) => h("li", { class: "pill" }, name)))
-      : h("p", { class: "muted" }, "None."));
+      : h("p", { class: "muted" }, "None configured."));
+}
+
+// Every fact the tiles leave out. The address and Hub version are the Hub's own, so they show even before an answer.
+function detailsCard(data, shown) {
+  const d = shown && shown.daemon ? shown.daemon : {};
+  const health = shown && shown.health ? shown.health : {};
+  const hub = data.hub || {};
+  const own = data.ownership;
+  const protocols = Object.entries(d.protocols || {}).map(([name, span]) => `${name} ${span.min}–${span.max}`).join(" · ");
+  let recorded = "No";
+  if (own && own.this_hub) recorded = own.record && own.record.name ? `Yes, as “${own.record.name}”` : "Yes";
+  return h("section", { class: "card", "aria-labelledby": "details-title" },
+    h("h2", { id: "details-title" }, "Details"),
+    h("dl", { class: "facts" },
+      fact("Daemon address", hub.daemon_url ? h("span", { class: "mono" }, hub.daemon_url) : null),
+      fact("Release · build", line(d.release, d.build_id)),
+      fact("Protocols", protocols),
+      fact("Supervised restart", yesNo(health.supervised_restart)),
+      own ? fact("Daemon records this Hub", recorded) : null,
+      fact("Hub version", hub.version)));
 }
 
 function yesNo(value) {
-  return value === true ? "Yes" : value === false ? "No" : null;
+  if (value === true) return "Yes";
+  return value === false ? "No" : null;
 }

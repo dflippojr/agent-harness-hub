@@ -168,3 +168,36 @@ export function countdown(secondsLeft) {
 export function dangerZone(title, text, ...actions) {
   return h("section", { class: "danger-zone" }, h("h3", {}, title), text ? h("p", {}, text) : null, actions);
 }
+
+// Stroke icons from the design canvas, as [element, attributes] pairs on a 24px grid.
+const ICONS = {
+  overview: [["path", { d: "M4 15a8 8 0 1 1 16 0" }], ["path", { d: "m12 15 4-5" }], ["path", { d: "M4 19h16" }]],
+  pairing: [["path", { d: "M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" }], ["path", { d: "M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" }]],
+  apps: [4, 14].flatMap((y) => [4, 14].map((x) => ["rect", { x, y, width: 6, height: 6, rx: 1 }])),
+  marketplace: [["path", { d: "M5 8h14l-1 12H6z" }], ["path", { d: "M9 8a3 3 0 0 1 6 0" }]],
+  settings: [["path", { d: "M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1" }], ["circle", { cx: 15, cy: 6, r: 2 }],
+    ["circle", { cx: 9, cy: 12, r: 2 }], ["circle", { cx: 17, cy: 18, r: 2 }]],
+  modules: [["path", { d: "M12 3 3 8l9 5 9-5z" }], ["path", { d: "M3 8v8l9 5 9-5V8" }], ["path", { d: "M12 13v8" }]],
+  admin: [["circle", { cx: 9, cy: 8, r: 3.5 }], ["path", { d: "M2 20a7 7 0 0 1 14 0" }],
+    ["path", { d: "M16 4.5a3.5 3.5 0 0 1 0 7M22 20a7 7 0 0 0-5-6.7" }]],
+  refresh: [["path", { d: "M20 11a8 8 0 1 0-2.3 5.7" }], ["path", { d: "M20 4v7h-7" }]],
+  check: [["path", { d: "m5 12 5 5 9-10" }]],
+  alert: [["path", { d: "M12 3 2 20h20z" }], ["path", { d: "M12 10v4M12 17h.01" }]],
+  hub: [["rect", { x: 5, y: 11, width: 14, height: 10, rx: 2 }], ["path", { d: "M8 11V7a4 4 0 0 1 8 0v4" }]],
+  daemon: [["rect", { x: 3, y: 4, width: 18, height: 6, rx: 2 }], ["rect", { x: 3, y: 14, width: 18, height: 6, rx: 2 }],
+    ["path", { d: "M7 7h.01M7 17h.01" }]],
+};
+
+// A stroke icon from ICONS, drawn as SVG nodes (never parsed markup). It is decoration: screen readers skip it.
+export function icon(name, className = "icon") {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", className);
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  for (const [tag, attrs] of ICONS[name]) {
+    const shape = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [key, value] of Object.entries(attrs)) shape.setAttribute(key, String(value));
+    svg.append(shape);
+  }
+  return svg;
+}

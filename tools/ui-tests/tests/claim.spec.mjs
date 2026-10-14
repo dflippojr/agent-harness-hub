@@ -1,5 +1,5 @@
 // HUB-03 first-run claim on its own unclaimed instance: start the claim in the UI, approve it on the "host" with the
-// daemon CLI and the code the Hub shows, and watch Overview turn to Claimed.
+// daemon CLI and the code the Hub shows, and watch Overview's This Hub tile turn to Claimed.
 import { approveClaim, startInstance } from "../instance.mjs";
 import { expect, signIn, test } from "./fixtures.mjs";
 
@@ -28,10 +28,13 @@ test.describe("claim", () => {
     await expect(thisHub).toContainText(match);
 
     approveClaim(instance.dir, id, match);
-    await expect(thisHub).toContainText("This Hub is the daemon's Hub.", { timeout: 60_000 });
-    await expect(thisHub).toContainText("Claimed");
+    // Once claimed, the claim card gives way to the This Hub status tile.
+    const tile = page.getByRole("group", { name: "Status" }).locator("section").filter({ has: page.getByRole("heading", { name: "This Hub" }) });
+    await expect(tile).toContainText("Claimed", { timeout: 60_000 });
+    await expect(tile).toContainText(/Key \S+ · since /);
+    await expect(page.getByRole("button", { name: "Start claim" })).toHaveCount(0);
     await page.reload();
-    await expect(thisHub).toContainText("This Hub is the daemon's Hub.");
+    await expect(tile).toContainText("Claimed");
     expect(errors).toEqual([]);
   });
 });

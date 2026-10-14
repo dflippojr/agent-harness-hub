@@ -299,7 +299,6 @@ body.menu-open::after {
 .notice.bad { background: var(--bad-bg); color: var(--bad); }
 /* An empty notice (no message yet) takes no space: only a real message shows its box. */
 .notice:empty { display: none; }
-.refreshed { font-size: .85rem; margin-top: 12px; }
 
 .match {
   font: 700 2.4rem/1.1 var(--mono);
@@ -512,6 +511,143 @@ details summary { min-height: var(--tap); display: flex; align-items: center; cu
 
 @media (prefers-reduced-motion: reduce) {
   .nav, .switch-track i::after { transition: none; }
+}
+
+/* Overview (Hub design 4): the Needs you card, three status tiles, then Capabilities and Details side by side. On a
+   phone the tiles become rows of one card under a Status header, as on the canvas's phone board. */
+.icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.btn.refresh { display: inline-flex; align-items: center; gap: 6px; }
+.page-head > .refreshed { margin-left: auto; font-size: .85rem; }
+.claim-box:not(:empty) { margin-bottom: 16px; }
+.mono { font-family: var(--mono); font-size: .85rem; }
+
+.needs-you {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 16px 16px 16px 20px;
+  border-radius: 14px;
+  background: var(--warn-bg);
+}
+.needs-you-icon {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: var(--tap);
+  height: var(--tap);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--warn);
+}
+.needs-you-icon .icon { width: 20px; height: 20px; }
+.needs-you-text { flex: 1; min-width: 0; }
+.needs-you h2 { margin: 0; font-size: 1.06rem; }
+.needs-you p { margin: 2px 0 0; font-size: .9rem; }
+.needs-you .btn { flex: none; justify-content: center; }
+
+.tiles { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 18px 20px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.tile-key { margin: 0; font-size: .82rem; font-weight: 650; color: var(--muted); }
+.tile-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.tile-meta { margin: 0; font-size: .85rem; color: var(--muted); overflow-wrap: anywhere; }
+.tile .notice { margin: 4px 0 0; font-size: .85rem; }
+
+.overview-cards { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 16px; }
+.overview-cards .card { padding: 18px 20px; }
+.overview-cards .facts { gap: 8px 24px; font-size: .9rem; }
+.card .card-sub {
+  margin: 16px 0 8px;
+  font-size: .78rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.card h2 + .card-sub { margin-top: 0; }
+.card-link { margin: 6px 0 0; }
+.card-link a { display: inline-flex; align-items: center; min-height: var(--tap); }
+/* Core capabilities: one line that opens to the full list; red, open and naming the gap when one is missing. */
+.core summary { gap: 8px; font-size: .9rem; list-style: none; }
+.core summary::-webkit-details-marker { display: none; }
+.core summary .icon { color: var(--ok); }
+.core summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-left: 4px;
+  border: solid var(--muted);
+  border-width: 0 2px 2px 0;
+  transform: translateY(-2px) rotate(45deg);
+}
+.core[open] summary::after { transform: translateY(2px) rotate(-135deg); }
+.core.bad summary, .core.bad summary .icon { color: var(--bad); }
+.core .chips { margin: 4px 0 8px; }
+
+@media (min-width: 700px) {
+  .overview-cards { grid-template-columns: 1fr 1fr; }
+  /* The tiles speak for themselves on a wide screen; the Status header stays for screen readers. */
+  .overview > .section-head {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 699px) {
+  .page-head > .refreshed { order: 3; flex-basis: 100%; margin-left: 0; }
+  .overview > .section-head { margin: 18px 4px 6px; }
+  .overview > .section-head:first-child { margin-top: 0; }
+  .needs-you { flex-direction: column; align-items: stretch; gap: 10px; padding: 14px; }
+  .needs-you-icon { display: none; }
+  .needs-you .btn { width: 100%; }
+  .tiles { gap: 0; overflow: hidden; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+  .tile {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 2px 12px;
+    min-height: 52px;
+    padding: 10px 14px;
+    border: 0;
+    border-top: 1px solid var(--line);
+    border-radius: 0;
+  }
+  .tile:first-child { border-top: 0; }
+  .tile-key { font-size: 1rem; font-weight: 500; color: var(--text); }
+  .tile-value { justify-content: flex-end; gap: 6px; font-size: .9rem; font-weight: 500; color: var(--muted); }
+  .tile-meta, .tile .notice { grid-column: 1 / -1; }
 }
 
 /* Settings uses the shell's colour and touch-target tokens. */

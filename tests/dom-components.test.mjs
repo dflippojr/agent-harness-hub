@@ -8,7 +8,8 @@ import * as dom from "../harness_hub/static/lib/dom.mjs";
 
 // The builders reach for document and Node only when called, so each test installs the fakes and puts the originals
 // back; this file also runs inside browser-session.test.mjs beside other suites.
-const fakeDocument = { createElement: (tag) => new Element(tag), createTextNode: (text) => Object.assign(new Element("#text"), { text }) };
+const fakeDocument = { createElement: (tag) => new Element(tag), createElementNS: (namespace, tag) => new Element(tag),
+  createTextNode: (text) => Object.assign(new Element("#text"), { text }) };
 function test(name, fn) {
   nodeTest(name, () => {
     const saved = ["document", "Node"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]);
