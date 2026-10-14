@@ -7,6 +7,7 @@ import json
 import os
 import re
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -126,6 +127,24 @@ def test_daemon_client_ignores_proxy_settings(monkeypatch):
     assert [(method, path.split("/")[-1]) for method, path, _ in daemon.seen] == [
         ("GET", "health"), ("GET", "v1"), ("POST", "requests"), ("POST", "token")]
     assert daemon.seen[1][2] == "Bearer ho-SECRETHUBKEY"
+
+
+@pytest.mark.parametrize(("variable", "argument"), [("SSL_CERT_FILE", "cafile"), ("SSL_CERT_DIR", "capath")])
+def test_daemon_client_keeps_ssl_cert_environment(monkeypatch, tmp_path, variable, argument):
+    # Ignoring proxy settings must not also drop a private CA configured for an HTTPS daemon.
+    for name in ("SSL_CERT_FILE", "SSL_CERT_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(variable, str(tmp_path / "private-ca"))
+    calls = []
+    real = ssl.create_default_context
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs)
+        return real()
+
+    monkeypatch.setattr(ssl, "create_default_context", spy)
+    asyncio.run(DaemonClient("https://daemon.example").aclose())
+    assert calls == [{argument: str(tmp_path / "private-ca")}]
 
 
 def test_signin_body_limit_does_not_spend_code(hub):
