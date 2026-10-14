@@ -146,6 +146,6 @@ export function renderSpend(main) {
       "while this tab is visible." : "";
   }
 
-  load();
+  void load();
   return () => { stopped = true; poll.stop(); };
 }

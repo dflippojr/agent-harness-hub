@@ -466,25 +466,32 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         secrets = tuple(store.secrets())
         good = inventory.get(key["key_id"])
         body, error, fetched_at = (good["inventory"], "", good["fetched_at"]) if good else (None, "", None)
-        try:
-            reads = await concurrently(daemon.inventory(key["token"]), daemon.settings(key["token"], "backends"))
-            reply, backends = settled(reads[0]), reads[1]
-            if 401 in (reply.status, getattr(backends, "status", None)):
-                return await refused(key["token"])
-            if reply.ok and valid_inventory(reply.body):
-                body, fetched_at = reply.body, time.time()
-            else:
-                error = "The daemon returned an invalid inventory." if reply.ok else settings_error(
-                    reply.body, reply.status)["detail"]
-            live = [row["id"] for row in (body or {}).get("apps", []) if isinstance(row, dict)
-                    and row.get("kind") == "app" and row.get("revoked_at") is None and row.get("id") != key["key_id"]
-                    and isinstance(row.get("id"), str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", row["id"])]
-            live = live[:SPEND_LIMIT_READS]
-            replies = await concurrently(*(daemon.apps(key["token"], "limits", app_id) for app_id in live))
-            limits = {app_id: result.body for app_id, result in zip(live, replies)
-                      if not isinstance(result, BaseException) and result.ok}
-        except DaemonUnreachable:
-            error, backends, limits = "The daemon did not answer.", None, {}
+        # Each read stands alone: one that fails or times out never hides what another one returned.
+        reply, backends = await concurrently(daemon.inventory(key["token"]), daemon.settings(key["token"], "backends"))
+        for result in (reply, backends):
+            if isinstance(result, BaseException) and not isinstance(result, DaemonUnreachable):
+                raise result
+        if 401 in (getattr(reply, "status", None), getattr(backends, "status", None)):
+            return await refused(key["token"])
+        if isinstance(reply, DaemonUnreachable):
+            error = "The daemon did not answer."
+        elif reply.ok and valid_inventory(reply.body):
+            body, fetched_at = reply.body, time.time()
+        else:
+            error = "The daemon returned an invalid inventory." if reply.ok else settings_error(
+                reply.body, reply.status)["detail"]
+        live = [row["id"] for row in (body or {}).get("apps", []) if isinstance(row, dict)
+                and row.get("kind") == "app" and row.get("revoked_at") is None and row.get("id") != key["key_id"]
+                and isinstance(row.get("id"), str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", row["id"])]
+        live = live[:SPEND_LIMIT_READS]
+        replies = await concurrently(*(daemon.apps(key["token"], "limits", app_id) for app_id in live))
+        for result in replies:
+            if isinstance(result, BaseException) and not isinstance(result, DaemonUnreachable):
+                raise result
+        if any(getattr(result, "status", None) == 401 for result in replies):
+            return await refused(key["token"])
+        limits = {app_id: result.body for app_id, result in zip(live, replies, strict=True)
+                  if getattr(result, "ok", False)}
         backend_rows = backends.body if getattr(backends, "ok", False) else None
         shown = spend_view(body, backend_rows, limits, key["key_id"], secrets)
         if body is None:

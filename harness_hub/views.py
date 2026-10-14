@@ -330,7 +330,7 @@ def _app_text(value: Any, limit: int = 200, secrets: tuple[str, ...] = ()) -> st
 def app_view(row: Any, key_id: str = "", secrets: tuple[str, ...] = ()) -> dict:
     row = row if isinstance(row, dict) else {}
     store = row.get("store") if isinstance(row.get("store"), dict) else {}
-    usage = store.get("usage") if isinstance(store.get("usage"), dict) else {}
+    usage = store.get("usage")
     sessions = store.get("sessions") if isinstance(store.get("sessions"), dict) else {}
     out = {key: _str(row.get(key), 200) for key in ("id", "name", "kind", "role", "catalog_app_id")}
     out["id"] = _app_id(row.get("id"))
@@ -349,8 +349,7 @@ def app_view(row: Any, key_id: str = "", secrets: tuple[str, ...] = ()) -> dict:
     out["token_age_warning"] = out["token_age_seconds"] is not None and out["token_age_seconds"] >= 90 * 86400
     out["store"] = {
         "sessions": {key: _int(sessions[key]) for key in SESSION_STATES if key in sessions},
-        "usage": {key: _finite(usage.get(key)) for key in
-                  ("requests", "prompt_tokens", "completion_tokens", "cost_usd")},
+        "usage": usage_tally(usage),
         "errors": _int(store.get("errors")), "last_error": _app_text(store.get("last_error"), 200, secrets),
         "last_error_at": _finite(store.get("last_error_at")),
     }

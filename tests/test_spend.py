@@ -88,3 +88,36 @@ def test_key_rejection_withholds_the_cached_inventory(claimed, fake_daemon):
     reply = claimed.get("/api/spend")
     assert reply.status_code == 409 and "apps" not in reply.json()
     assert claimed.get("/api/claim").json()["state"] == "released"
+
+
+def test_an_inventory_outage_keeps_the_backend_windows(claimed, fake_daemon, monkeypatch):
+    from harness_hub.daemon import DaemonClient, DaemonUnreachable
+
+    async def unreachable(self, token):
+        raise DaemonUnreachable("synthetic outage")
+
+    fake_daemon.backend.update(HOSTED)
+    monkeypatch.setattr(DaemonClient, "inventory", unreachable)
+    data = claimed.get("/api/spend").json()
+    assert data["error"] == "The daemon did not answer." and data["apps"] is None
+    assert data["backends_error"] == "" and data["backends"][0]["week"] == HOSTED["week"]
+
+
+def test_a_rejected_cap_read_goes_through_the_key_refusal(claimed, fake_daemon, monkeypatch):
+    from harness_hub.daemon import DaemonClient, Reply
+
+    original = DaemonClient.apps
+
+    async def rejected(self, token, action, app_id="", body=None):
+        if action == "limits" and app_id == "k-minute":
+            return Reply(401, {"detail": "synthetic rejection"})
+        return await original(self, token, action, app_id, body)
+
+    monkeypatch.setattr(DaemonClient, "apps", rejected)
+    reply = claimed.get("/api/spend")
+    assert reply.status_code == 409 and "apps" not in reply.json()
+    # One unconfirmed rejection keeps the claim (as the Apps detail does); a confirmed one releases it.
+    assert claimed.get("/api/claim").json()["state"] == "claimed"
+    fake_daemon.release()
+    assert claimed.get("/api/spend").status_code == 409
+    assert claimed.get("/api/claim").json()["state"] == "released"
