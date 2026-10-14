@@ -87,3 +87,21 @@ test("the Pairing list keeps the badge current with the server's count rule", ()
   noteRead("pairing", 200, { now: 50, requests: [] });
   assert.equal(pairingCount(), 0);
 });
+
+test("a Settings health poll that cannot reach the daemon turns the chip and banner to not answering", () => {
+  resetStatus();
+  noteRead("overview", 200, answer());
+  noteRead("settings/health", 200, { reachable: false, restarting: true, health: null });
+  assert.deepEqual(daemonChip(), { tone: "bad", text: "Daemon not answering" });
+  assert.equal(daemonBanner().tone, "bad");
+  noteRead("settings/health", 200, { reachable: true, restarting: false, health: { ok: true } });
+  assert.deepEqual(daemonChip(), { tone: "ok", text: "Daemon live · API 1.27" });
+  assert.equal(daemonBanner(), null);
+});
+
+test("an owner API failure behind a healthy /health is a bad banner, not silence", () => {
+  resetStatus();
+  noteRead("overview", 200, answer({ error: "the owner API answered HTTP 500", ownership: null }));
+  assert.deepEqual(daemonBanner(), { tone: "bad", title: "The daemon answered, but its owner API did not.",
+    detail: "The owner API answered HTTP 500. Overview shows what the Hub last read." });
+});

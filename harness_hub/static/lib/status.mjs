@@ -1,7 +1,7 @@
 // What the shell shows about the daemon (the rail's status chip, the Pairing badge and the banner under each page
 // head), worked out from answers the pages already read: Overview's last answer, the Pairing list, the Settings
-// revision, and any read the Hub refused with 503 because the daemon did not answer. It is held in memory only and
-// makes no calls of its own.
+// revision, the Settings health poll, and any read the Hub refused with 503 because the daemon did not answer. It is
+// held in memory only and makes no calls of its own.
 
 // Mirrors MIN_OWNER_API in views.py; the server classifies the reported version as ownership.compatibility.
 export const MIN_OWNER_API = "1.24";
@@ -10,13 +10,13 @@ let overview = null; // the last overview answer
 let lastGood = null; // the last overview answer that reached the daemon
 let attention = null; // { approve, confirm }: App pairing requests waiting on the owner
 let config = null; // the last Settings revision read: { revision, pending_revision, restart_required }
-const failures = new Map(); // path -> the Hub's message, for reads refused because the daemon did not answer
+const failures = new Set(); // paths whose last read found the daemon silent (a 503, or health reachable: false)
 const listeners = new Set();
 
 // api.mjs reports every GET it makes, except the session's.
 export function noteRead(path, status, data) {
   const ok = status >= 200 && status < 300;
-  if (status === 503) failures.set(path, (data && data.detail) || "The daemon did not answer.");
+  if (status === 503) failures.add(path);
   else if (ok) failures.delete(path);
   if (ok && data && typeof data === "object") {
     if (path === "overview") {
@@ -30,6 +30,9 @@ export function noteRead(path, status, data) {
       attention = pairingAttention(data);
     } else if (path === "settings/config") {
       config = data;
+    } else if (path === "settings/health" && data.reachable === false) {
+      // Settings polls health while a restart runs; the Hub answers 200 even when the daemon does not.
+      failures.add(path);
     }
   }
   for (const listener of listeners) listener();
@@ -90,6 +93,11 @@ export function daemonBanner() {
   }
   const ownership = overview ? overview.ownership : null;
   const compatibility = ownership ? ownership.compatibility : null;
+  if (overview && overview.error) {
+    // The daemon answered /health, but the owner API refused or failed (Overview names the HTTP status).
+    return { tone: "bad", title: "The daemon answered, but its owner API did not.",
+      detail: `${overview.error[0].toUpperCase()}${overview.error.slice(1)}. Overview shows what the Hub last read.` };
+  }
   if (compatibility === "too_old") {
     return {
       tone: "bad",
