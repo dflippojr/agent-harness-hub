@@ -121,3 +121,33 @@ def test_a_rejected_cap_read_goes_through_the_key_refusal(claimed, fake_daemon, 
     fake_daemon.release()
     assert claimed.get("/api/spend").status_code == 409
     assert claimed.get("/api/claim").json()["state"] == "released"
+
+
+def test_every_live_app_gets_its_caps_with_bounded_concurrency(claimed, fake_daemon, monkeypatch):
+    import asyncio
+    from copy import deepcopy
+
+    from harness_hub.daemon import DaemonClient
+    from harness_hub.server import SPEND_CAP_READS
+
+    template = fake_daemon.apps_rows[1]  # k-minute: live, used a minute ago
+    for n in range(60):
+        row = deepcopy(template)
+        row["id"] = f"k-extra-{n}"
+        fake_daemon.apps_rows.append(row)
+        fake_daemon.app_limits[row["id"]] = {"max_running": None, "max_queued": 10}
+    original, flight, peak = DaemonClient.apps, [0], [0]
+
+    async def counted(self, token, action, app_id="", body=None):
+        flight[0] += 1
+        peak[0] = max(peak[0], flight[0])
+        try:
+            await asyncio.sleep(0.001)
+            return await original(self, token, action, app_id, body)
+        finally:
+            flight[0] -= 1
+
+    monkeypatch.setattr(DaemonClient, "apps", counted)
+    rows = {row["id"]: row for row in claimed.get("/api/spend").json()["apps"]}
+    assert all(rows[f"k-extra-{n}"]["caps"] is not None for n in range(60))
+    assert 1 < peak[0] <= SPEND_CAP_READS

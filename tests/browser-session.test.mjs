@@ -3,6 +3,7 @@ import test from "node:test";
 // Included in the existing CI browser behavior entrypoint.
 import "./overview-polling.test.mjs";
 import "./page-polling.test.mjs";
+import "./spend-page.test.mjs";
 import { api } from "../harness_hub/static/lib/api.mjs";
 import { switchFor } from "../harness_hub/static/pages/modules.mjs";
 import { signinFromHash } from "../harness_hub/static/pages/signin.mjs";

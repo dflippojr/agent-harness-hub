@@ -71,7 +71,7 @@ SESSION_HEADER = "x-hub-session"
 MAX_SIGNIN_BODY = 1024
 ALLOWED_LOGINS_SECONDS = 5.0  # how long a tailnet sign-in reuses the daemon's allowed_logins answer
 PAIRING_COUNT_SECONDS = 5.0  # how long Overview waits for its optional pairing count, consent lock included
-SPEND_LIMIT_READS = 50  # at most this many App session-cap reads per Spend load
+SPEND_CAP_READS = 8  # App session-cap reads in flight at once; every live App is read
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 SECURITY_HEADERS = [
@@ -483,8 +483,13 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         live = [row["id"] for row in (body or {}).get("apps", []) if isinstance(row, dict)
                 and row.get("kind") == "app" and row.get("revoked_at") is None and row.get("id") != key["key_id"]
                 and isinstance(row.get("id"), str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", row["id"])]
-        live = live[:SPEND_LIMIT_READS]
-        replies = await concurrently(*(daemon.apps(key["token"], "limits", app_id) for app_id in live))
+        gate = asyncio.Semaphore(SPEND_CAP_READS)
+
+        async def read_caps(app_id: str):
+            async with gate:
+                return await daemon.apps(key["token"], "limits", app_id)
+
+        replies = await concurrently(*(read_caps(app_id) for app_id in live))
         for result in replies:
             if isinstance(result, BaseException) and not isinstance(result, DaemonUnreachable):
                 raise result
