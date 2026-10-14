@@ -181,7 +181,8 @@ def test_transient_key_rejection_withholds_inventory_but_retains_claim(claimed, 
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 
 
-LEAKING_MODULES = [{"name": "hub", "state": "present", "status": {"last_error": "auth failed for ha-" + "A1b2C3d4" * 6}}]
+LEAK = "auth failed for ha-" + "A1b2C3d4" * 6
+LEAKING_MODULES = [{"name": "hub", "state": "present", "status": {"last_error": LEAK}}]
 
 
 @pytest.mark.parametrize("writer", ["/api/apps", "/api/marketplace"])
