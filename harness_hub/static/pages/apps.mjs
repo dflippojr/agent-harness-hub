@@ -160,7 +160,13 @@ export function renderApps(main) {
   }
 
   function sorted() {
-    const rows = [...(inventory?.apps || [])];
+    // The erasure queue is read fresh even when the inventory is a stale snapshot: a key it lists is revoked, and its
+    // row shows the deadline and leads to the restore command.
+    const rows = (inventory?.apps || []).map((row) => {
+      const item = erasureFor(row);
+      return item && !revoked(row) ? { ...row, state: "erasure_pending", revoked_at: item.revoked_at ?? row.revoked_at,
+        erase_after: item.erase_after } : row;
+    });
     const order = (inventory?.entries || []).flatMap((entry) => entry.paired);
     const rank = (row) => order.includes(row.id) ? order.indexOf(row.id) : order.length;
     return rows.sort((a, b) => rank(a) - rank(b));

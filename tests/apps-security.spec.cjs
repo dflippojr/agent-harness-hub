@@ -50,6 +50,20 @@ async function open(page, id) {
   return detail;
 }
 
+// Counts the replies from one App's caps route that have reached the page.
+function caps(page, id) {
+  const done = { count: 0 };
+  page.on("requestfinished", request => {
+    if (request.method() === "GET" && request.url().endsWith("/api/apps/" + id + "/limits")) done.count += 1;
+  });
+  return done;
+}
+// Waits until the page has had n caps replies and has handled them (a frame later), instead of a fixed delay.
+async function handled(page, done, n) {
+  await expect.poll(() => done.count).toBe(n);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve))));
+}
+
 test("redacted App remains revocable, owner and runner keys never enter the App flow", async ({ page }) => {
   const rows = [app("k-shaped", "[withheld: token-shaped]", { origins: ["https://hp-x.example"] }),
     app("k-device", "Device", { kind: "device" }),
@@ -242,6 +256,7 @@ test("Refresh reads the open App's caps again, and an older caps reply never rep
     if (reads === 1) { await held; return route.fulfill({ json: limits(2) }); } // the first read answers last
     return route.fulfill({ json: limits(reads === 2 ? 6 : 8) });
   });
+  const done = caps(page, "k-a");
   await row(page, "k-a").getByRole("button").click();
   await expect.poll(() => reads).toBe(1);
   const b = await open(page, "k-b");
@@ -250,7 +265,7 @@ test("Refresh reads the open App's caps again, and an older caps reply never rep
   const a = page.locator('[data-detail-id="k-a"]');
   await expect(a.getByLabel("Maximum running (1–100)")).toHaveValue("6");
   release();
-  await page.waitForTimeout(300);
+  await handled(page, done, 2);
   await expect(a.getByLabel("Maximum running (1–100)")).toHaveValue("6");
   // A value changed on the host shows after Refresh, so the next save cannot send the old one back.
   await page.getByRole("button", { name: "Refresh apps" }).click();
@@ -272,13 +287,14 @@ test("Refresh drops a caps read still in flight, and a save made during a refres
     if (reads === 1) { await heldRead; return route.fulfill({ json: limits(2) }); }
     return route.fulfill({ json: limits(6) });
   });
+  const done = caps(page, "k-a");
   await row(page, "k-a").getByRole("button").click();
   await expect.poll(() => reads).toBe(1);
   await page.getByRole("button", { name: "Refresh apps" }).click();
   const a = page.locator('[data-detail-id="k-a"]');
   await expect(a.getByLabel("Maximum running (1–100)")).toHaveValue("6");
   releaseRead();
-  await page.waitForTimeout(300);
+  await handled(page, done, 2);
   await expect(a.getByLabel("Maximum running (1–100)")).toHaveValue("6");
 
   // Hold the next inventory read, as a 30-second poll would be, and save meanwhile: the save waits, then goes out.
@@ -316,12 +332,13 @@ test("an abandoned caps read never leaves the detail loading, and a read from be
   });
   const a = page.locator('[data-detail-id="k-a"]');
   const field = a.getByLabel("Maximum running (1–100)");
+  const done = caps(page, "k-a");
   // Leave A while its read is held, let that read land, and come back: A reads again.
   await row(page, "k-a").getByRole("button").click();
   await expect.poll(() => reads).toBe(1);
   await open(page, "k-owner");
   gates.shift()();
-  await page.waitForTimeout(200);
+  await handled(page, done, 1);
   await row(page, "k-a").getByRole("button").click();
   await expect(field).toHaveValue("3");
 
@@ -342,8 +359,10 @@ test("an abandoned caps read never leaves the detail loading, and a read from be
   await expect.poll(() => writes.length).toBe(1);
   await expect.poll(() => reads).toBeGreaterThanOrEqual(4);
   await expect(field).toHaveValue("7");
+  const answered = done.count;
+  const held = gates.length;
   while (gates.length) gates.shift()();
-  await page.waitForTimeout(300);
+  await handled(page, done, answered + held);
   await expect(field).toHaveValue("7");
   expect(errors).toEqual([]);
 });
@@ -362,7 +381,7 @@ test("an unfinished number stays invalid across a redraw, and an unchanged form 
   await a.getByRole("button", { name: "Cancel" }).click();
   await expect.poll(() => running.evaluate((input) => input.validity.badInput)).toBe(true);
   await a.getByRole("button", { name: "Save session caps" }).click();
-  await page.waitForTimeout(200);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve))));
   expect(writes).toHaveLength(0);
   expect(errors).toEqual([]);
 });
@@ -417,5 +436,25 @@ test("Refresh drops typed caps, so a save after it cannot send a value the host 
   await a.getByRole("button", { name: "Save session caps" }).click();
   await expect.poll(() => writes.length).toBe(1);
   expect(writes[0].body).toEqual({ max_queued: 12 });
+  expect(errors).toEqual([]);
+});
+
+test("a key the erasure queue lists reads as revoked even when the inventory is a stale snapshot", async ({ page }) => {
+  const now = Date.now() / 1000;
+  const rows = [app("k-a", "App A", { last_used_at: now - 30 })];
+  const { writes, errors } = await mount(page, rows);
+  // Revoked on the host; the inventory refresh fails and serves its last good snapshot, the erasure queue answers.
+  await page.route("http://hub.test/api/apps", route => route.fulfill({ json: { state: "error", stale: true,
+    fetched_at: now - 600, error: "The daemon did not answer.", apps: rows, entries: [] } }));
+  await page.route("http://hub.test/api/apps/erasures", route => route.fulfill({ json: [{ id: "k-a", name: "App A",
+    kind: "app", revoked_at: now - 60, erase_after: now + 5 * 86400 }] }));
+  await expect(row(page, "k-a").locator(".app-status")).toContainText("Active");
+  await page.getByRole("button", { name: "Refresh apps" }).click();
+  await expect(page.getByText(/^Last good inventory from/)).toBeVisible();
+  await expect(row(page, "k-a").locator(".app-status")).toContainText("Revoked · erases");
+  const a = await open(page, "k-a");
+  await expect(a.getByText("harness apps restore k-a", { exact: true })).toBeVisible();
+  await expect(a.getByRole("button", { name: /^Revoke/ })).toHaveCount(0);
+  expect(writes).toHaveLength(0);
   expect(errors).toEqual([]);
 });
