@@ -198,9 +198,73 @@ def test_cookie_alone_cannot_use_or_end_a_session(hub):
 
 def test_session_binding_cannot_be_swapped_between_sessions(hub):
     first = hub.sign_in().headers["x-hub-session"]
+    hub.client.cookies.clear()  # another browser: its own cookie, so its own session
     hub.sign_in()
     hub.client.headers["X-Hub-Session"] = first
     assert hub.get("/api/overview").status_code == 401
+
+
+def test_signing_in_a_second_tab_keeps_the_first_signed_in(hub):
+    first = hub.sign_in().headers["x-hub-session"]  # tab 1's binding
+    second = hub.post("/api/session", json={"code": create_signin_code(hub.state_dir)})  # tab 2, same cookie jar
+    assert second.status_code == 204
+    assert "set-cookie" not in second.headers  # the cookie and its expiry stay as tab 1 got them
+    for binding in (first, second.headers["x-hub-session"]):
+        hub.client.headers["X-Hub-Session"] = binding
+        assert hub.get("/api/overview").status_code == 200
+    assert first != second.headers["x-hub-session"]
+
+
+def test_a_tab_binding_alone_or_without_its_cookie_authorizes_nothing(hub):
+    hub.sign_in()
+    second = hub.post("/api/session", json={"code": create_signin_code(hub.state_dir)}).headers["x-hub-session"]
+    hub.client.headers["X-Hub-Session"] = second
+    cookies = dict(hub.client.cookies)
+    hub.client.cookies.clear()
+    assert hub.get("/api/overview").status_code == 401  # a binding without the cookie
+    hub.client.cookies.update(cookies)
+    del hub.client.headers["X-Hub-Session"]
+    assert hub.get("/api/overview").status_code == 401  # the cookie without a binding
+
+
+def test_signing_out_ends_every_tab_of_the_session(hub):
+    first = hub.sign_in().headers["x-hub-session"]
+    second = hub.post("/api/session", json={"code": create_signin_code(hub.state_dir)}).headers["x-hub-session"]
+    cookie = dict(hub.client.cookies)
+    assert hub.delete("/api/session").status_code == 204
+    hub.client.cookies.update(cookie)  # a browser that kept sending the old cookie
+    for binding in (first, second):
+        hub.client.headers["X-Hub-Session"] = binding
+        assert hub.get("/api/overview").status_code == 401
+
+
+def test_a_stale_cookie_does_not_make_a_new_sign_in_join_it(tmp_path):
+    now = [1000.0]
+    sessions = Sessions(tmp_path, clock=lambda: now[0])
+    old = sessions.redeem_code(create_signin_code(tmp_path, now=now[0]))
+    now[0] += auth.SESSION_TTL_SECONDS + 1
+    fresh = sessions.redeem_code(create_signin_code(tmp_path, now=now[0]), old[0])
+    assert fresh[0] != old[0]
+    assert sessions.valid(*fresh) and not sessions.valid(*old)
+
+
+def test_a_joined_session_keeps_its_expiry(tmp_path):
+    now = [1000.0]
+    sessions = Sessions(tmp_path, clock=lambda: now[0])
+    session, first = sessions.redeem_code(create_signin_code(tmp_path, now=now[0]))
+    now[0] += auth.SESSION_TTL_SECONDS - 10
+    joined = sessions.redeem_code(create_signin_code(tmp_path, now=now[0]), session)
+    assert joined[0] == session and sessions.valid(*joined) and sessions.valid(session, first)
+    now[0] += 11
+    assert not sessions.valid(*joined) and not sessions.valid(session, first)
+
+
+def test_a_session_keeps_only_its_newest_tab_bindings(tmp_path):
+    sessions = Sessions(tmp_path)
+    session, first = sessions.create()
+    bindings = [sessions.create(session)[1] for _ in range(auth.MAX_BINDINGS)]
+    assert not sessions.valid(session, first)
+    assert all(sessions.valid(session, binding) for binding in bindings)
 
 
 def test_https_cookie_prefix_and_origin_scheme(make_hub):

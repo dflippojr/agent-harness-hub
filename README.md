@@ -82,7 +82,9 @@ The link works once, for ten minutes. Its code travels in the URL fragment, whic
 or puts in a Referer; a truncated or mangled link is refused on the page without being sent. The page posts a
 well-formed code once and gets an HttpOnly, SameSite=Strict session cookie for twelve hours.
 The cookie alone cannot authorize requests: a second per-session value is kept in origin-scoped `sessionStorage`
-and sent in `X-Hub-Session`. Each new tab needs its own sign-in link. HTTPS uses a `__Host-hub_session` cookie
+and sent in `X-Hub-Session`. Each new tab needs its own sign-in link; a tab that signs in while the browser's session
+is still live joins it, so the tabs stay signed in together, share the original twelve-hour expiry, and signing
+out in one signs out all of them. HTTPS uses a `__Host-hub_session` cookie
 with `Secure`, `HttpOnly`, `SameSite=Strict` and no Domain attribute.
 Proving you can read the Hub's owner-only state directory is the same proof the daemon uses for local callers.
 
