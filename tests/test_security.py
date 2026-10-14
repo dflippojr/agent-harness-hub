@@ -114,6 +114,10 @@ def test_overview_drops_fields_it_does_not_know(hub, fake_daemon):
     ('"code hp-9f8e7d6c"', False),
     ('{"login": "ha-jung.kim@example.test", "model": "hp-instruct-7b", "labels": ["ha-core", "hp-laserjet"]}', False),
     ('"ha-' + "x" * 42 + '"', False),
+    # JSON escapes put a letter before the token in the raw body; the decoded string still counts.
+    ('{"model": "padding\\nha-' + "S" * 43 + '"}', True),
+    ('{"model": "padding\\tho-' + "S" * 43 + '"}', True),
+    ('{"padding\\nhp-' + "c" * 24 + '": 1}', True),
     ('{"name": "echo-server", "id": "k-5a433700", "photo-album": 1}', False),
     ('{"cmd": "harness hub approve pr-8921239e4d65160ca49d00ec --match 763647"}', False),
 ])

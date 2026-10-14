@@ -101,3 +101,10 @@ def test_a_backend_model_ending_in_the_hub_key_is_withheld(claimed, fake_daemon)
     fake_daemon.backend["model"] = "x" * 154 + " " + fake_daemon.hub_token
     assert claimed.get("/api/settings/backends").status_code == 500
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token, fake_daemon.hub_token[:40])
+
+
+@pytest.mark.parametrize("token", FULL_TOKENS)
+def test_a_token_after_a_newline_is_still_withheld(claimed, fake_daemon, token):
+    fake_daemon.backend["model"] = "x" * 190 + "\n" + token
+    assert claimed.get("/api/settings/backends").status_code == 500
+    assert all(token[:20] not in body for body in claimed.bodies)

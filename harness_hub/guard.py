@@ -9,6 +9,7 @@ Withholding fails closed: a page shows an error, never a secret.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Callable, Iterable
@@ -27,11 +28,31 @@ KEY_PREFIX_SHAPE = re.compile(r"(?<![A-Za-z0-9])(?:ha|ho|hk|hp|hrp)-[A-Za-z0-9_\
 WITHHELD = b'{"detail":"response withheld: it contained a credential-like string"}'
 
 
+def _decoded(text: str) -> list[str]:
+    """Every string in a JSON body, as the browser will read it. In the raw body a token after a newline follows the
+    `n` of the JSON escape, and the shape's look-behind refuses it."""
+    try:
+        pending = [json.loads(text)]
+    except (ValueError, RecursionError):
+        return []
+    out = []
+    while pending:
+        value = pending.pop()
+        if isinstance(value, str):
+            out.append(value)
+        elif isinstance(value, dict):
+            out.extend(value)
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return out
+
+
 def leaks(body: bytes, secrets: Iterable[str]) -> bool:
     text = body.decode("utf-8", errors="replace")
-    if TOKEN_SHAPE.search(text):
-        return True
-    return any(secret and secret in text for secret in secrets)
+    known = [secret for secret in secrets if secret]
+    return any(TOKEN_SHAPE.search(value) or any(secret in value for secret in known)
+               for value in (text, *_decoded(text)))
 
 
 class ResponseGuard:
