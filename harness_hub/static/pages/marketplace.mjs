@@ -16,9 +16,14 @@ function countdown(seconds) {
   return `${minutes}:${String(rest).padStart(2, "0")} left`;
 }
 
-function armCommand(entry, origin) {
+// The scopes whose acknowledgement the consent screen asks for: the daemon may require it for a scope the Hub rates standard.
+export function acknowledgedScopes(entry) {
+  return entry.scopes.filter((s) => entry.acknowledgement_required || s.tier === "elevated" || !s.text).map((s) => s.scope);
+}
+
+export function armCommand(entry, origin) {
   return `harness pairing-requests arm ${entry.catalog_app_id} --scopes ${entry.scopes.map((s) => s.scope).join(" ")}` +
-    (origin ? ` --origin ${origin}` : "") + (entry.elevated.length ? " --acknowledge-elevated" : "");
+    (origin ? ` --origin ${origin}` : "") + (acknowledgedScopes(entry).length ? " --acknowledge-elevated" : "");
 }
 
 export function renderMarketplace(main) {
@@ -220,8 +225,7 @@ export function renderMarketplace(main) {
     const origins = entry.browser_origins;
     let origin = origins.length === 1 ? origins[0] : "";
     const cli = h("div");
-    const needsAck = entry.scopes.filter((s) => entry.acknowledgement_required || s.tier === "elevated" || !s.text)
-      .map((s) => s.scope);
+    const needsAck = acknowledgedScopes(entry);
     const ack = needsAck.length ? h("input", { type: "checkbox", "data-field": "ack" }) : null;
     const approve = button("Approve", () => {
       if (approve.disabled) return;
