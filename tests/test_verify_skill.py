@@ -196,7 +196,11 @@ sys.exit(3)
 
 
 @pytest.mark.skipif(sys.version_info < (3, 12), reason="ui_instance.py needs Python 3.12")
-@pytest.mark.parametrize("session", ["same-session", "own-session"])
+@pytest.mark.parametrize("session", [
+    "same-session",
+    pytest.param("own-session", marks=pytest.mark.skipif(
+        sys.platform == "win32", reason="start_new_session is POSIX only; same as same-session on Windows")),
+])
 def test_cleanup_after_a_failed_drive_leaves_nothing_running(tmp_path, monkeypatch, session):
     psutil = pytest.importorskip("psutil")
     verify = load("verify")
@@ -223,6 +227,7 @@ def test_cleanup_after_a_failed_drive_leaves_nothing_running(tmp_path, monkeypat
     assert not [p for p in record["processes"] if verify.alive(p)]
     assert not Path(record["instance_dir"]).exists()
     with socket.socket() as s:
+        s.settimeout(0.2)  # the listener is gone; Windows would retry a refused loopback connect for about a second
         assert s.connect_ex(("127.0.0.1", record["hub_port"])) != 0
     summary = (tmp_path / "evidence" / "summary.md").read_text(encoding="utf-8")
     assert "# Verify: FAIL" in summary

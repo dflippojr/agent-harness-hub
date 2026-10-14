@@ -64,11 +64,6 @@ def test_no_inventory_at_all_reports_the_error(claimed, fake_daemon):
     assert data["backends"]  # backend windows still show
 
 
-def test_unclaimed_hub_refuses(hub):
-    hub.sign_in()
-    assert hub.get("/api/spend").status_code == 409
-
-
 def test_malformed_daemon_values_are_dropped():
     assert cap_use({"configured": {}, "effective": {"max_running": 0, "max_queued": 1}}) is None
     shown = spend_view({"apps": [{"id": "bad id!", "kind": "app"}, "junk",

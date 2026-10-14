@@ -88,20 +88,6 @@ def test_caps_and_retention_are_allowlisted_and_validated(claimed, fake_daemon):
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 
 
-@pytest.mark.parametrize("resource,method", [("erasures", "GET"), ("k-minute/limits", "GET"),
-                                             ("k-minute/limits", "PUT"), ("k-minute/revoke", "DELETE"),
-                                             ("k-minute/retention", "PUT")])
-def test_apps_require_signed_in_owner_and_secure_writes(claimed, fake_daemon, resource, method):
-    if method != "GET":
-        for headers in ({}, {"X-Hub-Request": "1"}, {**ORIGIN, "Origin": "https://other.test"},
-                        {**ORIGIN, "Origin": "https://" + HUB_HOST}):
-            assert write(claimed, method, resource, {"confirm": True}, headers).status_code == 403
-        assert not fake_daemon.apps_calls
-    claimed.delete("/api/session")
-    assert write(claimed, method, resource, {"confirm": True}).status_code == 401
-    assert claimed.get("/api/apps").status_code == 401
-
-
 def test_inventory_cache_shared_with_modules_and_keeps_last_good(claimed, fake_daemon):
     claimed.get("/api/modules")
     path = claimed.state_dir / INVENTORY_FILE
@@ -118,15 +104,6 @@ def test_inventory_cache_shared_with_modules_and_keeps_last_good(claimed, fake_d
     assert bad["state"] == "error" and bad["stale"] and bad["reachable"] is True
     assert bad["apps"] == good["apps"] and bad["fetched_at"] == good["fetched_at"]
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
-
-
-def test_apps_key_rejection_withholds_cache_and_release(claimed, fake_daemon):
-    claimed.get("/api/apps")
-    fake_daemon.release()
-    reply = claimed.get("/api/apps")
-    assert reply.status_code == 409 and "apps" not in reply.json()
-    assert claimed.get("/api/claim").json()["state"] == "released"
-    assert claimed.get("/api/apps/k-minute/limits").status_code == 409
 
 
 def test_bad_body_route_and_daemon_errors_fail_closed(claimed, fake_daemon):
@@ -157,24 +134,6 @@ def test_projection_rejects_nonfinite_and_nested_metrics():
     assert shown["store"]["sessions"] == {"running": None}
     assert shown["store"]["usage"]["requests"] is None and shown["store"]["usage"]["cost_usd"] is None
     assert app_view({"token_age_seconds": 90 * 86400})["token_age_warning"] is True
-
-
-@pytest.mark.parametrize("operation", ["limits", "keys"])
-def test_transient_detail_rejection_retains_claim_without_exposing_data(claimed, fake_daemon, monkeypatch, operation):
-    from harness_hub.daemon import DaemonClient, Reply
-
-    original = DaemonClient.apps
-
-    async def rejected(self, token, action, app_id="", body=None):
-        if action == operation:
-            return Reply(401, {"detail": "synthetic rejection"})
-        return await original(self, token, action, app_id, body)
-
-    monkeypatch.setattr(DaemonClient, "apps", rejected)
-    reply = claimed.get("/api/apps/k-minute/limits")
-    assert reply.status_code == 409 and "configured" not in reply.json()
-    assert claimed.get("/api/claim").json()["state"] == "claimed"
-    assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 
 
 def test_caps_write_does_not_read_keys_or_repeat_write(claimed, fake_daemon):

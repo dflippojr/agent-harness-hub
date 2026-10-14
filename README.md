@@ -13,14 +13,18 @@ Installing the Hub is optional. Every Hub action is also a `harness` CLI command
 The Hub includes the server, first-run claim, sign-in, **Overview**, **Settings**, **Modules**, **Apps**,
 **Spend**, **Pairing requests**, **Marketplace** and **Accounts and maintenance**.
 
-Settings renders the daemon's complete registry, grouped by category, with types, defaults, allowed values,
-read-only guidance, current and pending revisions, and restart requirements. Validate shows field errors without
-saving. Save sends the revision; a concurrent change is refused and the page reloads the current settings. Rollback
-and restart each require an in-page confirmation. Settings and Overview poll health during a restart and report
+Settings renders the daemon's complete registry: a category list with a filter, beside one category at a time. Each
+setting is a row with its label, help, key, when a change applies (Live or Restart) and its default; an unset value
+shows the default as its placeholder, and read-only settings show their guidance. An edited row gets a **Changed**
+pill and a **Reset** link (back to the inherited value), and a save bar with **Discard**, **Validate** and **Save**
+sticks to the bottom of the page while there are edits. Validate shows field errors without saving and opens the
+category of the first one. Save sends the revision; a concurrent change is refused and the page reloads the current
+settings, keeping your edits. The page head shows the revision, **Roll back** and **Restart**; each asks first,
+in-page. Settings and Overview poll health during a restart and report
 last-good recovery or quarantined settings. Restart requires a daemon supervisor; an unsupervised daemon returns
 its manual restart instructions.
 
-Settings also manages smart approvals, backend model/effort defaults, the memory agent profile (saving commits
+The category list also opens the daemon's other controls: smart approvals, backend model/effort defaults, the memory agent profile (saving commits
 and pushes to its library), member GitHub access, read-only Google sign-in status, and test notifications. Secret
 references remain file paths: the Hub never opens or resolves those files. Installer-only secrets remain hidden
 and read-only. Every action has its daemon CLI equivalent behind a **Host command** button. When the daemon has no `memory_library` module

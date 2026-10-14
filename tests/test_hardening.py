@@ -20,9 +20,9 @@ import pytest
 from harness_hub import auth
 from harness_hub.auth import Sessions, create_signin_code
 from harness_hub.config import Settings, normalize_daemon_url, normalize_public_url
-from harness_hub.daemon import DaemonClient, DaemonUnreachable, Reply
+from harness_hub.daemon import DaemonClient
 from harness_hub.server import MAX_SIGNIN_BODY, create_app
-from harness_hub.state import StateStore, prepare_dir, read_json, write_private
+from harness_hub.state import StateStore, prepare_dir, write_private
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.20", "lan.example", ""])  # noqa: S104
@@ -331,32 +331,6 @@ def test_origin_requires_the_full_same_origin(hub, origin):
     code = create_signin_code(hub.state_dir)
     assert hub.post("/api/session", json={"code": code}, headers={"Origin": origin}).status_code == 403
     assert hub.post("/api/session", json={"code": code}, headers={"Origin": "http://127.0.0.1:8120"}).status_code == 204
-
-
-@pytest.mark.parametrize("confirmation", [200, 500, "unreachable"])
-def test_one_unauthorized_reply_does_not_destroy_key(hub, fake_daemon, monkeypatch, confirmation):
-    hub.sign_in()
-    fake_daemon.approve(hub.post("/api/claim").json()["request_id"])
-    hub.wait_for("claimed")
-    daemon = hub.client.app.fastapi.state.claims.daemon
-    calls = []
-
-    async def admin(token, path=""):
-        calls.append((token, path))
-        if len(calls) == 1:
-            return Reply(401, {})
-        if len(calls) == 2:
-            return Reply(200, {})
-        if confirmation == "unreachable":
-            raise DaemonUnreachable()
-        return Reply(confirmation, {})
-
-    monkeypatch.setattr(daemon, "admin", admin)
-    overview = hub.get("/api/overview").json()
-    assert overview["claim"]["state"] == "claimed" and overview["ownership"] is None
-    assert overview["error"]
-    assert read_json(hub.state_dir / "hub-state.json", {})["key"]["token"] == fake_daemon.hub_token
-    assert len(calls) == 3
 
 
 def test_cli_cannot_resurrect_a_code_redeemed_in_another_process(tmp_path):

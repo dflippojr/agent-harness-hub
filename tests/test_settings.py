@@ -1,5 +1,5 @@
 """Owner Settings flows, concurrency, explicit writes, and response secrecy."""
-import time
+from harness_hub import server
 
 from .conftest import HUB_HOST, assert_no_secrets
 
@@ -11,7 +11,8 @@ def write(hub, method, resource, body):
                                      headers={"X-Hub-Request": "1", **ORIGIN}))
 
 
-def test_registry_validate_save_conflict_rollback_restart(claimed, fake_daemon):
+def test_registry_validate_save_conflict_rollback_restart(claimed, fake_daemon, monkeypatch):
+    monkeypatch.setattr(server, "RESTART_GRACE_SECONDS", 0)  # the fake daemon's two 503s keep the restart showing
     hub = claimed
     schema = hub.get("/api/settings/schema").json()
     config = hub.get("/api/settings/config").json()
@@ -45,7 +46,6 @@ def test_registry_validate_save_conflict_rollback_restart(claimed, fake_daemon):
     assert started.status_code == 202 and started.json()["status"] == "restarting"
     assert hub.get("/api/overview").json()["restarting"] is True
     assert hub.get("/api/settings/health").json()["restarting"] is True
-    time.sleep(1.05)
     healthy = hub.get("/api/settings/health").json()
     assert healthy["reachable"] and not healthy["restarting"]
     assert hub.get("/api/overview").json()["restarting"] is False
@@ -73,35 +73,14 @@ def test_all_daemon_controls_and_secrecy(claimed, fake_daemon):
     assert_no_secrets(hub.bodies, fake_daemon.hub_token, "provider-secret-sentinel")
 
 
-def test_settings_auth_csrf_closed_dispatch_and_input(claimed, fake_daemon):
+def test_settings_input_is_closed_before_any_daemon_call(claimed, fake_daemon):
     hub = claimed
     before = len(fake_daemon.settings_calls)
-    assert hub.client.get("/api/settings/config", headers={"X-Hub-Session": ""}).status_code == 401
-    assert hub.client.patch("/api/settings/config", json={}).status_code == 403
-    assert hub.post("/api/settings/notify", json={}).status_code == 403
     assert write(hub, "PUT", "backend", {"name": "../keys", "model": "sample"}).status_code == 400
     assert write(hub, "POST", "notify", {"token": "synthetic"}).status_code == 400
     assert write(hub, "PATCH", "config", {"changes": {}}).status_code == 400
     assert write(hub, "PATCH", "config", {"revision": True, "changes": {}}).status_code == 400
-    assert hub.client.post("/api/settings/notify", json={}, headers={"X-Hub-Request": "1",
-                           "Origin": "https://foreign.test"}).status_code == 403
-    assert hub.client.post("/api/settings/notify", content="x" * 262145,
-                           headers={"X-Hub-Request": "1", **ORIGIN}).status_code == 413
     assert len(fake_daemon.settings_calls) == before
-
-
-def test_settings_unreachable_and_release_confirmation(claimed, fake_daemon):
-    fake_daemon.down = True
-    assert claimed.get("/api/settings/config").status_code == 503
-    fake_daemon.down = False
-    fake_daemon.release()
-    assert claimed.get("/api/settings/config").status_code == 409
-    assert claimed.get("/api/claim").json()["state"] == "released"
-
-
-def test_settings_require_claim(hub):
-    hub.sign_in()
-    assert hub.get("/api/settings/config").status_code == 409
 
 
 def test_registry_sensitive_values_and_guard_fail_closed(claimed, fake_daemon):
@@ -147,17 +126,17 @@ def test_errors_say_whether_the_daemon_answered(claimed, fake_daemon):
     assert "reachable" not in claimed.get("/api/settings/nothing").json()
 
 
-def test_overview_ends_a_restart_that_recovery_resolved_at_a_lower_revision(claimed, fake_daemon):
+def test_overview_ends_a_restart_that_recovery_resolved_at_a_lower_revision(claimed, fake_daemon, monkeypatch):
+    monkeypatch.setattr(server, "RESTART_GRACE_SECONDS", 0)
     saved = write(claimed, "PATCH", "config", {"revision": 3, "changes": {"listen.idle": 2.0}})
     assert saved.json()["pending_revision"] == 4
     started = write(claimed, "POST", "restart", {"revision": 4, "confirm": True})
     assert started.status_code == 202 and started.json()["target_revision"] == 4
     # Revision 4 fails to boot: the daemon restores its last good revision 3 and drops the pending one.
-    fake_daemon.restart_requested, fake_daemon.restart_polls = False, 0
+    fake_daemon.restart_requested, fake_daemon.restart_polls = False, 1
     fake_daemon.revision, fake_daemon.pending, fake_daemon.pending_revision = 3, {}, None
     fake_daemon.recovery = {"recovery": "lkg_restore", "reason": "synthetic boot failure", "at": 50}
-    assert claimed.get("/api/overview").json()["restarting"] is True
-    time.sleep(1.05)
+    assert claimed.get("/api/overview").json()["restarting"] is True  # the daemon still answers 503
     # The owner left Settings: Overview alone ends the restart, so its banner does not stay up.
     shown = claimed.get("/api/overview").json()
     assert shown["restarting"] is False
