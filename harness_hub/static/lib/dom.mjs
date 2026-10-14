@@ -122,9 +122,10 @@ export function sectionHead(title, count, { level = 2, tone, id } = {}) {
 }
 
 // The banner under a page head. bad is an alert; warn and info are status messages. action is an optional button or
-// link node.
-export function banner(tone, title, detail, action) {
+// link node; lead is an optional icon name drawn before the text.
+export function banner(tone, title, detail, action, { lead } = {}) {
   return h("div", { class: `banner ${tone}`, role: tone === "bad" ? "alert" : "status" },
+    lead ? icon(lead, "icon banner-icon") : null,
     h("span", { class: "banner-text" }, title, detail ? h("span", { class: "banner-detail" }, detail) : null),
     action);
 }

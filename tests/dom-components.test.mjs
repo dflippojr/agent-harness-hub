@@ -53,6 +53,10 @@ test("banner: bad is an alert, the others are status", () => {
   assert.equal(bad.attrs.get("role"), "alert");
   assert.match(bad.textContent, /not answering\.Changes are paused\./);
   assert.equal(dom.banner("warn", "Restart needed").attrs.get("role"), "status");
+  const led = dom.banner("bad", "That sign-in link is not valid.", null, null, { lead: "alert" });
+  assert.equal(led.children[0].tag, "svg");
+  assert.equal(led.children[0].attrs.get("class"), "icon banner-icon");
+  assert.equal(dom.banner("info", "Plain").children[0].className, "banner-text");
 });
 
 test("toggle is a checkbox with role=switch and reports changes", () => {

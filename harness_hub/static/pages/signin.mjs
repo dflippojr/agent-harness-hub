@@ -1,7 +1,7 @@
 // Sign-in: the owner proves they are on the daemon host by opening a one-time link printed there, or, through
 // `tailscale serve`, with the tailnet login the daemon lists as the owner's.
 
-import { clear, command, h, icon } from "../lib/dom.mjs";
+import { banner, clear, command, h, icon } from "../lib/dom.mjs";
 
 export const INVALID_LINK = "that sign-in link is not valid; links work once, for ten minutes";
 
@@ -43,8 +43,7 @@ export function sentences(message) {
 function refusal(error) {
   const { title, detail } = sentences(error.message);
   const more = error.message === INVALID_LINK ? `${detail} Make a new one below.` : detail;
-  return h("div", { class: "banner bad", role: "alert" }, icon("alert", "icon banner-icon"),
-    h("span", { class: "banner-text" }, title, more ? h("span", { class: "banner-detail" }, more) : null));
+  return banner("bad", title, more, null, { lead: "alert" });
 }
 
 function step(number, ...children) {
