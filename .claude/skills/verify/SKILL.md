@@ -69,7 +69,7 @@ Sign-in and readiness follow docs/ui-testing.md "Seed and sign-in" and the Journ
 | `apps` | `#/apps` | open | heading "Paired apps and keys" |
 | `spend` | `#/spend` | open, sort by App | the Synthetic App row, Cost then App as the sorted column, the backend table, no sideways scroll |
 | `modules` | `#/modules` | open | heading "Module switches" |
-| `pairing` | `#/pairing` | open | heading "Paired (n)" |
+| `pairing` | `#/pairing` | open | heading "History · last day" (with its count) |
 | `settings` | `#/settings` | Maximum turns +1, Validate, Save, reload; Roll back → Confirm rollback, reload (HUB-04's save and rollback) | "Saved.", the new value after reload, then "Rolled back to revision" and the original value after reload |
 
 Every test also asserts no page or console errors (the suite's known exceptions apply). To cover something the map
