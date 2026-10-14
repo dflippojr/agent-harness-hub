@@ -118,3 +118,29 @@ def test_every_module_is_preloaded_and_exists():
     for module in STATIC.rglob("*.mjs"):
         if module.name != "app.mjs":
             assert f"/static/{module.relative_to(STATIC).as_posix()}" in html, module
+
+
+def custom_properties(block: str) -> dict[str, str]:
+    return dict(re.findall(r"(--[a-z0-9-]+):\s*([^;]+);", block))
+
+
+def test_stables_tokens_in_light_and_dark():
+    """Hub design 1 (#68): the Stables tokens the Hub lacked, and the dark primary #2F66D8 with white text."""
+    css = text(STATIC / "style.css")
+    light = custom_properties(css[css.index(":root {"):css.index("@media (prefers-color-scheme: dark)")])
+    dark = custom_properties(css[css.index("@media (prefers-color-scheme: dark)"):css.index("* { box-sizing")])
+    for name in ("--primary", "--on-primary", "--info-bg", "--ok-solid", "--shadow"):
+        assert name in light and name in dark, name
+    assert light["--primary"] == "#2457d9" and light["--on-primary"] == "#ffffff"
+    assert dark["--primary"] == "#2f66d8" and dark["--on-primary"] == "#ffffff"
+    assert ".btn.primary { background: var(--primary)" in css
+
+
+def test_component_styles_exist():
+    css = text(STATIC / "style.css")
+    for selector in (".pill.run", ".pill.ok", ".pill.warn", ".pill.bad", ".pill.muted", ".section-head {",
+                     ".count.warn", ".banner.bad", ".banner.warn", ".banner.info", ".switch {", ".table {",
+                     ".countdown {", ".countdown.warn", ".danger-zone {", ".btn.danger"):
+        assert selector in css, selector
+    switch = css[css.index(".switch {"):]
+    assert "min-height: var(--tap)" in switch[:switch.index("}")]
