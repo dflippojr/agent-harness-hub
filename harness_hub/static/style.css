@@ -931,7 +931,9 @@ body.signed-out .topbar { display: none; }
 .savebar-detail { color: var(--muted); }
 
 @media (max-width: 699px) {
-  .settings-head h1 { flex-basis: 100%; }
+  /* The title, then the revision, then Roll back and Restart side by side. */
+  .settings-head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .settings-head h1, .settings-head .revision-chip { grid-column: 1 / -1; justify-self: start; }
   .setting-row { padding: 14px 16px; }
   .settings-group-head { padding: 14px 16px 10px; }
   .settings-control-body { padding: 0 16px 16px; }

@@ -72,6 +72,8 @@ export function renderSettings(main) {
     "aria-label": "Filter settings", autocomplete: "off" });
   const registryList = h("ul", { "aria-labelledby": "settings-registry-label" });
   const controlList = h("ul", { "aria-labelledby": "settings-controls-label" });
+  const registryLabel = h("p", { class: "nav-group", id: "settings-registry-label" }, "Registry");
+  const controlLabel = h("p", { class: "nav-group", id: "settings-controls-label" }, "Controls");
   const pane = h("div", { class: "settings-pane" });
   const noMatch = h("p");
   const empty = h("div", { class: "card empty", hidden: true }, h("h2", {}, "No settings match"), noMatch,
@@ -91,8 +93,7 @@ export function renderSettings(main) {
   { parity: true }), notice, health, confirmation, warning,
   h("div", { class: "settings-layout" },
     h("nav", { class: "settings-cats", "aria-label": "Setting categories" }, filter,
-      h("div", { class: "settings-cat-lists" }, h("p", { class: "nav-group", id: "settings-registry-label" }, "Registry"),
-        registryList, h("p", { class: "nav-group", id: "settings-controls-label" }, "Controls"), controlList)),
+      h("div", { class: "settings-cat-lists" }, registryLabel, registryList, controlLabel, controlList)),
     h("div", { class: "settings-main" }, pane, empty)), dock);
   filter.addEventListener("input", () => setQuery(filter.value));
   drawHead();
@@ -375,6 +376,10 @@ export function renderSettings(main) {
       group.li.hidden = !visible;
       if (visible && !first) first = id;
     }
+    // A list header goes with the last of its categories.
+    const listed = (kind) => [...groups.values()].some((group) => group.kind === kind && !group.li.hidden);
+    registryLabel.hidden = !listed("registry");
+    controlLabel.hidden = !listed("control");
     if (!groups.has(selected) || groups.get(selected).li.hidden) selected = first;
     for (const [id, group] of groups) {
       group.section.hidden = id !== selected;
@@ -484,7 +489,8 @@ export function renderSettings(main) {
           const effort = h("input", { type: "text" }); effort.value = row.effort;
           box.append(h("h3", {}, row.name), h("div", { class: "settings-pair" }, field("Default model", model),
             field("Default effort", effort)),
-          h("p", { class: "hint" }, "Suggested models: " + row.popular_models.map((m) => m.id).join(", ")),
+          row.popular_models?.length ? h("p", { class: "hint" }, "Suggested models: " +
+            row.popular_models.map((m) => m.id).join(", ")) : null,
           h("div", { class: "settings-actions" }, button("Save " + row.name, () => perform(() => saveControl("backend",
             { name: row.name, model: model.value, effort: effort.value }, report), report))),
           command("harness backends set " + row.name + " --model <model> --effort <effort>", { parity: true }));
