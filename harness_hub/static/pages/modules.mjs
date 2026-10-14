@@ -10,7 +10,7 @@ export function switchFor(name, schema) {
 }
 
 export function renderModules(main) {
-  let stopped = false, busy = false, inventory, schema, config;
+  let stopped = false, busy = false, inventory, schema, config, outcome = null;
   const poll = poller(() => load());
   const notice = h("p", { class: "notice", "aria-live": "polite" });
   const inventoryError = h("p", { class: "notice bad", role: "alert" });
@@ -23,9 +23,15 @@ export function renderModules(main) {
   function button(label, action) {
     return h("button", { type: "button", class: "btn", onclick: action }, label);
   }
+  // The notice holds the last save's outcome, if any, plus the current read failure. A later load that reads both
+  // settings documents drops the failure but keeps the outcome.
   function message(text, bad = false) {
-    notice.textContent = text;
-    notice.className = bad ? "notice bad" : "notice";
+    outcome = text ? { text, bad } : null;
+    showNotice("");
+  }
+  function showNotice(failure) {
+    notice.textContent = [outcome?.text, failure].filter(Boolean).join(" ");
+    notice.className = outcome?.bad || failure ? "notice bad" : "notice";
   }
   function restartLink() {
     return h("p", {}, h("a", { href: "#/settings", class: "btn restart-link" }, "Restart in Settings"),
@@ -45,8 +51,8 @@ export function renderModules(main) {
     }
     schema = results[1].status === "fulfilled" ? results[1].value : null;
     config = results[2].status === "fulfilled" ? results[2].value : null;
-    if (!schema || !config) message("Switches unavailable: " +
-      results.slice(1).filter((r) => r.status === "rejected").map((r) => r.reason.message).join("; "), true);
+    showNotice(schema && config ? "" : "Switches unavailable: " +
+      results.slice(1).filter((r) => r.status === "rejected").map((r) => r.reason.message).join("; "));
     if (inventory) inventoryError.textContent = inventory.error;
     busy = false;
     draw();
