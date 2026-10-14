@@ -257,3 +257,43 @@ test("Refresh reads the open App's caps again, and an older caps reply never rep
   expect(reads).toBe(3);
   expect(errors).toEqual([]);
 });
+
+test("Refresh drops a caps read still in flight, and a save made during a refresh still happens", async ({ page }) => {
+  const rows = [app("k-a", "App A")];
+  const { writes, errors } = await mount(page, rows);
+  const limits = (running) => ({ configured: { max_running: running, max_queued: 10 },
+    effective: { max_running: running, max_queued: 10 }, running: 0, queued: 0, parked: 0, retention_days: null });
+  let reads = 0, releaseRead;
+  const heldRead = new Promise(resolve => { releaseRead = resolve; });
+  await page.route("http://hub.test/api/apps/k-a/limits", async route => {
+    if (route.request().method() !== "GET") return route.fallback();
+    reads += 1;
+    if (reads === 1) { await heldRead; return route.fulfill({ json: limits(2) }); }
+    return route.fulfill({ json: limits(6) });
+  });
+  await card(page, "k-a").getByRole("button").click();
+  await expect.poll(() => reads).toBe(1);
+  await page.getByRole("button", { name: "Refresh apps" }).click();
+  const a = page.locator('[data-detail-id="k-a"]');
+  await expect(a.getByLabel("Maximum running (1–100)")).toHaveValue("6");
+  releaseRead();
+  await page.waitForTimeout(300);
+  await expect(a.getByLabel("Maximum running (1–100)")).toHaveValue("6");
+
+  // Hold the next inventory read, as a 30-second poll would be, and save meanwhile: the save waits, then goes out.
+  let releaseInventory;
+  const heldInventory = new Promise(resolve => { releaseInventory = resolve; });
+  await page.route("http://hub.test/api/apps", async route => {
+    await heldInventory;
+    return route.fulfill({ json: { state: "ready", apps: rows, entries: [] } });
+  });
+  await a.getByLabel("Maximum queued (1–1000)").fill("12");
+  await page.getByRole("button", { name: "Refresh apps" }).click();
+  await a.getByRole("button", { name: "Save session caps" }).click();
+  expect(writes).toHaveLength(0);
+  releaseInventory();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0]).toEqual({ path: "/api/apps/k-a/limits", method: "PUT", body: { max_running: 6, max_queued: 12 } });
+  await expect(page.getByText("Session caps saved.", { exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});

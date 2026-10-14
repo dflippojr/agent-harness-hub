@@ -57,6 +57,7 @@ function sessions(row) {
 
 export function renderApps(main) {
   let stopped = false, busy = false, inventory = null, erasures = null, signature = "";
+  let loading = null; // the read in flight, which an action waits for instead of being dropped
   let selected = null; // the key whose detail is open
   let confirming = null; // "revoke" or "retention": the question asked inside the open detail (decision 5 of #65)
   let detail = null; // { id, data } or { id, error } or { id, loading }: the open App's session caps and retention
@@ -69,7 +70,7 @@ export function renderApps(main) {
   const view = h("div", { class: "apps-view" });
   // Refresh also reads the open App's caps and retention again, so a save never sends a value changed on the host.
   const refresh = h("button", { type: "button", class: "btn ghost refresh",
-    onclick: () => { detail = null; void load(true); } }, icon("refresh"), "Refresh apps");
+    onclick: () => { detail = null; reading++; void load(true); } }, icon("refresh"), "Refresh apps");
   clear(main, h("header", { class: "page-head" }, h("h1", {}, "Apps"), updated, refresh),
     h("p", { class: "lede" }, "Every key that can reach the daemon, and what it has used. Names marked App-supplied " +
       "come from the app itself; check the key id and origins."),
@@ -93,9 +94,15 @@ export function renderApps(main) {
   function ready() {
     return !busy && inventory?.state === "ready";
   }
-  async function load(force = false) {
-    if (stopped || busy) return;
-    busy = true;
+  // One read at a time. A forced read (Refresh, after an action) asked for while one is in flight runs after it, so it
+  // sees the daemon as it is now.
+  function load(force = false) {
+    if (stopped || busy) return Promise.resolve();
+    if (loading) return force ? loading.then(() => load(true)) : loading;
+    loading = readInventory(force).finally(() => { loading = null; });
+    return loading;
+  }
+  async function readInventory(force) {
     poll.cancel();
     refresh.disabled = true;
     const results = await Promise.allSettled([api("apps"), api("apps/erasures")]);
@@ -104,8 +111,7 @@ export function renderApps(main) {
     erasures = results[1].status === "fulfilled" ? { rows: results[1].value } : { error: results[1].reason.message };
     showProblem(results[0].status === "rejected" ? results[0].reason.message : inventory?.error || "");
     if (results[0].status === "fulfilled") updated.textContent = `Updated ${new Date().toLocaleTimeString()} · every ${POLL_MS / 1000} s`;
-    busy = false;
-    refresh.disabled = false;
+    refresh.disabled = busy;
     draw(force);
     poll.schedule(POLL_MS);
   }
@@ -330,12 +336,13 @@ export function renderApps(main) {
         h("div", { class: "apps-inline" }, retention.field, confirming === "retention" ? null : saveRetention),
         h("p", { class: "hint" }, "Shorter retention can erase older sessions at the next cleanup; you confirm before " +
           "it applies. Leave it blank to keep sessions until they are deleted."),
-        confirming === "retention" ? ask(`Change retention for ${name}?`, "Apply retention " +
+        confirming === "retention" ? ask({ title: `Change retention for ${name}?`, explanation: "Apply retention " +
           (days === null ? "until deleted" : days + " days") + ` to ${name}. Shorter retention can erase older ` +
-          "sessions during cleanup.", null, `Confirm change retention for ${name}`, "btn primary", async () => {
+          "sessions during cleanup.", label: `Confirm change retention for ${name}`, tone: "btn primary",
+        action: async () => {
           await api("apps/" + row.id + "/retention", { method: "PUT", body: { retention_days: days, confirm: true } });
           message("Retention saved.");
-        }, "save-retention", "confirm-retention") : null,
+        }, back: "save-retention", field: "confirm-retention" }) : null,
         command(["harness apps retention " + row.id + " --retention-days <days>",
           "harness apps retention " + row.id + " --set retention_days=null"], { parity: true }))];
   }
@@ -365,17 +372,17 @@ export function renderApps(main) {
     const cli = command("harness keys revoke " + row.id, { parity: true });
     if (confirming === "revoke") {
       const warning = identityWarning(row);
-      return dangerZone("Danger zone", null, ask(`Revoke ${name}?`, `Revoke access for ${name} (${row.id}) ` +
-        "immediately. App and device data will be scheduled for erasure. Restore stays on the host CLI.",
-      h("div", {}, h("p", {}, "App-supplied name: " + (row.name || "None")),
+      return dangerZone("Danger zone", null, ask({ title: `Revoke ${name}?`, explanation: `Revoke access for ${name} ` +
+        `(${row.id}) immediately. App and device data will be scheduled for erasure. Restore stays on the host CLI.`,
+      identity: h("div", {}, h("p", {}, "App-supplied name: " + (row.name || "None")),
         warning ? h("p", { class: "notice warn" }, warning[1]) : null,
         facts([["Key id", row.id], ["Origins", row.origins.join(", ") || "None"],
           ["Catalog app", row.catalog_app_id || "None"], ["Created", stamp(row.created_at)],
           ["Verified entry pairing", verifiedPairing(row)]])),
-      `Confirm revoke ${name}`, "btn destructive", async () => {
+      label: `Confirm revoke ${name}`, tone: "btn destructive", action: async () => {
         await api("apps/" + row.id + "/revoke", { method: "DELETE", body: { confirm: true } });
         message(`Revoked ${name}. Its erasure deadline now shows in its row.`);
-      }, "revoke", "confirm-revoke"), cli);
+      }, back: "revoke", field: "confirm-revoke" }), cli);
     }
     const revoke = button(`Revoke ${name}`, () => {
       if (!ready() || !canRevoke(row)) return;
@@ -386,8 +393,9 @@ export function renderApps(main) {
     return dangerZone("Danger zone", "Revoke stops this key at once and schedules its sessions for erasure. Restore " +
       "stays on the daemon host until the deadline.", h("div", { class: "apps-actions" }, revoke), cli);
   }
-  // A question asked inside the card that was acted on: role=alert, Cancel and the confirming button.
-  function ask(title, explanation, identity, label, tone, action, back, field) {
+  // A question asked inside the card that was acted on: role=alert, Cancel and the confirming button (label, styled
+  // tone). Cancel returns focus to the back field; field names the confirming button.
+  function ask({ title, explanation, identity = null, label, tone, action, back, field }) {
     const cancel = button("Cancel", () => {
       confirming = null;
       draw(true);
@@ -435,7 +443,14 @@ export function renderApps(main) {
     for (const control of disabled) control.disabled = true;
     confirming = null;
     let refused = false;
-    try { await action(); drafts = {}; }
+    // A poll still reading finishes first; the action then runs only if management is still available.
+    if (loading) await loading;
+    if (stopped) return;
+    try {
+      if (inventory?.state !== "ready") throw new Error("The app inventory could not be refreshed.");
+      await action();
+      drafts = {};
+    }
     catch (error) {
       if (!stopped) message(error.message + " Refresh and review the state before trying again.", true);
       refused = true;
