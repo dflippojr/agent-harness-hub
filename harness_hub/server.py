@@ -298,11 +298,11 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             refusal = await tailnet_sign_in(request)
             if refusal is not None:
                 return refusal
-            credentials = sessions.create()
+            credentials = sessions.create(request.cookies.get(settings.cookie_name))
         else:
             code = body.get("code") if isinstance(body, dict) else None
             was_throttled = sessions.throttled()
-            credentials = sessions.redeem_code(code)
+            credentials = sessions.redeem_code(code, request.cookies.get(settings.cookie_name))
             if credentials is None:
                 if was_throttled:
                     return _error(429, "too many sign-in attempts; wait a minute")
@@ -310,6 +310,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                               signin_command=SIGNIN_COMMAND)
         session, binding = credentials
         response = Response(status_code=204, headers={SESSION_HEADER: binding})
+        if session == request.cookies.get(settings.cookie_name):
+            return response  # another tab of the signed-in session: the cookie and its expiry stay as they were
         response.set_cookie(settings.cookie_name, session, max_age=SESSION_TTL_SECONDS,
                             httponly=True, samesite="strict",
                             secure=settings.secure_cookies, path="/")
