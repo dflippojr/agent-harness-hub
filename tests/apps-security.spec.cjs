@@ -356,8 +356,10 @@ test("an unfinished number stays invalid across a redraw, and an unchanged form 
   await a.getByRole("button", { name: "Save session caps" }).click();
   await expect(page.getByText("Nothing to save: both caps are as the daemon has them.", { exact: true })).toBeVisible();
   await running.pressSequentially("1e");
-  await page.getByRole("button", { name: "Refresh apps" }).click();
-  await expect(a.getByText("Reading session caps and retention…")).toHaveCount(0);
+  // Asking the retention question redraws the detail; the half-typed cap keeps its own element and stays invalid.
+  await a.getByLabel("Retention days").fill("5");
+  await a.getByRole("button", { name: "Save retention" }).click();
+  await a.getByRole("button", { name: "Cancel" }).click();
   await expect.poll(() => running.evaluate((input) => input.validity.badInput)).toBe(true);
   await a.getByRole("button", { name: "Save session caps" }).click();
   await page.waitForTimeout(200);
@@ -393,5 +395,27 @@ test("the retention question locks the field it applies, and a row click waits w
   release();
   await expect(page.getByText("Session caps saved.", { exact: true })).toBeVisible();
   await expect(a).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("Refresh drops typed caps, so a save after it cannot send a value the host has since changed", async ({ page }) => {
+  const { writes, errors } = await mount(page, [app("k-a", "App A")]);
+  let running = 4;
+  await page.route("http://hub.test/api/apps/k-a/limits", async route => {
+    if (route.request().method() !== "GET") return route.fallback();
+    return route.fulfill({ json: { configured: { max_running: running, max_queued: 10 },
+      effective: { max_running: running, max_queued: 10 }, running: 0, queued: 0, parked: 0, retention_days: null } });
+  });
+  const a = await open(page, "k-a");
+  const field = a.getByLabel("Maximum running (1–100)");
+  await field.fill("5");
+  await field.fill("4");
+  running = 8; // changed on the host
+  await page.getByRole("button", { name: "Refresh apps" }).click();
+  await expect(field).toHaveValue("8");
+  await a.getByLabel("Maximum queued (1–1000)").fill("12");
+  await a.getByRole("button", { name: "Save session caps" }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0].body).toEqual({ max_queued: 12 });
   expect(errors).toEqual([]);
 });

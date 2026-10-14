@@ -64,16 +64,17 @@ export function renderApps(main) {
   let detail = null; // { id, data } or { id, error } or { id, loading }: the open App's session caps and retention
   // The open detail's fields the owner has typed in, by name. A redraw puts the same element back, so the browser keeps
   // its raw text and validity (an unfinished "1e" stays invalid instead of reading as blank).
-  let drafts = new Map();
+  let draftInputs = new Map();
   let detailReadVersion = 0; // the newest caps and retention read; an older reply that lands later is dropped
   const poll = poller(() => load());
   const updated = h("span", { class: "muted refreshed" });
   const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true });
   const problem = h("p", { class: "notice bad", role: "alert", hidden: true });
   const view = h("div", { class: "apps-view" });
-  // Refresh also reads the open App's caps and retention again, so a save never sends a value changed on the host.
+  // Refresh shows the daemon as it is now: it reads the open App's caps and retention again and drops typed fields, so
+  // a save never sends a value read (or typed) before a change made on the host.
   const refresh = h("button", { type: "button", class: "btn ghost refresh",
-    onclick: () => { forgetDetail(); void load(true); } }, icon("refresh"), "Refresh apps");
+    onclick: () => { draftInputs = new Map(); forgetDetail(); void load(true); } }, icon("refresh"), "Refresh apps");
   clear(main, h("header", { class: "page-head" }, h("h1", {}, "Apps"), updated, refresh),
     h("p", { class: "lede" }, "Every key that can reach the daemon, and what it has used. Names marked App-supplied " +
       "come from the app itself; check the key id and origins."),
@@ -236,7 +237,7 @@ export function renderApps(main) {
   function openDetail(id) {
     if (stopped || busy) return; // an action's reset of the typed fields must not reach another App's
     if (selected === id) { closeDetail(); return; }
-    drafts = new Map();
+    draftInputs = new Map();
     forgetDetail();
     selected = id;
     confirming = null;
@@ -248,7 +249,7 @@ export function renderApps(main) {
   function closeDetail() {
     if (busy) return;
     const id = selected;
-    selected = null; confirming = null; drafts = new Map();
+    selected = null; confirming = null; draftInputs = new Map();
     forgetDetail();
     draw(true);
     focusField(`open-${id}`);
@@ -469,7 +470,7 @@ export function renderApps(main) {
     try {
       if (inventory?.state !== "ready") throw new Error("The app inventory could not be refreshed.");
       await action();
-      drafts = new Map();
+      draftInputs = new Map();
     }
     catch (error) {
       if (!stopped) message(error.message + " Refresh and review the state before trying again.", true);
@@ -484,14 +485,14 @@ export function renderApps(main) {
   }
   function numberField(field, label, value, max, placeholder, step = "1") {
     const id = `app-${field}`;
-    let input = drafts.get(field);
+    let input = draftInputs.get(field);
     if (input) input.setAttribute("placeholder", placeholder);
     else {
       input = h("input", { type: "number", id, min: step === "any" ? "0.000001" : "1", max, step, placeholder,
         "data-field": field, inputmode: step === "any" ? "decimal" : "numeric" });
       input.value = value === null || value === undefined ? "" : String(value);
       const typed = input;
-      input.addEventListener("input", () => { drafts.set(field, typed); });
+      input.addEventListener("input", () => { draftInputs.set(field, typed); });
     }
     return { input, field: h("div", { class: "apps-field" }, h("label", { for: id }, label), input) };
   }
