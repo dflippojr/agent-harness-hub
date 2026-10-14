@@ -47,7 +47,8 @@ def _prefix(match: re.Match) -> str:
 
 def _text(value: Any, limit: int = 200) -> str:
     """Daemon diagnostic text, which can echo a key's display prefix: each token-shaped word is redacted in place."""
-    return KEY_PREFIX_SHAPE.sub(_prefix, value)[:limit] if isinstance(value, str) else ""
+    # Cut first: a token cut short at the limit is then redacted, not passed under the guard's full-length shape.
+    return KEY_PREFIX_SHAPE.sub(_prefix, value[:limit]) if isinstance(value, str) else ""
 
 
 def _bool(value: Any) -> bool | None:

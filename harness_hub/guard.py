@@ -23,7 +23,7 @@ log = logging.getLogger("harness_hub.guard")
 TOKEN_SHAPE = re.compile(r"(?<![A-Za-z0-9])(?:(?:ha|ho|hk)-[A-Za-z0-9_\-]{43,}|(?:hp|hrp)-[A-Za-z0-9_\-]{24,})")
 # A key list's display prefix (`ho-LW5TqUX`, the token's first 10 characters) or anything shaped like one. Views redact
 # it in fields where a key id or daemon diagnostic can appear; the guard does not, because ordinary words match it.
-KEY_PREFIX_SHAPE = re.compile(r"(?<![A-Za-z0-9])(?:ha|ho|hp)-[A-Za-z0-9_\-]{4,}")
+KEY_PREFIX_SHAPE = re.compile(r"(?<![A-Za-z0-9])(?:ha|ho|hk|hp|hrp)-[A-Za-z0-9_\-]{4,}")
 WITHHELD = b'{"detail":"response withheld: it contained a credential-like string"}'
 
 

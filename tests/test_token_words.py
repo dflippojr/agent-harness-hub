@@ -82,3 +82,9 @@ def test_daemon_diagnostics_redact_a_display_prefix_in_place():
 def test_daemon_diagnostics_leave_a_full_token_for_the_guard(token):
     # Masking it would hide a daemon leak; leaving it makes the guard withhold the response and log it.
     assert settings_error({"detail": "echo " + token}, 400)["detail"] == "echo " + token
+
+
+@pytest.mark.parametrize("token", FULL_TOKENS)
+def test_a_token_cut_at_the_field_limit_is_redacted(token):
+    problems = preflight_view({"problems": ["x" * 50 + " " + token]})["problems"]
+    assert problems == ["x" * 50 + " " + REDACTED]
