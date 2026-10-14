@@ -248,3 +248,12 @@ test("a health answer that confirmed the saved revision settles a Settings reply
   noteRead("settings/config", 200, { revision: 3, pending_revision: 3, restart_required: true }, 3);
   assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
 });
+
+test("an inventory error from the daemon leaves an owner API failure standing; a served inventory clears it", () => {
+  resetStatus();
+  noteRead("overview", 200, answer({ error: "the owner API answered HTTP 500", ownership: null }));
+  noteRead("modules", 200, { state: "error", error: "The daemon answered HTTP 500", stale: true, reachable: true });
+  assert.equal(daemonBanner().title, "The daemon answered, but its owner API did not.");
+  noteRead("modules", 200, { state: "ready", stale: false, reachable: true });
+  assert.equal(daemonBanner(), null);
+});

@@ -66,7 +66,8 @@ export function noteRead(path, status, data, started = ++reads) {
   } else if (INVENTORY.has(path) && body) {
     if (typeof body.reachable === "boolean" && newer("reach", started)) {
       silent = !body.reachable;
-      if (body.reachable) ownerError = "";
+      // Only an inventory the daemon served ("ready") shows its owner API answering; an HTTP error from it does not.
+      if (body.state === "ready") ownerError = "";
     }
   } else if (ok && daemonAnswered(path)) {
     if (newer("reach", started)) {
