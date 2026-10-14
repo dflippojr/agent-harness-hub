@@ -3,7 +3,7 @@
 // `--grep @settings` drives just that area. Screenshots go to VERIFY_EVIDENCE_DIR/screenshots.
 import path from "node:path";
 // Sign-in happens in each test body, after the `errors` fixture is listening, so startup errors count too.
-import { confirmRollback, expect, openSection, saveMaxTurns, settingsControls, signIn, test } from "../tests/fixtures.mjs";
+import { confirmRollback, expect, expectNoHorizontalOverflow, openSection, saveMaxTurns, settingsControls, signIn, test } from "../tests/fixtures.mjs";
 
 const shots = path.join(process.env.VERIFY_EVIDENCE_DIR || "test-results/verify", "screenshots");
 
@@ -27,6 +27,20 @@ for (const feature of ["overview", "apps", "modules", "pairing"]) {
     expect(errors).toEqual([]);
   });
 }
+
+test("read Spend and sort its App table @spend", async ({ page, errors }, testInfo) => {
+  await signIn(page);
+  await openSection(page, "spend");
+  const apps = page.getByRole("table", { name: "App usage, sortable by any column" });
+  await expect(apps.getByRole("row", { name: /Synthetic App/ })).toBeVisible();
+  await expect(apps.getByRole("columnheader", { name: /Cost/ })).toHaveAttribute("aria-sort", "descending");
+  await apps.getByRole("button", { name: /^App/ }).click();
+  await expect(apps.getByRole("columnheader", { name: /^App/ })).toHaveAttribute("aria-sort", "ascending");
+  await expect(page.getByRole("table", { name: "Backend usage today and over the last 7 days" })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+  await capture(page, testInfo, "spend");
+  expect(errors).toEqual([]);
+});
 
 test("edit one setting and roll it back @settings", async ({ page, errors }, testInfo) => {
   await signIn(page);
