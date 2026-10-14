@@ -73,6 +73,7 @@ MAX_SIGNIN_BODY = 1024
 ALLOWED_LOGINS_SECONDS = 5.0  # how long a tailnet sign-in reuses the daemon's allowed_logins answer
 PAIRING_COUNT_SECONDS = 5.0  # how long Overview waits for its optional pairing count, consent lock included
 SPEND_CAP_READS = 8  # App session-cap reads in flight at once; every live App is read
+RESTART_GRACE_SECONDS = 1.0  # how long after a restart request the Hub ignores health that predates it
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 SECURITY_HEADERS = [
@@ -1091,7 +1092,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return _forwarded(reply)
         if operation == "restart" and isinstance(reply.body, dict) and reply.body.get("accepted") is True:
             restart.update(active=True, target=reply.body.get("target_revision"),
-                           not_before=time.monotonic() + 1)
+                           not_before=time.monotonic() + RESTART_GRACE_SECONDS)
         shown = registry_view(reply.body) if operation in (
             "schema", "config", "validate", "save", "rollback", "restart") else control_view(operation, reply.body)
         return JSONResponse(shown, status_code=reply.status)

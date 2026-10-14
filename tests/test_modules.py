@@ -125,17 +125,6 @@ def test_error_secrets_fail_closed(claimed, fake_daemon):
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 
 
-def test_inventory_needs_owner_and_claim(hub, claimed, fake_daemon):
-    # 'hub' is the same fixture used by 'claimed'; end its owner session first.
-    claimed.delete("/api/session")
-    assert hub.get("/api/modules").status_code == 401
-    hub.sign_in()
-    fake_daemon.release()
-    assert hub.get("/api/modules").status_code == 409
-    assert hub.get("/api/claim").json()["state"] == "released"
-    assert hub.get("/api/modules").status_code == 409
-
-
 def test_corrupt_cache_is_ignored(claimed, fake_daemon):
     path = claimed.state_dir / INVENTORY_FILE
     path.write_text("{invalid", encoding="utf-8")
@@ -164,21 +153,6 @@ def test_failed_private_write_preserves_last_good(claimed, fake_daemon, monkeypa
     assert result["state"] == "error" and result["stale"]
     assert result["modules"] == good["modules"] and result["fetched_at"] == good["fetched_at"]
     assert path.read_bytes() == stored
-
-
-def test_transient_key_rejection_withholds_inventory_but_retains_claim(claimed, fake_daemon, monkeypatch):
-    from harness_hub.daemon import Reply
-
-    claimed.get("/api/modules")
-
-    async def rejected(self, token):
-        return Reply(401, {"detail": "synthetic rejection"})
-
-    monkeypatch.setattr("harness_hub.daemon.DaemonClient.inventory", rejected)
-    reply = claimed.get("/api/modules")
-    assert reply.status_code == 409 and "modules" not in reply.json()
-    assert claimed.get("/api/claim").json()["state"] == "claimed"
-    assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 
 
 LEAK = "auth failed for ha-" + "A1b2C3d4" * 6

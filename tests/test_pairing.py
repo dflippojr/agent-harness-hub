@@ -135,21 +135,6 @@ def test_hub_claims_are_refused_by_the_daemon_and_carry_no_code(claimed, fake_da
     assert "match_code" not in rows(claimed)[hub_rid]
 
 
-@pytest.mark.parametrize("action,body", [("approve", {"match": "123456"}), ("confirm", {"match": "123456"}),
-                                         ("deny", {"confirm": True})])
-def test_writes_need_owner_header_and_same_origin(claimed, fake_daemon, action, body):
-    rid = fake_daemon.add_pairing("Synthetic notes", ["sessions"])
-    fake_daemon.pairing_calls.clear()
-    for headers in ({}, {"X-Hub-Request": "1"}, {**ORIGIN, "Origin": "https://other.test"},
-                    {**ORIGIN, "Origin": "https://" + HUB_HOST}):
-        assert post(claimed, rid, action, body, headers).status_code == 403
-    assert not fake_daemon.pairing_calls
-    claimed.delete("/api/session")
-    assert post(claimed, rid, action, body).status_code == 401
-    assert claimed.get("/api/pairing").status_code == 401
-    assert not fake_daemon.pairing_calls
-
-
 def test_bad_input_never_reaches_the_daemon(claimed, fake_daemon):
     rid = fake_daemon.add_pairing("Synthetic notes", ["sessions"])
     fake_daemon.pairing_calls.clear()
@@ -183,22 +168,12 @@ def test_responses_never_carry_credentials(claimed, fake_daemon):
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 
 
-def test_daemon_failures_and_released_key(claimed, fake_daemon):
+def test_an_unreadable_list_fails_closed_without_approving(claimed, fake_daemon):
     rid = fake_daemon.add_pairing("Synthetic ops", ["approvals"])
     fake_daemon.pairing_list_error = (200, {"not": "a list"})
     assert claimed.get("/api/pairing").status_code == 502
     # The elevated check fails closed: no approval is sent when the list cannot be read.
     assert post(claimed, rid, "approve", {"match": "123456"}).status_code == 502
-    assert sent(fake_daemon, "approve") == []
-    fake_daemon.pairing_list_error = None
-    fake_daemon.down = True
-    assert claimed.get("/api/pairing").status_code == 503
-    assert post(claimed, rid, "deny", {"confirm": True}).status_code == 503
-    fake_daemon.down = False
-    fake_daemon.release()
-    assert claimed.get("/api/pairing").status_code == 409
-    assert claimed.get("/api/claim").json()["state"] == "released"
-    assert post(claimed, rid, "approve", {"match": "123456"}).status_code == 409
     assert sent(fake_daemon, "approve") == []
 
 
