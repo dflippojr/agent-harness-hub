@@ -189,9 +189,12 @@ and storage hardware; forced power loss can still require host recovery.
 
 ## Modules
 
-Modules shows each daemon module's running presence, saved switch and scalar status detail, including status errors.
-Switches come from the settings schema and save with the current revision. A pending switch is labelled until the
-daemon restarts; **Restart in Settings** opens the existing confirmation and health recovery flow.
+Modules shows the installed modules as one table: each module's status (Running, Off, or Error when its status
+check failed), its switch, whether a change applies live or after a restart, and its scalar status detail in plain
+words. Switches come from the settings schema and save with the current revision. A saved switch that waits for a
+restart reads **On after restart** (or **Off after restart**) until the daemon restarts, and the banner under the
+page head offers **Restart in Settings**, which opens the existing confirmation and health recovery flow. Modules that
+are not installed fold into one closed row with the daemon installer's `--enable-modules` command for each.
 
 When inventory is disabled, Modules offers its registry switch. If the package is absent, the page points to the
 daemon installer's `--enable-modules` option. Inventory errors, including a named entries-file error, appear beside

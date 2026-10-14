@@ -7,7 +7,7 @@ export { expect };
 export const SECTIONS = [
   { id: "overview", label: "Overview", ready: (page) => page.getByRole("heading", { name: "Daemon", exact: true }) },
   { id: "settings", label: "Settings", ready: (page) => page.getByRole("spinbutton", { name: "Maximum turns" }) },
-  { id: "modules", label: "Modules", ready: (page) => page.getByRole("heading", { name: "Module switches" }) },
+  { id: "modules", label: "Modules", ready: (page) => page.getByRole("heading", { name: /^Installed/ }) },
   { id: "apps", label: "Apps", ready: (page) => page.getByRole("heading", { name: "Paired apps and keys" }) },
   { id: "pairing", label: "Pairing requests", ready: (page) => page.getByRole("heading", { name: /^History · last day/ }) },
   { id: "marketplace", label: "Marketplace", ready: (page) => page.getByRole("button", { name: "Set up financial-planner" }) },

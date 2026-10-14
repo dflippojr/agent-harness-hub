@@ -9,7 +9,7 @@ import "./overview-polling.test.mjs";
 import "./page-polling.test.mjs";
 import "./shell-status.test.mjs";
 import { api } from "../harness_hub/static/lib/api.mjs";
-import { switchFor } from "../harness_hub/static/pages/modules.mjs";
+import { moduleStatus, statusWords, switchFor } from "../harness_hub/static/pages/modules.mjs";
 import { signinFromHash } from "../harness_hub/static/pages/signin.mjs";
 
 test("any #signin= fragment is a link; only a well-formed one carries a code to post", () => {
@@ -35,6 +35,19 @@ test("module switches use schema relationships, reject unrelated and ambiguous b
   assert.equal(switchFor("notifications", null), null);
   schema.settings.push({ key: "another.enabled", type: "bool", modules: ["notifications"] });
   assert.equal(switchFor("notifications", schema), null);
+});
+
+test("module states and status details read as words, not raw daemon values", () => {
+  assert.deepEqual(moduleStatus({ name: "jobs", state: "present" }), ["Running", "ok"]);
+  assert.deepEqual(moduleStatus({ name: "search", state: "switched_off" }), ["Off", "muted"]);
+  assert.deepEqual(moduleStatus({ name: "sample", state: "present", status: { state: "error" } }), ["Error", "bad"]);
+  assert.deepEqual(moduleStatus({ name: "odd", state: "half_loaded" }), ["Half loaded", undefined]);
+  assert.equal(statusWords({ online_count: 0, ready: true, paused: false, last: null, "queue.depth": 3 }),
+    "Online count 0 · Ready Yes · Paused No · Last none · Queue depth 3");
+  // A failed status check reads Error in its pill; its state field is not repeated as a detail.
+  assert.equal(statusWords({ state: "error" }), "");
+  assert.equal(statusWords({ state: "idle" }), "State idle");
+  assert.equal(statusWords(undefined), "");
 });
 
 test("origin binding survives reloads, accompanies API calls and ends at sign-out", async () => {

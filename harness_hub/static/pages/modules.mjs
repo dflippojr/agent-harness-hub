@@ -1,6 +1,16 @@
+// Modules (Hub design 9): one table of the installed modules (name, a readable status pill, a real switch, whether a
+// change applies live or after a restart, and the status details in plain words), then every module that is not
+// installed folded into one closed row with the installer command. A saved switch that waits for a restart reads
+// "On after restart" in its row; the shell's banner slot carries Restart in Settings. Every daemon string goes in as a
+// text node.
+
 import { api } from "../lib/api.mjs";
-import { clear, command, h, when } from "../lib/dom.mjs";
+import { clear, command, h, icon, pill, sectionHead, table, toggle, when } from "../lib/dom.mjs";
 import { poller } from "../lib/poll.mjs";
+
+// When a saved switch takes effect, as a pill (the same words as Settings).
+const APPLY = { live: ["Live", "ok"], daemon_restart: ["Restart", "warn"] };
+const sentence = (text) => text ? text[0].toUpperCase() + text.slice(1) : "";
 
 // Registry relationships handle module names that differ from setting names.
 export function switchFor(name, schema) {
@@ -9,27 +19,38 @@ export function switchFor(name, schema) {
   return matches.length === 1 ? matches[0] : null;
 }
 
-export function renderModules(main) {
-  let stopped = false, busy = false, inventory, schema, config;
-  const poll = poller(() => load());
-  const notice = h("p", { class: "notice", "aria-live": "polite" });
-  const inventoryError = h("p", { class: "notice bad", role: "alert" });
-  const summary = h("section", { class: "card" });
-  const list = h("div", { class: "grid" });
-  const reload = button("Refresh modules", () => load());
-  clear(main, h("header", { class: "page-head" }, h("h1", {}, "Modules"), reload),
-    command("harness hub status", { parity: true }), notice, inventoryError, summary, list);
+// A module's state as the owner reads it: present is Running, switched_off is Off, and a failed status check is Error.
+export function moduleStatus(row) {
+  if (row.state === "present") return row.status?.state === "error" ? ["Error", "bad"] : ["Running", "ok"];
+  if (row.state === "switched_off") return ["Off", "muted"];
+  return [sentence(String(row.state ?? "unknown").replaceAll("_", " ")), undefined];
+}
 
-  function button(label, action) {
-    return h("button", { type: "button", class: "btn", onclick: action }, label);
-  }
+// Scalar status fields in plain words: "online_count: 0" reads "Online count 0", true and false read Yes and No.
+export function statusWords(status) {
+  return Object.entries(status || {}).filter(([key]) => !(key === "state" && status.state === "error"))
+    .map(([key, value]) => {
+      const shown = value === true ? "Yes" : value === false ? "No" : value === null || value === "" ? "none" : String(value);
+      return `${sentence(key.replaceAll("_", " ").replaceAll(".", " "))} ${shown}`;
+    }).join(" · ");
+}
+
+export function renderModules(main) {
+  let stopped = false, busy = false, inventory, schema, config, drawn = "";
+  const poll = poller(() => load());
+  const revision = h("span", { class: "muted modules-revision" });
+  const notice = h("p", { class: "notice", "aria-live": "polite" });
+  const inventoryError = h("p", { class: "notice bad", role: "alert", hidden: true });
+  const commands = h("div");
+  const body = h("div");
+  const reload = h("button", { type: "button", class: "btn ghost", onclick: () => load() }, icon("refresh"),
+    "Refresh modules");
+  clear(main, h("header", { class: "page-head modules-head" }, h("h1", {}, "Modules"), revision, reload),
+    commands, notice, inventoryError, body);
+
   function message(text, bad = false) {
     notice.textContent = text;
     notice.className = bad ? "notice bad" : "notice";
-  }
-  function restartLink() {
-    return h("p", {}, h("a", { href: "#/settings", class: "btn restart-link" }, "Restart in Settings"),
-      " Review the restart confirmation there.");
   }
   async function load(afterWrite = false) {
     if (stopped || busy && !afterWrite) return;
@@ -38,76 +59,110 @@ export function renderModules(main) {
     reload.disabled = true;
     const results = await Promise.allSettled([api("modules"), api("settings/schema"), api("settings/config")]);
     if (stopped) return;
+    let error = "";
     if (results[0].status === "fulfilled") inventory = results[0].value;
     else {
       inventory = null;
-      inventoryError.textContent = results[0].reason.message;
+      error = results[0].reason.message;
     }
     schema = results[1].status === "fulfilled" ? results[1].value : null;
     config = results[2].status === "fulfilled" ? results[2].value : null;
     if (!schema || !config) message("Switches unavailable: " +
       results.slice(1).filter((r) => r.status === "rejected").map((r) => r.reason.message).join("; "), true);
-    if (inventory) inventoryError.textContent = inventory.error;
+    if (inventory) error = inventory.error || "";
+    inventoryError.textContent = error;
+    inventoryError.hidden = !error;
     busy = false;
+    reload.disabled = false;
     draw();
-    for (const b of main.querySelectorAll("button")) b.disabled = false;
     poll.schedule(30000);
   }
-  function draw() {
-    clear(summary, h("h2", {}, "Module switches"), h("p", {}, config ? "Settings revision " + config.revision :
-      "Settings could not be loaded."),
-    config?.restart_required ? h("p", { class: "notice" }, "Restart needed to apply saved switches.") : null,
-    config?.restart_required ? restartLink() : null,
-    config?.restart_required ? command("harness config restart --confirm", { parity: true }) : null,
-    inventory?.stale ? h("p", { class: "notice" }, "Last good inventory from " + when(inventory.fetched_at) +
-      ". These running states may be out of date.") : null);
-    clear(list);
-    const rows = [...(inventory?.modules || [])];
-    if (inventory?.state === "disabled" && !rows.some((row) => row.name === "hub")) {
-      rows.unshift({ name: "hub", state: "switched_off" });
+  // Each installed module with what its row shows; absent ones go to the not-installed row.
+  function rows() {
+    const list = [...(inventory?.modules || [])];
+    if (inventory?.state === "disabled" && !list.some((row) => row.name === "hub")) {
+      list.unshift({ name: "hub", state: "switched_off" });
     }
-    if (!rows.length) list.append(h("p", { class: "muted" }, "No inventory snapshot is available."));
-    for (const row of rows) {
+    return list.map((row) => {
       const spec = switchFor(row.name, schema);
       const setting = config?.settings.find((item) => item.key === spec?.key);
       const pending = typeof setting?.pending === "boolean";
       const value = pending ? setting.pending : setting?.effective;
-      const failed = row.status?.state === "error";
-      const box = h("section", { class: "card" + (failed ? " bad" : "") }, h("h2", {}, row.name),
-        h("p", {}, "Running state: ", h("span", { class: "pill " +
-          (row.state === "present" ? "ok" : "off") }, row.state)),
-        typeof value === "boolean" ? h("p", {}, "Switch: " + (value ? "on" : "off") +
-          (pending ? " (saved; restart needed)" : "")) : null);
-      if (failed) box.append(h("p", { class: "notice bad", role: "alert" }, "Module status failed."));
-      if (row.status) box.append(h("dl", { class: "facts module-facts" }, Object.entries(row.status).map(([key, val]) =>
-        [h("dt", {}, key), h("dd", {}, String(val))])));
-      if (row.state === "absent" || inventory.state === "absent") {
-        box.append(h("p", { class: "muted" }, "Not installed. Add the package with the daemon installer's --enable-modules option."),
-          command("bash install/install.sh --enable-modules " + row.name));
-      } else if (spec?.writable && spec.available && setting && typeof value === "boolean") {
-        const target = !value;
-        const toggle = button("Switch " + row.name + (target ? " on" : " off"), () => save(spec, target));
-        toggle.disabled = busy;
-        box.append(toggle, command("harness config set " + spec.key + "=" + target, { parity: true }));
-        if (spec.apply === "daemon_restart") box.append(h("p", { class: "muted" }, "Changing this switch needs a daemon restart."));
-      } else box.append(h("p", { class: "muted" }, spec?.guidance || "No writable module switch is available in the settings registry."));
-      list.append(box);
-    }
-    if (inventory?.state === "absent") summary.append(h("p", {},
-      "Add the Hub inventory package with the daemon installer's --enable-modules option."),
-    command("bash install/install.sh --enable-modules hub"));
+      const writable = Boolean(spec?.writable && spec.available && setting && typeof value === "boolean");
+      return { row, spec, value, pending, writable };
+    });
+  }
+  function draw() {
+    const all = rows();
+    const installed = all.filter(({ row }) => row.state !== "absent");
+    const absent = all.filter(({ row }) => row.state === "absent").map(({ row }) => row.name);
+    // A poll that finds nothing new leaves the page alone, so a focused switch keeps its focus.
+    // Each read stamps a fresh fetched_at, which the page shows only for a stale snapshot.
+    const shown = inventory && { ...inventory, fetched_at: inventory.stale ? inventory.fetched_at : null };
+    const key = JSON.stringify([shown, config?.revision, installed.map(({ spec, value, pending, writable }) =>
+      [spec?.key, spec?.apply, spec?.guidance, spec?.label, value, pending, writable])]);
+    if (key === drawn) return;
+    drawn = key;
+    revision.textContent = config ? "Settings revision " + config.revision : "";
+    clear(commands, command(["harness hub status", ...installed.filter((m) => m.writable)
+      .map((m) => `harness config set ${m.spec.key}=${!m.value}`)], { parity: true, key: "modules" }));
+    clear(body,
+      inventory?.stale ? h("p", { class: "notice" }, "Last good inventory from " + when(inventory.fetched_at) +
+        ". These running states may be out of date.") : null,
+      inventory?.state === "absent" ? h("section", { class: "card" },
+        h("h2", {}, "The Hub inventory module is not installed"),
+        h("p", {}, "Add the Hub inventory package on the daemon host with the daemon installer's --enable-modules option, then restart the daemon."),
+        command("bash install/install.sh --enable-modules hub")) : null,
+      installed.length ? [sectionHead("Installed", installed.length, { id: "modules-installed" }),
+        h("div", { class: "card modules-table" }, table("Installed modules",
+          ["Module", "Status", "Switch", "Applies", "Details"], installed.map(tableRow)))] : null,
+      !all.length && inventory?.state !== "absent" ? h("p", { class: "muted" }, "No inventory snapshot is available.") : null,
+      absent.length ? notInstalled(absent) : null);
+  }
+  function tableRow({ row, spec, value, pending, writable }) {
+    const [label, tone] = moduleStatus(row);
+    const apply = APPLY[spec?.apply];
+    let control;
+    if (writable) {
+      control = toggle(row.name, { checked: value, disabled: busy, onchange: (on) => save(spec, on) });
+      control.querySelector(".switch-label").className = "visually-hidden";
+    } else control = h("span", { class: "muted" }, spec ? "Locked" : "No switch");
+    const words = statusWords(row.status);
+    const details = [
+      pending ? pill(value ? "On after restart" : "Off after restart", "run") : null,
+      row.status?.state === "error" ? h("span", { class: "modules-error" }, "Status check failed") : null,
+      spec?.label && spec.label !== spec.key ? h("span", {}, spec.label) : null,
+      words ? h("span", { class: "muted" }, words) : null,
+      spec && !writable ? h("span", { class: "muted" },
+        sentence(spec.guidance) || "The settings registry offers no switch the Hub can change.") : null,
+    ].filter(Boolean);
+    return h("tr", { "data-module": row.name },
+      h("td", { class: "modules-name" }, row.name),
+      h("td", { class: "modules-status" }, pill(label, tone)),
+      h("td", { class: "modules-switch" }, control),
+      h("td", { class: "modules-applies" }, apply ? pill(...apply) : h("span", { class: "muted" }, "—")),
+      h("td", { class: "modules-details" }, details.length ? details : h("span", { class: "muted" }, "—")));
+  }
+  function notInstalled(names) {
+    return [sectionHead("Not installed", names.length, { id: "modules-absent" }),
+      h("details", { class: "card troubleshoot modules-absent" },
+        h("summary", {}, icon("chevron", "icon chevron"), h("span", { class: "modules-absent-names" }, names.join(", ")),
+          h("span", { class: "muted modules-absent-hint" }, "Add with the daemon installer")),
+        h("div", { class: "troubleshoot-body" },
+          h("p", {}, "Add a module on the daemon host with the daemon installer's --enable-modules option, then restart the daemon."),
+          names.map((name) => command("bash install/install.sh --enable-modules " + name))))];
   }
   async function save(spec, enabled) {
     if (stopped || busy || !config) return;
     busy = true;
     poll.cancel();
-    for (const b of main.querySelectorAll("button")) b.disabled = true;
+    for (const input of main.querySelectorAll("button, input[role=switch]")) input.disabled = true;
     try {
       const answer = await api("settings/config", { method: "PATCH",
         body: { revision: config.revision, changes: { [spec.key]: enabled } } });
       if (stopped) return;
       message("Saved " + spec.key + "=" + enabled + ". Revision " + answer.revision +
-        (answer.restart_required ? ". Restart needed; use Restart in Settings below." : "."));
+        (answer.restart_required ? ". Restart needed: use Restart in Settings." : "."));
     } catch (error) {
       if (stopped) return;
       const details = Object.values(error.body?.error?.keys || {}).map((row) => row.message).join("; ");
@@ -115,6 +170,7 @@ export function renderModules(main) {
         (error.body?.error?.code === "revision_conflict" ? " Reloaded the current revision; review the switch before trying again." :
           " Check the refreshed state before trying again."), true);
     }
+    drawn = "";
     await load(true);
   }
   load();

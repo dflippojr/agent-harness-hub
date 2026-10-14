@@ -1024,6 +1024,50 @@ body.signed-out .topbar { display: none; }
   .apps-entry { padding: 8px 12px; }
 }
 
+/* Modules (Hub design 9): the installed table with a real switch per row, then the not-installed modules in one
+   closed row. On a phone each row stacks: name and switch, then status and when a change applies, then details. */
+.modules-head h1 { flex: 1; }
+.modules-head .btn { display: inline-flex; align-items: center; gap: 6px; }
+.modules-revision { font-size: .85rem; }
+.card.modules-table { padding: 0; overflow: hidden; border-radius: 14px; }
+.modules-table .table td { overflow-wrap: normal; }
+.modules-table td.modules-name { font-weight: 650; overflow-wrap: anywhere; }
+.modules-table td.modules-switch { width: 1%; padding-top: 0; padding-bottom: 0; white-space: nowrap; }
+.modules-switch .switch { gap: 0; }
+.modules-details { overflow-wrap: anywhere; }
+.modules-details > * { display: block; width: fit-content; }
+.modules-details > .pill { display: flex; margin-bottom: 2px; }
+.modules-details > .muted { font-size: .87rem; }
+.modules-error { color: var(--bad); font-weight: 600; }
+.card.modules-absent { margin-top: 0; }
+.modules-absent summary { flex-wrap: wrap; padding: 6px 16px; }
+.modules-absent-names { flex: 1 1 20em; min-width: 0; overflow-wrap: anywhere; }
+.modules-absent-hint { font-size: .85rem; font-weight: 500; }
+.modules-absent .troubleshoot-body > p { margin-bottom: 8px; }
+
+@media (max-width: 699px) {
+  .modules-table thead { display: none; }
+  .modules-table tbody tr {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr) auto;
+    grid-template-areas: "name name switch" "status applies switch" "details details details";
+    align-items: center;
+    gap: 4px 10px;
+    padding: 10px 6px 12px 14px;
+    border-top: 1px solid var(--line);
+  }
+  .modules-table tbody tr:first-child { border-top: 0; }
+  .modules-table .table td { padding: 0; border: 0; }
+  .modules-table td.modules-name { grid-area: name; }
+  .modules-table td.modules-status { grid-area: status; }
+  .modules-table td.modules-applies { grid-area: applies; }
+  .modules-table td.modules-switch { grid-area: switch; width: auto; justify-self: end; }
+  .modules-table td.modules-details { grid-area: details; padding-right: 8px; }
+  /* The column head is gone, so the pill says what it is. */
+  .modules-applies:has(.pill)::before { content: "Applies"; margin-right: 6px; font-size: .8rem; color: var(--muted); }
+  .modules-applies:not(:has(.pill)) { display: none; }
+}
+
 /* Owner administration reuses the shell and form tokens. */
 .admin-workspace, .admin-output, .admin-row { margin: 16px 0; overflow-wrap: anywhere; }
 .admin-text { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; font: .9rem/1.5 var(--mono); }
