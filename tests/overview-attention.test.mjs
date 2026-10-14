@@ -98,6 +98,19 @@ test("Overview's daemon tile says Not answering and keeps the last answer's fact
   assert.match(page.main.children[0].children[1].textContent, /^Last answer .* · retrying every 30 s$/);
 });
 
+for (const [restarting, label] of [[true, "Restarting"], [false, "Not healthy"]]) {
+  test(`Overview's daemon tile says ${label} when /health answers with an error (restarting ${restarting})`, async (t) => {
+    const failed = overview(null, { reachable: false, answered: true, restarting, daemon: null, health: null, capabilities: null });
+    const answers = [healthy, failed];
+    const page = mount(t, renderOverview, (url) =>
+      Promise.resolve(response(url === "/api/overview" ? answers.shift() || failed : { ok: false })));
+    await settle();
+    await page.main.children[0].children[2].listeners.get("click")();
+    await settle();
+    assert.ok(labelled(page.main, "tile-daemon").textContent.startsWith(`Daemon${label}0.9.0`));
+  });
+}
+
 test("Overview's Hub tile warns when the daemon records a different Hub", async (t) => {
   const data = { ...healthy, ownership: { ...healthy.ownership, this_hub: false, record: { name: "Other", key_id: "k-2" } } };
   const main = await draw(t, data);

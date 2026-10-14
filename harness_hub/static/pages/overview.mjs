@@ -215,12 +215,18 @@ const COMPATIBILITY = {
   unknown: "version not reported",
 };
 
-// Whether the daemon answers now; its release, Owner API and profile from the last answer that reached it.
+// Whether the daemon answers now; its release, Owner API and profile from the last answer that reached it. A daemon
+// that answered /health with an error (a 503 mid-restart) is answering, as in the shell's chip.
 function daemonTile(data, shown) {
   const health = shown && shown.health ? shown.health : {};
   let state = pill("Not healthy", "bad");
-  if (!data.reachable) state = pill("Not answering", "bad");
-  else if (health.ok) state = pill("Healthy", "ok");
+  if (data.reachable) {
+    if (health.ok) state = pill("Healthy", "ok");
+  } else if (data.answered !== true) {
+    state = pill("Not answering", "bad");
+  } else if (data.restarting) {
+    state = pill("Restarting", "warn");
+  }
   const d = shown && shown.daemon ? shown.daemon : {};
   const own = shown ? shown.ownership : null;
   const ownerApi = own ? line(own.api_version ? `Owner API ${own.api_version}` : "Owner API", COMPATIBILITY[own.compatibility]) : null;
