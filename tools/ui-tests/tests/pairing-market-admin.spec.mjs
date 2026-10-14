@@ -92,13 +92,15 @@ test("accounts: add a member, then disable it after confirmation", async ({ sign
   const display = unique(testInfo, "Member");
   const login = `${display.replaceAll(" ", "-").toLowerCase()}@example.test`;
   await openSection(page, "admin");
+  // The page's own notice, not the rail's daemon chip or the banner slot.
+  const notice = page.locator("main p.notice[role=status]");
   const form = page.locator(".admin-form");
   const choose = page.getByLabel("Choose action", { exact: true });
   await choose.selectOption("account_add");
   await form.getByLabel(/Exact Tailscale login/).fill(login);
   await form.getByLabel(/Display name/).fill(display);
   await form.getByRole("button").click();
-  await expect(page.getByRole("status")).toContainText("Daemon accepted add member.");
+  await expect(notice).toContainText("Daemon accepted add member.");
   await page.reload();
   const member = page.locator(".admin-row").filter({ has: page.getByRole("heading", { name: display }) });
   await expect(member).toBeVisible();
@@ -112,7 +114,7 @@ test("accounts: add a member, then disable it after confirmation", async ({ sign
   const confirm = page.getByRole("button", { name: "Confirm update member", exact: true });
   await expect(page.getByRole("region", { name: "Confirm action" })).toContainText(userId);
   await confirm.click();
-  await expect(page.getByRole("status")).toContainText("Daemon accepted update member.");
+  await expect(notice).toContainText("Daemon accepted update member.");
   await page.reload();
   await choose.selectOption("account");
   await form.getByLabel("Member id").fill(userId);

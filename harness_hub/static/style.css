@@ -85,7 +85,7 @@ a { color: var(--accent); }
   border-radius: var(--radius);
 }
 
-/* Top bar: brand, the phone menu button and sign out. */
+/* Top bar, below 900px only: the menu button and the brand. From 900px the rail carries both. */
 .topbar {
   position: sticky;
   top: 0;
@@ -111,9 +111,6 @@ a { color: var(--accent); }
   text-decoration: none;
 }
 
-.signout { margin-left: auto; }
-
-body.signed-out .signout,
 body.signed-out .menu-button,
 body.signed-out .nav { display: none; }
 
@@ -144,15 +141,18 @@ body.signed-out .nav { display: none; }
   outline-offset: 2px;
 }
 
-/* Navigation: a drawer on phones, a fixed left rail from 900px. */
+/* Navigation: a drawer on phones, a fixed left rail from 900px. Overview, then the Access and Daemon groups, then the
+   footer (daemon chip, Show host commands, Sign out) at the bottom. */
 .nav {
   position: fixed;
   z-index: 2;
   top: var(--topbar-h);
   bottom: 0;
   left: 0;
+  display: flex;
+  flex-direction: column;
   width: min(86vw, var(--rail-w));
-  padding: 12px 8px max(12px, env(safe-area-inset-bottom));
+  padding: 14px 10px max(14px, env(safe-area-inset-bottom));
   background: var(--panel);
   border-right: 1px solid var(--line);
   overflow-y: auto;
@@ -167,20 +167,92 @@ body.menu-open::after {
   background: var(--backdrop);
   z-index: 1;
 }
+.rail-brand { display: none; padding: 0 8px; margin-bottom: 8px; }
+.nav-sections { flex: 1 0 auto; }
 .nav ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.nav-group {
+  margin: 16px 12px 4px;
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
 .nav-link {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
   min-height: var(--tap);
-  padding: 10px 14px;
-  border-radius: var(--radius);
+  padding: 8px 10px 8px 12px;
+  border-radius: 10px;
   color: var(--text);
+  font-size: .92rem;
+  font-weight: 500;
   text-decoration: none;
 }
 .nav-link:hover { background: var(--panel-2); }
-.nav-link[aria-current="page"] { background: var(--panel-2); color: var(--accent); font-weight: 700; }
+.nav-link[aria-current="page"] { background: var(--info-bg); color: var(--accent); font-weight: 650; }
+.nav-label { flex: 1; min-width: 0; }
+.nav-icon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  color: var(--muted);
+}
+.nav-icon.small { width: 16px; height: 16px; }
+.nav-link[aria-current="page"] .nav-icon { color: var(--accent); }
+/* Pairing requests that need the owner, in warn colours like the Stables Agents badge. */
+.nav-badge {
+  flex: none;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: .72rem;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+}
+.nav-badge[hidden] { display: none; }
+
+.rail-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 16px;
+  padding: 12px 2px 0;
+  border-top: 1px solid var(--line);
+}
+.daemon-chip {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 6px;
+  min-height: 28px;
+  margin: 0 0 0 8px;
+  padding: 0 10px 0 9px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: .75rem;
+  font-weight: 600;
+}
+.daemon-chip[hidden] { display: none; }
+.daemon-chip::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.daemon-chip.ok::before { background: var(--ok); }
+.daemon-chip.bad { background: var(--bad-bg); color: var(--bad); }
+.daemon-chip.bad::before { background: var(--bad); }
+.host-commands { padding: 0 0 0 10px; font-size: .85rem; }
+.host-commands .nav-icon { color: var(--muted); }
+.signout { display: flex; align-items: center; gap: 8px; padding: 0 10px; border-color: transparent; font-size: .9rem; }
+.signout .nav-icon { color: currentColor; }
 
 .main {
   max-width: 1100px;
@@ -188,12 +260,15 @@ body.menu-open::after {
   padding: 16px max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   outline: none;
 }
+/* The one banner under the page head; empty, it takes no space. */
+.banner-slot:empty { display: none; }
 
 @media (min-width: 900px) {
-  .topbar .menu-button { display: none; }
-  .nav { transform: none; transition: none; }
+  body:not(.signed-out) .topbar { display: none; }
+  .nav { top: 0; transform: none; transition: none; }
+  .rail-brand { display: inline-flex; }
   body.menu-open::after { display: none; }
-  body:not(.signed-out) .main { margin-left: var(--rail-w); padding: 24px 32px; }
+  body:not(.signed-out) .main { margin-left: var(--rail-w); padding: 28px 44px; }
 }
 
 /* Pages and cards. */

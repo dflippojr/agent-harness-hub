@@ -1,5 +1,5 @@
-// HUB-01 navigation and layout: every section loads and survives a reload, the theme follows the color scheme, and no
-// page scrolls sideways at 320, 375, 768 or 1440 px.
+// HUB-01 navigation and layout: every section loads and survives a reload, the theme follows the color scheme, the
+// rail is grouped with its footer, and no page scrolls sideways at 320, 375, 768 or 1440 px.
 import { SECTIONS, expect, expectNoHorizontalOverflow, hubUrl, isPhone, openSection, scheme, test } from "./fixtures.mjs";
 
 const BACKGROUND = { light: "#f3f4f6", dark: "#000000" };
@@ -14,6 +14,36 @@ test("each section loads, is marked current and survives a reload", async ({ sig
     await page.reload();
     await expect(section.ready(page).first()).toBeVisible();
   }
+  expect(errors).toEqual([]);
+});
+
+test("the rail groups the sections, shows the daemon chip and banner, and remembers the host-commands switch", async ({ signedIn: page, errors }, testInfo) => {
+  test.skip(isPhone(testInfo), "the rail is a drawer on phones; the phone test covers it");
+  const nav = page.getByRole("navigation", { name: "Sections" });
+  await expect(page.locator(".topbar")).toBeHidden();
+  await expect(nav.getByRole("list", { name: "Access" }).getByRole("link"))
+    .toHaveText([/^Pairing requests/, "Apps", "Marketplace"]);
+  await expect(nav.getByRole("list", { name: "Daemon" }).getByRole("link"))
+    .toHaveText(["Settings", "Modules", "Accounts and maintenance"]);
+  // The pinned daemon (aa5a904) reports Owner API 1.24: live, but below the 1.26 tailnet sign-in needs.
+  await expect(nav.getByRole("status")).toHaveText("Daemon live · API 1.24");
+  const slot = page.locator("main > .page-head + #banner-slot");
+  await expect(slot.getByRole("status")).toContainText("Tailnet sign-in needs Owner API 1.26 or later.");
+  // Overview's answer is held in memory: the banner stays under every page head without new reads.
+  await nav.getByRole("link", { name: "Apps", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Apps", level: 1 })).toBeVisible();
+  await expect(slot.getByRole("status")).toContainText("Tailnet sign-in needs Owner API 1.26 or later.");
+
+  const host = nav.getByRole("switch", { name: "Show host commands" });
+  await expect(host).not.toBeChecked();
+  await host.check();
+  await expect(page.locator("body")).toHaveClass(/show-host-commands/);
+  await page.reload();
+  await expect(host).toBeChecked();
+  await host.uncheck();
+  await page.reload();
+  await expect(host).not.toBeChecked();
+  expect(await nav.getByRole("button", { name: "Sign out" }).boundingBox()).toBeTruthy();
   expect(errors).toEqual([]);
 });
 
@@ -47,6 +77,9 @@ test("phone: pages fit the device width and the drawer navigates", async ({ sign
   await expect(page.getByRole("heading", { name: "Apps", level: 1 })).toBeVisible();
   await menu.click();
   await expect(page.locator('#nav a[data-section="apps"]')).toHaveAttribute("aria-current", "page");
+  // The drawer is the rail: the footer's switch and Sign out are in it.
+  await expect(page.getByRole("switch", { name: "Show host commands" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(menu).toHaveAttribute("aria-expanded", "false");
   expect(errors).toEqual([]);

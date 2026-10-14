@@ -12,6 +12,7 @@
   <link rel="modulepreload" href="/static/lib/dom.mjs">
   <link rel="modulepreload" href="/static/lib/pairing.mjs">
   <link rel="modulepreload" href="/static/lib/poll.mjs">
+  <link rel="modulepreload" href="/static/lib/status.mjs">
   <link rel="modulepreload" href="/static/pages/overview.mjs">
   <link rel="modulepreload" href="/static/pages/settings.mjs">
   <link rel="modulepreload" href="/static/pages/modules.mjs">
@@ -29,9 +30,23 @@
       <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
     </button>
     <a class="brand" href="#/overview"><img src="/static/icon.svg" alt="" width="28" height="28"><span>Hub</span></a>
-    <button id="signout-button" class="btn ghost signout" type="button">Sign out</button>
   </header>
-  <nav id="nav" class="nav" aria-label="Sections"></nav>
+  <nav id="nav" class="nav" aria-label="Sections">
+    <a class="brand rail-brand" href="#/overview"><img src="/static/icon.svg" alt="" width="30" height="30"><span>Hub</span></a>
+    <div id="nav-sections" class="nav-sections"></div>
+    <div class="rail-foot">
+      <p id="daemon-chip" class="daemon-chip" role="status" hidden></p>
+      <label class="switch host-commands">
+        <svg class="nav-icon small" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 8 4 4-4 4"/><path d="M12 16h7"/></svg>
+        <span class="switch-label">Show host commands</span>
+        <span class="switch-track"><input id="host-commands" type="checkbox" role="switch"><i aria-hidden="true"></i></span>
+      </label>
+      <button id="signout-button" class="btn ghost signout" type="button">
+        <svg class="nav-icon small" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 17l-5-5 5-5"/><path d="M5 12h11"/></svg>
+        Sign out
+      </button>
+    </div>
+  </nav>
   <main id="main" class="main" tabindex="-1">
     <p class="muted">Loading…</p>
   </main>

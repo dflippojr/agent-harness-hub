@@ -1,5 +1,7 @@
 // Calls to this Hub's own server. The browser talks only to the Hub; the Hub alone talks to the daemon.
 
+import { noteRead } from "./status.mjs";
+
 export class ApiError extends Error {
   constructor(status, body) {
     super((body && body.detail) || `HTTP ${status}`);
@@ -28,6 +30,8 @@ export async function api(path, { method = "GET", body } = {}) {
   } catch {
     data = { detail: text.slice(0, 200) };
   }
+  // The shell's daemon status and banner are worked out from the reads the pages make anyway.
+  if (method === "GET" && path !== "session") noteRead(path.split("?")[0], response.status, data);
   if (!response.ok) {
     if (response.status === 401 && path !== "session") window.dispatchEvent(new CustomEvent("hub:signed-out"));
     throw new ApiError(response.status, data);

@@ -10,7 +10,8 @@ test("signed out, an unknown link is refused and a fresh link signs in", async (
   await expect(signinCard(page)).toBeVisible();
   await expect(signinCard(page)).toContainText("python -m harness_hub signin-link");
   await expect(page.getByRole("button", { name: /^Continue as/ })).toHaveCount(0);
-  await expect(page.locator("#nav a")).toHaveCount(0);
+  await expect(page.locator("#nav a[data-section]")).toHaveCount(0);
+  await expect(page.locator("#nav")).toBeHidden();
 
   await page.goto(`${hubUrl()}/#signin=${"x".repeat(43)}`);
   await page.reload();
@@ -26,6 +27,9 @@ test("signed out, an unknown link is refused and a fresh link signs in", async (
   await expect(signinCard(other)).toBeVisible();
   await other.close();
 
+  // Sign out sits in the rail's footer; below 900 px the rail is the Sections drawer.
+  const menu = page.getByRole("button", { name: "Sections" });
+  if (await menu.isVisible()) await menu.click();
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(signinCard(page)).toBeVisible();
   await page.reload();

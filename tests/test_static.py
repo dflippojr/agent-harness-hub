@@ -29,7 +29,8 @@ def test_browser_code_talks_only_to_the_hub():
 def test_browser_code_never_stores_or_injects():
     for path in WEB:
         source = text(path)
-        assert "localStorage" not in source, path
+        if path.name != "app.mjs":
+            assert "localStorage" not in source, path
         if path.name != "api.mjs":
             assert "sessionStorage" not in source, path
         assert "innerHTML" not in source and "outerHTML" not in source and "insertAdjacentHTML" not in source, path
@@ -101,6 +102,32 @@ def test_colours_come_from_tokens():
     css = text(STATIC / "style.css")
     body = css[css.index("* { box-sizing"):]
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", body)
+
+
+def test_local_storage_holds_only_the_host_commands_switch():
+    """Decision 3 of #65: the Show host commands switch is remembered per browser, and nothing else is."""
+    app = text(STATIC / "app.mjs")
+    assert re.findall(r"localStorage\.(\w+)\(([^,)]*)", app) == [
+        ("getItem", "HOST_COMMANDS_KEY"), ("setItem", "HOST_COMMANDS_KEY"), ("removeItem", "HOST_COMMANDS_KEY")]
+    assert 'const HOST_COMMANDS_KEY = "hub.hostCommands";' in app
+    assert 'setItem(HOST_COMMANDS_KEY, "on")' in app
+
+
+def test_rail_groups_and_footer():
+    """Hub design 2 (#69): Overview, then Access, then Daemon; the footer holds the chip, the switch and Sign out."""
+    app = text(STATIC / "app.mjs")
+    order = [app.index(f'id: "{section}"') for section in
+             ("overview", "pairing", "apps", "marketplace", "settings", "modules", "admin")]
+    assert order == sorted(order)
+    marks = ('label: "Access"', 'id: "pairing"', 'label: "Daemon"', 'id: "settings"')
+    assert [app.index(mark) for mark in marks] == sorted(app.index(mark) for mark in marks)
+    html = text(STATIC / "index.html")
+    nav = html[html.index('<nav id="nav"'):html.index("</nav>")]
+    for marker in ('id="daemon-chip"', 'role="status"', 'id="host-commands"', 'role="switch"', 'id="signout-button"'):
+        assert marker in nav, marker
+    assert "signout" not in html[html.index('<header class="topbar">'):html.index("</header>")]
+    css = text(STATIC / "style.css")
+    assert "body:not(.signed-out) .topbar { display: none; }" in css
 
 
 def test_phone_and_desktop_layouts():

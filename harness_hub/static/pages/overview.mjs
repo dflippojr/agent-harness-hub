@@ -65,13 +65,8 @@ export function renderOverview(main) {
   function draw(data) {
     clear(claimBox, claimCard(data, load));
     const shown = data.reachable ? data : lastGood;
+    // The shell's banner slot says when the daemon is not answering or restarting, or its Owner API is too old.
     clear(body,
-      data.restarting ? h("section", { class: "card wait span", role: "status" }, h("h2", {}, "Daemon restarting"),
-        h("p", {}, "Polling health until the daemon answers with confirmed settings.")) : null,
-      data.error ? h("section", { class: "card bad span", role: "alert" },
-        h("h2", {}, "The daemon did not answer"),
-        h("p", {}, data.error),
-        shown ? h("p", { class: "muted" }, `Showing what the Hub last saw, at ${when(shown.fetched_at)}.`) : null) : null,
       attentionCard(data.attention),
       shown ? daemonCard(shown) : null,
       shown ? capabilitiesCard(shown) : null);
@@ -164,24 +159,6 @@ function fact(label, value) {
   return [h("dt", {}, label), h("dd", {}, value === undefined || value === null || value === "" ? "—" : value)];
 }
 
-// Mirrors MIN_OWNER_API in views.py; the server classifies the reported version as ownership.compatibility.
-const MIN_OWNER_API = "1.24";
-
-// Advice only: the pages keep their own error handling. A supported daemon shows no notice.
-function compatibilityNotice(ownership) {
-  switch (ownership ? ownership.compatibility : null) {
-    case "too_old":
-      return h("p", { class: "notice bad", role: "alert" },
-        `This daemon's Owner API (${ownership.api_version}) is older than the Hub supports (${MIN_OWNER_API}, agent-harness aa5a904). Update the daemon; some pages will fail until you do.`);
-    case "no_tailnet_signin":
-      return h("p", { class: "notice" }, "Tailnet sign-in needs Owner API 1.26 or later; sign-in links still work.");
-    case "unknown":
-      return h("p", { class: "notice" }, "This daemon did not report its Owner API version.");
-    default:
-      return null;
-  }
-}
-
 // App pairing requests the owner must decide, counted on the server. A request expires unseen if nobody looks.
 function attentionCard(attention) {
   const parts = attention ? [[attention.approve, "to approve"], [attention.confirm, "to confirm"]].filter(([n]) => n > 0) : [];
@@ -201,7 +178,6 @@ function daemonCard(data) {
   return h("section", { class: "card", "aria-labelledby": "daemon-title" },
     h("h2", { id: "daemon-title" }, "Daemon"),
     h("p", { class: "lead" }, health.ok ? h("span", { class: "pill ok" }, "Healthy") : h("span", { class: "pill bad" }, "Not healthy")),
-    compatibilityNotice(data.ownership),
     h("dl", { class: "facts" },
       fact("Address", data.hub.daemon_url),
       fact("Release", d.release),
