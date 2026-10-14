@@ -29,7 +29,8 @@ def test_browser_code_talks_only_to_the_hub():
 def test_browser_code_never_stores_or_injects():
     for path in WEB:
         source = text(path)
-        assert "localStorage" not in source, path
+        if path.name != "app.mjs":
+            assert "localStorage" not in source, path
         if path.name != "api.mjs":
             assert "sessionStorage" not in source, path
         assert "innerHTML" not in source and "outerHTML" not in source and "insertAdjacentHTML" not in source, path
@@ -103,6 +104,34 @@ def test_colours_come_from_tokens():
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", body)
 
 
+def test_local_storage_holds_only_the_host_commands_switch():
+    """Decision 3 of #65: the Show host commands switch is remembered per browser, and nothing else is."""
+    app = text(STATIC / "app.mjs")
+    assert re.findall(r"localStorage\.(\w+)\(([^,)]*)", app) == [
+        ("getItem", "HOST_COMMANDS_KEY"), ("setItem", "HOST_COMMANDS_KEY"), ("removeItem", "HOST_COMMANDS_KEY")]
+    assert 'const HOST_COMMANDS_KEY = "hub.hostCommands";' in app
+    assert 'setItem(HOST_COMMANDS_KEY, "on")' in app
+
+
+def test_rail_groups_and_footer():
+    """Hub design 2 (#69): Overview, then Access, then Daemon; the footer holds the chip, the switch and Sign out."""
+    app = text(STATIC / "app.mjs")
+    order = [app.index(f'id: "{section}"') for section in
+             ("overview", "pairing", "apps", "marketplace", "settings", "modules", "admin")]
+    assert order == sorted(order)
+    marks = ('label: "Access"', 'id: "pairing"', 'label: "Daemon"', 'id: "settings"')
+    assert [app.index(mark) for mark in marks] == sorted(app.index(mark) for mark in marks)
+    html = text(STATIC / "index.html")
+    nav = html[html.index('<nav id="nav"'):html.index("</nav>")]
+    for marker in ('id="daemon-chip"', 'role="status"', 'id="host-commands"', 'role="switch"', 'id="signout-button"'):
+        assert marker in nav, marker
+    assert "signout" not in html[html.index('<header class="topbar">'):html.index("</header>")]
+    # Hub design 3 (#70) shows the switch once host commands follow it.
+    assert 'class="switch host-commands" hidden' in nav
+    css = text(STATIC / "style.css")
+    assert "body:not(.signed-out) .topbar { display: none; }" in css
+
+
 def test_phone_and_desktop_layouts():
     css = text(STATIC / "style.css")
     html = text(STATIC / "index.html")
@@ -118,3 +147,29 @@ def test_every_module_is_preloaded_and_exists():
     for module in STATIC.rglob("*.mjs"):
         if module.name != "app.mjs":
             assert f"/static/{module.relative_to(STATIC).as_posix()}" in html, module
+
+
+def custom_properties(block: str) -> dict[str, str]:
+    return dict(re.findall(r"(--[a-z0-9-]+):\s*([^;]+);", block))
+
+
+def test_stables_tokens_in_light_and_dark():
+    """Hub design 1 (#68): the Stables tokens the Hub lacked, and the dark primary #2F66D8 with white text."""
+    css = text(STATIC / "style.css")
+    light = custom_properties(css[css.index(":root {"):css.index("@media (prefers-color-scheme: dark)")])
+    dark = custom_properties(css[css.index("@media (prefers-color-scheme: dark)"):css.index("* { box-sizing")])
+    for name in ("--primary", "--on-primary", "--info-bg", "--ok-solid", "--shadow"):
+        assert name in light and name in dark, name
+    assert light["--primary"] == "#2457d9" and light["--on-primary"] == "#ffffff"
+    assert dark["--primary"] == "#2f66d8" and dark["--on-primary"] == "#ffffff"
+    assert ".btn.primary { background: var(--primary)" in css
+
+
+def test_component_styles_exist():
+    css = text(STATIC / "style.css")
+    for selector in (".pill.run", ".pill.ok", ".pill.warn", ".pill.bad", ".pill.muted", ".section-head {",
+                     ".count.warn", ".banner.bad", ".banner.warn", ".banner.info", ".switch {", ".table {",
+                     ".countdown {", ".countdown.warn", ".danger-zone {", ".btn.danger"):
+        assert selector in css, selector
+    switch = css[css.index(".switch {"):]
+    assert "min-height: var(--tap)" in switch[:switch.index("}")]

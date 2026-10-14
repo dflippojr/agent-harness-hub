@@ -33,7 +33,7 @@ def test_error_keeps_complete_last_good_in_memory_and_on_disk(claimed, fake_daem
     stored = path.read_bytes()
     fake_daemon.inventory_error = "hub.entries: invalid JSON"
     bad = claimed.get("/api/modules").json()
-    assert bad["state"] == "error" and bad["error"] == fake_daemon.inventory_error
+    assert bad["state"] == "error" and bad["error"] == fake_daemon.inventory_error and bad["reachable"] is True
     assert bad["stale"] and bad["modules"] == good["modules"] and bad["fetched_at"] == good["fetched_at"]
     assert path.read_bytes() == stored
     cache = InventoryCache(claimed.state_dir, "https://daemon.test")

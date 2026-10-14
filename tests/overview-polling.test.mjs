@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderOverview } from "../harness_hub/static/pages/overview.mjs";
+import { daemonBanner, daemonChip, resetStatus } from "../harness_hub/static/lib/status.mjs";
 import { deferred, mount as mountPage, response, settle } from "./page-fake.mjs";
 
 function mount(t, fetcher) {
@@ -140,30 +141,32 @@ const reachableOverview = (ownership) => ({
   ownership,
 });
 const ownershipFor = (api_version, compatibility) => ({ api_version, compatibility, daemon_has_hub: true, this_hub: true, record: null });
-const OWNER_API_NOTICES = [
-  ["too_old", "1.23", "This daemon's Owner API (1.23) is older than the Hub supports (1.24, agent-harness aa5a904). Update the daemon; some pages will fail until you do.", "notice bad"],
-  ["no_tailnet_signin", "1.25", "Tailnet sign-in needs Owner API 1.26 or later; sign-in links still work.", "notice"],
-  ["unknown", "", "This daemon did not report its Owner API version.", "notice"],
+// The Owner API advice moved from Overview's Daemon card to the shell's banner slot (Hub design 2, #69).
+const OWNER_API_BANNERS = [
+  ["too_old", "1.23", "bad", "This daemon's Owner API is 1.23; the Hub needs 1.24 or later."],
+  ["no_tailnet_signin", "1.25", "info", "Tailnet sign-in needs Owner API 1.26 or later."],
+  ["unknown", "", "info", "This daemon did not report its Owner API version."],
 ];
 
-for (const [compatibility, version, notice, className] of OWNER_API_NOTICES) {
-  test("Overview words the " + compatibility + " Owner API notice", async (t) => {
+for (const [compatibility, version, tone, title] of OWNER_API_BANNERS) {
+  test("Overview's read through api() gives the shell's status the " + compatibility + " Owner API banner", async (t) => {
+    resetStatus();
     const page = mount(t, (url) => Promise.resolve(response(url === "/api/overview"
       ? reachableOverview(ownershipFor(version, compatibility)) : { ok: true })));
     await settle();
-    const shown = (function find(element) {
-      if (element.tag === "p" && element.textContent === notice) return element;
-      return element.children.map(find).find(Boolean) ?? null;
-    })(page.main);
-    assert.ok(shown, notice);
-    assert.equal(shown.className, className);
+    const banner = daemonBanner();
+    assert.equal(banner.tone, tone);
+    assert.equal(banner.title, title);
+    assert.doesNotMatch(page.main.textContent, /older than the Hub|Tailnet sign-in needs|did not report its Owner API/);
   });
 }
 
-test("Overview shows no Owner API notice for a supported daemon", async (t) => {
+test("Overview shows no Owner API banner for a supported daemon", async (t) => {
+  resetStatus();
   const page = mount(t, (url) => Promise.resolve(response(url === "/api/overview"
     ? reachableOverview(ownershipFor("1.27", "supported")) : { ok: true })));
   await settle();
   assert.match(page.main.textContent, /Owner API/);
-  assert.doesNotMatch(page.main.textContent, /older than the Hub supports|Tailnet sign-in needs|did not report its Owner API/);
+  assert.equal(daemonBanner(), null);
+  assert.deepEqual(daemonChip(), { tone: "ok", text: "Daemon live · API 1.27" });
 });

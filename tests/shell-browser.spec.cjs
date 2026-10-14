@@ -118,7 +118,8 @@ test.describe("phone drawer", () => {
     await mount(page, "#/modules");
     const menu = page.getByRole("button", { name: "Sections" });
     await menu.tap();
-    await page.locator("#nav").tap({ position: { x: 20, y: 600 } });
+    // A group label: inside the drawer, but not a link or a footer control.
+    await page.locator("#nav .nav-group").first().tap();
     await expect(menu).toHaveAttribute("aria-expanded", "true");
   });
 });
