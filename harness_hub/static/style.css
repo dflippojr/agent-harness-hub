@@ -790,10 +790,84 @@ body.signed-out .topbar { display: none; }
 .module-facts dt, .grid .card h2 { overflow-wrap: anywhere; }
 .restart-link, a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 
-/* Apps uses the existing shell, form and touch-target tokens. */
-.apps-detail, .apps-erasures { margin-top: 16px; overflow-wrap: anywhere; }
 .notice.warn { background: var(--warn-bg); color: var(--warn); }
-.apps-list .card h3 { margin-top: 0; overflow-wrap: anywhere; font-size: 1.15rem; color: var(--text); }
+
+/* Apps (Hub design 7): the keys table, then a row's detail beside it from 1200px or in its place below that. Beside
+   the detail, and on a phone, the table folds to one line of name, kind, scopes and last seen with the status pill. */
+.apps-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 28px; }
+.apps-layout.has-detail .apps-keys { display: none; }
+.card.apps-table { padding: 0; overflow: hidden; border-radius: 14px; }
+.apps-table .table td { overflow-wrap: normal; }
+.apps-table .table td.nowrap { white-space: nowrap; }
+.apps-table tbody tr[data-app-id] { cursor: pointer; }
+.apps-table tbody tr[data-app-id]:hover td { background: var(--bg); }
+.apps-table tr.selected td, .apps-table tr.selected:hover td { background: var(--info-bg); }
+.app-title { display: block; font-weight: 650; overflow-wrap: anywhere; }
+.app-sub { display: block; font-size: .82rem; color: var(--muted); overflow-wrap: anywhere; }
+.app-meta { display: none; font-size: .82rem; color: var(--muted); overflow-wrap: anywhere; }
+.app-status { display: flex; flex-wrap: wrap; gap: 4px; }
+.apps-table td.app-open { width: 1%; padding: 4px 8px; text-align: right; white-space: nowrap; }
+.btn.open-app { padding: 0; display: inline-grid; place-items: center; color: var(--muted); }
+.open-app[aria-expanded="true"] .icon { transform: rotate(180deg); }
+.apps-detail { min-width: 0; overflow-wrap: anywhere; }
+.apps-detail-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 18px; }
+.apps-detail-head h2 { margin: 0; font-size: 1.5rem; overflow-wrap: anywhere; }
+.apps-detail-head .key-id { margin-left: auto; }
+.apps-detail > .hint { margin-top: 4px; }
+.btn.apps-back { margin-top: 8px; padding: 0 10px; }
+.apps-detail > .notice { margin: 12px 0 0; }
+.usage-tiles { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-top: 18px; }
+.usage-tiles .tile { padding: 14px 16px; }
+.apps-detail > .facts { gap: 8px 24px; margin-top: 18px; font-size: .9rem; }
+.card.apps-form, .card.apps-host { padding: 18px 20px; border-radius: 14px; }
+.card.apps-host { margin-top: 20px; }
+.card.apps-host h3 { margin: 0 0 6px; color: var(--text); }
+.card.apps-host p { margin: 0 0 8px; }
+.apps-host-note { margin: 20px 0 0; }
+.apps-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+.apps-inline { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+.apps-inline .apps-field { flex: 1 1 200px; }
+.apps-field label { display: block; margin-bottom: 6px; font-size: .82rem; font-weight: 650; color: var(--muted); }
+.apps-field input {
+  display: block; width: 100%; min-width: 0; min-height: var(--tap); padding: 0 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); font: inherit;
+}
+.apps-field input::placeholder { color: var(--muted); }
+.apps-field input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.apps-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.danger-zone .apps-actions { margin-top: 0; }
+.apps-detail .danger-zone { margin-top: 20px; }
+.apps-confirm { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; overflow-wrap: anywhere; }
+.danger-zone .apps-confirm { margin-top: 0; }
+.apps-confirm h4 { margin: 0; font-size: 1rem; color: var(--text); }
+.apps-confirm p { margin: 0; font-size: .9rem; }
+.apps-confirm .facts { margin: 0; font-size: .9rem; }
+.apps-confirm .apps-actions { margin-top: 4px; }
+.card.apps-entries { padding: 0; border-radius: 14px; }
+.apps-entry { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-height: 56px; padding: 6px 12px 6px 18px; }
+.apps-entry + .apps-entry { border-top: 1px solid var(--line); }
+.apps-entry-name { flex: 1 1 16em; min-width: 0; overflow-wrap: anywhere; }
+.apps-catalog > .hint { margin-top: 10px; }
+.apps-erasures:not(:empty) { margin-top: 16px; }
+.card.empty h3 { margin: 0; font-size: 1rem; color: var(--text); }
+
+@media (min-width: 1200px) {
+  .apps-layout.has-detail { grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); }
+  .apps-layout.has-detail .apps-keys { display: block; }
+  .apps-layout.has-detail .apps-back { display: none; }
+  .has-detail .apps-table thead, .has-detail .apps-table .col-wide, .has-detail .apps-table .app-sub { display: none; }
+  .has-detail .apps-table .app-meta { display: block; }
+  .has-detail .apps-table .app-status .pill:not(:first-child) { display: none; }
+}
+@media (max-width: 699px) {
+  .apps-table thead, .apps-table .col-wide { display: none; }
+  .apps-table .app-meta { display: block; }
+  .apps-table td { padding: 10px 12px; }
+  .apps-detail-head { margin-top: 8px; }
+  .usage-tiles { grid-template-columns: minmax(0, 1fr); }
+  .apps-detail-head .key-id { flex-basis: 100%; margin-left: 0; }
+  .apps-entry { padding: 8px 12px; }
+}
 
 /* Owner administration reuses the shell and form tokens. */
 .admin-workspace, .admin-output, .admin-row { margin: 16px 0; overflow-wrap: anywhere; }

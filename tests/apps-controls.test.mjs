@@ -21,16 +21,22 @@ for (const failure of [false, true]) {
     t.after(() => { delete Element.prototype.scrollIntoView; });
     const page = mount(t, renderApps, (url, options) => {
       if (options.method === "DELETE") return revoke.promise;
+      if (url.endsWith("/limits")) return Promise.resolve(response({ configured: { max_running: null, max_queued: null },
+        effective: { max_running: 2, max_queued: 4 }, running: 0, queued: 0, parked: 0, retention_days: null }));
       return Promise.resolve(url === "/api/apps" ?
         response({ state: "ready", apps: [row], entries: [] }) : response([]));
     });
     await settle();
     page.main.querySelectorAll = () => controls(page.main);
-    const toggles = controls(page.main).filter((el) => ["Host command", "Host commands"].includes(el.textContent));
-    assert.ok(toggles.length >= 2, "the page head and the revoke row each have a Host commands button");
+    press(labelled(page, "Open Synthetic one"));
+    await settle();
+    await settle();
     assert.ok(controls(page.main).every((el) => !el.disabled));
 
+    // Revoke asks inside the danger zone, which redraws the detail; the toggles are those on screen with the question.
     press(labelled(page, "Revoke Synthetic one"));
+    const toggles = controls(page.main).filter((el) => ["Host command", "Host commands"].includes(el.textContent));
+    assert.ok(toggles.length >= 4, "the page head, caps, retention and the danger zone each have a Host commands button");
     press(labelled(page, "Confirm revoke Synthetic one"));
     await settle();
     assert.ok(toggles.every((el) => el.disabled), "disabled while the action runs");
