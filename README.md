@@ -146,8 +146,9 @@ A daemon has at most one Hub ([agent-harness #543](https://github.com/dflippojr/
 2. On the daemon host, check that the code matches and run the command the Hub shows:
    `harness hub approve <request id> --match <code>`. Only the host can approve: the CLI reads a secret from the
    daemon's data directory.
-3. The Hub redeems the claim with its verifier and keeps the `hub` key in its state directory. Overview then shows the
-   daemon's version, health, capabilities and that this Hub is the claimed one.
+3. The Hub redeems the claim with its verifier and keeps the `hub` key in its state directory. Overview then shows
+   status tiles for this Hub (Claimed), the daemon (health, release, Owner API) and its settings, then the daemon's
+   capabilities and details.
 
 When the daemon already has a Hub, the claim is refused (409) and the Hub shows how to release the old one on the host:
 `harness hub release --confirm`. An expired or denied claim shows that, with a button to start a new one. If the Hub
@@ -342,7 +343,7 @@ Pairing requests lists the App pairing requests of the last day ([agent-harness 
 newest first and grouped by state, with each one's name, scopes, catalog app id, origin (or "native app"), expiry
 countdown and next step. The Hub never projects or renders an App request's match code. Every scope shows the daemon's
 disclosure text exactly as given, as text, with its `standard` or `elevated` badge. The page polls every 5 seconds.
-Overview shows a **Waiting for you** card, with a link here, counting the unexpired App requests that need you to
+Overview leads with a **Needs you** card ("2 pairing requests need you"), with a link here, counting the unexpired App requests that need you to
 approve or confirm; it shows counts only, never the requests themselves, and leaves out Hub claims.
 Started from distinguishes owner-armed slots from App-initiated requests. App-initiated origin and catalog ids are
 stated by the requester, not verified; only the match code on your App's screen proves this is your App. For an armed
