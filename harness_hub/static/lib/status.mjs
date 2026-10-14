@@ -1,7 +1,8 @@
 // What the shell shows about the daemon (the rail's status chip, the Pairing badge and the banner under each page
 // head), worked out from answers the pages already read: Overview's last answer, the Pairing list, the Settings
-// revision, the Settings health poll, and any read the Hub refused with 503 because the daemon did not answer. It is
-// held in memory only and makes no calls of its own.
+// revision, the Settings health poll, and any read the Hub refused with 503 because the daemon did not answer. The
+// newest evidence about reachability wins, by when its request started. It is held in memory only and makes no calls
+// of its own.
 
 // Mirrors MIN_OWNER_API in views.py; the server classifies the reported version as ownership.compatibility.
 export const MIN_OWNER_API = "1.24";
@@ -10,39 +11,53 @@ let overview = null; // the last overview answer
 let lastGood = null; // the last overview answer that reached the daemon
 let attention = null; // { approve, confirm }: App pairing requests waiting on the owner
 let config = null; // the last Settings revision read: { revision, pending_revision, restart_required }
-const failures = new Set(); // paths whose last read found the daemon silent (a 503, or health reachable: false)
+let silent = null; // whether the latest evidence says the daemon is not answering; null before any
+let restarting = false; // whether a restart the Hub started is still under way
+let evidenceAt = 0; // when the request behind the latest evidence started; older replies cannot overwrite it
+let reads = 0; // request counter for callers that pass no start order (tests)
 const listeners = new Set();
 
-// api.mjs reports every GET it makes, except the session's.
-export function noteRead(path, status, data) {
+// Hub reads whose 2xx answer only the daemon could have given. Overview and the health poll report reachability in
+// their bodies; Modules and Marketplace can answer from the Hub's last good copy.
+const ANSWERED_ELSEWHERE = new Set(["overview", "settings/health", "modules", "marketplace", "claim"]);
+
+// Let evidence from a request that started at `started` decide reachability, unless newer evidence already has.
+function fresh(started) {
+  if (started < evidenceAt) return false;
+  evidenceAt = started;
+  return true;
+}
+
+// api.mjs reports every GET it makes, except the session's, with the order in which the request started.
+export function noteRead(path, status, data, started = ++reads) {
+  reads = Math.max(reads, started);
   const ok = status >= 200 && status < 300;
-  if (status === 503) failures.add(path);
-  else if (ok) failures.delete(path);
-  if (ok && data && typeof data === "object") {
-    if (path === "overview") {
-      overview = data;
-      if (data.reachable) {
-        lastGood = data;
-        failures.clear();
-        settle(data.health);
+  const body = ok && data && typeof data === "object" ? data : null;
+  if (status === 503) {
+    if (fresh(started)) silent = true;
+  } else if (path === "overview" && body) {
+    if (fresh(started)) {
+      overview = body;
+      silent = !body.reachable;
+      restarting = body.restarting === true;
+      if (body.reachable) {
+        lastGood = body;
+        settle(body.health);
       }
-      if (data.attention !== undefined) attention = data.attention;
-    } else if (path === "pairing" && Array.isArray(data.requests)) {
-      attention = pairingAttention(data);
-    } else if (path === "settings/config") {
-      config = data;
-    } else if (path === "settings/health") {
-      // Settings polls health around a restart; the Hub answers 200 even when the daemon does not. A newer poll
-      // overrides what Overview last said about reachability and the restart.
-      if (data.reachable === false) failures.add(path);
-      else if (data.reachable === true) {
-        failures.clear();
-        if (overview && !overview.reachable) overview = { ...overview, reachable: true, error: "" };
-        settle(data.health);
-      }
-      if (overview && typeof data.restarting === "boolean") overview = { ...overview, restarting: data.restarting };
+      if (body.attention !== undefined) attention = body.attention;
     }
+  } else if (path === "settings/health" && body) {
+    // Settings polls health around a restart; the Hub answers 200 even when the daemon does not.
+    if (typeof body.reachable === "boolean" && fresh(started)) {
+      silent = !body.reachable;
+      restarting = body.restarting === true;
+      if (body.reachable) settle(body.health);
+    }
+  } else if (ok && !ANSWERED_ELSEWHERE.has(path)) {
+    if (fresh(started)) silent = false;
   }
+  if (body && path === "pairing" && Array.isArray(body.requests)) attention = pairingAttention(body);
+  if (body && path === "settings/config") config = body;
   for (const listener of listeners) listener();
 }
 
@@ -63,8 +78,9 @@ export function subscribe(listener) {
 
 // Forget everything (tests).
 export function resetStatus() {
-  overview = lastGood = attention = config = null;
-  failures.clear();
+  overview = lastGood = attention = config = silent = null;
+  restarting = false;
+  evidenceAt = reads = 0;
 }
 
 // The same count the server makes for Overview (views.pairing_attention): unexpired App requests that need an
@@ -85,7 +101,7 @@ export function pairingCount() {
 
 // The rail's chip: null until Overview has answered or a read found the daemon silent.
 export function daemonChip() {
-  if (failures.size || (overview && !overview.reachable)) return { tone: "bad", text: "Daemon not answering" };
+  if (silent) return { tone: "bad", text: "Daemon not answering" };
   if (!overview) return null;
   const version = overview.ownership && overview.ownership.api_version;
   return { tone: "ok", text: version ? `Daemon live · API ${version}` : "Daemon live" };
@@ -100,7 +116,7 @@ function clockTime(seconds) {
 // Returns { tone, title, detail, action } or null; action is { label, href }.
 export function daemonBanner() {
   const url = overview && overview.hub ? overview.hub.daemon_url : "";
-  if (failures.size || (overview && !overview.reachable)) {
+  if (silent) {
     return {
       tone: "bad",
       title: url ? `The daemon at ${url} is not answering.` : "The daemon is not answering.",
@@ -111,7 +127,7 @@ export function daemonBanner() {
   }
   const ownership = overview ? overview.ownership : null;
   const compatibility = ownership ? ownership.compatibility : null;
-  if (overview && overview.error) {
+  if (overview && overview.reachable && overview.error) {
     // The daemon answered /health, but the owner API refused or failed (Overview names the HTTP status).
     return { tone: "bad", title: "The daemon answered, but its owner API did not.",
       detail: `${overview.error[0].toUpperCase()}${overview.error.slice(1)}. Overview shows what the Hub last read.` };
@@ -123,7 +139,7 @@ export function daemonBanner() {
       detail: "Update the daemon to agent-harness aa5a904 or later. Some pages will fail until you do.",
     };
   }
-  if (overview && overview.restarting) {
+  if (restarting) {
     return { tone: "warn", title: "The daemon is restarting.",
       detail: "The Hub checks its health until it answers with confirmed settings." };
   }

@@ -10,7 +10,10 @@ export class ApiError extends Error {
   }
 }
 
+let started = 0; // request start order, so the shell's status ignores a reply older than what it already has
+
 export async function api(path, { method = "GET", body } = {}) {
+  const order = ++started;
   const headers = { Accept: "application/json" };
   const binding = sessionStorage.getItem("hub.session");
   if (binding) headers["X-Hub-Session"] = binding;
@@ -31,7 +34,7 @@ export async function api(path, { method = "GET", body } = {}) {
     data = { detail: text.slice(0, 200) };
   }
   // The shell's daemon status and banner are worked out from the reads the pages make anyway.
-  if (method === "GET" && path !== "session") noteRead(path.split("?")[0], response.status, data);
+  if (method === "GET" && path !== "session") noteRead(path.split("?")[0], response.status, data, order);
   if (!response.ok) {
     if (response.status === 401 && path !== "session") window.dispatchEvent(new CustomEvent("hub:signed-out"));
     throw new ApiError(response.status, data);

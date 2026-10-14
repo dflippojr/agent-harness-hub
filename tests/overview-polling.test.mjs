@@ -149,7 +149,7 @@ const OWNER_API_BANNERS = [
 ];
 
 for (const [compatibility, version, tone, title] of OWNER_API_BANNERS) {
-  test("Overview's answer puts the " + compatibility + " Owner API banner in the shell's slot", async (t) => {
+  test("Overview's read through api() gives the shell's status the " + compatibility + " Owner API banner", async (t) => {
     resetStatus();
     const page = mount(t, (url) => Promise.resolve(response(url === "/api/overview"
       ? reachableOverview(ownershipFor(version, compatibility)) : { ok: true })));

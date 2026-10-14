@@ -129,3 +129,28 @@ test("restart needed clears once the daemon confirms the saved revision", () => 
   noteRead("settings/health", 200, { reachable: true, restarting: false, health: { config_revision: 3, config_confirmed: true } });
   assert.equal(daemonBanner(), null);
 });
+
+test("any page's read that only the daemon could answer clears an older 503 from another page", () => {
+  resetStatus();
+  noteRead("overview", 200, answer());
+  noteRead("apps/erasures", 503, { detail: "The daemon did not answer." });
+  assert.deepEqual(daemonChip(), { tone: "bad", text: "Daemon not answering" });
+  noteRead("pairing", 200, { requests: [], now: 1 });
+  assert.deepEqual(daemonChip(), { tone: "ok", text: "Daemon live · API 1.27" });
+  // A cached Modules or Marketplace answer proves nothing about the daemon.
+  noteRead("apps/erasures", 503, null);
+  noteRead("modules", 200, { state: "stale" });
+  assert.equal(daemonChip().tone, "bad");
+});
+
+test("a reply to an older request cannot overwrite newer evidence", () => {
+  resetStatus();
+  noteRead("overview", 200, answer(), 1);
+  noteRead("settings/health", 200, { reachable: true, restarting: false, health: { ok: true } }, 3);
+  // Overview's request started at 2, before the health poll, but answered after it.
+  noteRead("overview", 200, answer({ reachable: false, error: "the daemon did not answer", ownership: null }), 2);
+  assert.equal(daemonBanner(), null);
+  assert.deepEqual(daemonChip(), { tone: "ok", text: "Daemon live · API 1.27" });
+  noteRead("pairing", 503, null, 4);
+  assert.equal(daemonBanner().tone, "bad");
+});
