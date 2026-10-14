@@ -71,7 +71,9 @@ export function noteRead(path, status, data, started = ++reads) {
   } else if (INVENTORY.has(path) && body) {
     if (typeof body.reachable === "boolean") answered(body.reachable, true, started);
     // Only an inventory the daemon served ("ready") shows its owner API answering; an HTTP error from it does not.
-    if (body.state === "ready" && newer("owner", started)) ownerError = "";
+    // Spend has no state: its inventory read is served when it carries no error.
+    const served = path === "spend" ? body.error === "" : body.state === "ready";
+    if (served && newer("owner", started)) ownerError = "";
   } else if (ok && daemonAnswered(path)) {
     answered(true, true, started);
     if (newer("owner", started)) ownerError = "";

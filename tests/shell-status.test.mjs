@@ -191,6 +191,16 @@ test("a Spend read reports whether the daemon answered, like the inventory pages
   assert.equal(daemonChip().tone, "ok");
 });
 
+test("a served Spend read clears an owner API failure; an errored one does not", () => {
+  resetStatus();
+  noteRead("overview", 200, answer({ error: "owner API 500" }));
+  assert.equal(daemonBanner().tone, "bad");
+  noteRead("spend", 200, { error: "The daemon answered HTTP 500", stale: true, reachable: true, apps: [] });
+  assert.equal(daemonBanner().tone, "bad");
+  noteRead("spend", 200, { error: "", stale: false, reachable: true, apps: [], backends: [] });
+  assert.equal(daemonBanner(), null);
+});
+
 test("a Settings config reply older than the health that settled the restart cannot restore it", () => {
   resetStatus();
   noteRead("settings/config", 200, { revision: 1, pending_revision: 2, restart_required: true }, 1);
