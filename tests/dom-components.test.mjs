@@ -1,13 +1,28 @@
 // The shared component builders in lib/dom.mjs (Hub design 1, #68), on a minimal fake document.
-import test from "node:test";
+import nodeTest from "node:test";
 import assert from "node:assert/strict";
 
 import { Element } from "./page-fake.mjs";
 
-globalThis.Node = Element;
-globalThis.document = { createElement: (tag) => new Element(tag), createTextNode: (text) => Object.assign(new Element("#text"), { text }) };
+import * as dom from "../harness_hub/static/lib/dom.mjs";
 
-const dom = await import("../harness_hub/static/lib/dom.mjs");
+// The builders reach for document and Node only when called, so each test installs the fakes and puts the originals
+// back; this file also runs inside browser-session.test.mjs beside other suites.
+const fakeDocument = { createElement: (tag) => new Element(tag), createTextNode: (text) => Object.assign(new Element("#text"), { text }) };
+function test(name, fn) {
+  nodeTest(name, () => {
+    const saved = ["document", "Node"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]);
+    Object.assign(globalThis, { document: fakeDocument, Node: Element });
+    try {
+      fn();
+    } finally {
+      for (const [key, descriptor] of saved) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else delete globalThis[key];
+      }
+    }
+  });
+}
 const find = (el, tag) => el.tag === tag ? el : el.children.map((child) => find(child, tag)).find(Boolean);
 
 test("pill takes its tone from the Stables label set", () => {

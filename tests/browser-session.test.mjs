@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // Included in the existing CI browser behavior entrypoint.
+import "./dom-components.test.mjs";
 import "./overview-polling.test.mjs";
 import "./page-polling.test.mjs";
 import { api } from "../harness_hub/static/lib/api.mjs";
