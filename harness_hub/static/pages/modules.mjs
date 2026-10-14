@@ -36,7 +36,7 @@ export function statusWords(status) {
 }
 
 export function renderModules(main) {
-  let stopped = false, busy = false, inventory, schema, config, drawn = "";
+  let stopped = false, busy = false, inventory, schema, config, drawn = "", outcome = null;
   const poll = poller(() => load());
   const revision = h("span", { class: "muted modules-revision" });
   const notice = h("p", { class: "notice", "aria-live": "polite" });
@@ -48,9 +48,15 @@ export function renderModules(main) {
   clear(main, h("header", { class: "page-head modules-head" }, h("h1", {}, "Modules"), revision, reload),
     commands, notice, inventoryError, body);
 
+  // The notice holds the last save's outcome, if any, plus the current read failure. A later load that reads both
+  // settings documents drops the failure but keeps the outcome.
   function message(text, bad = false) {
-    notice.textContent = text;
-    notice.className = bad ? "notice bad" : "notice";
+    outcome = text ? { text, bad } : null;
+    showNotice("");
+  }
+  function showNotice(failure) {
+    notice.textContent = [outcome?.text, failure].filter(Boolean).join(" ");
+    notice.className = outcome?.bad || failure ? "notice bad" : "notice";
   }
   async function load(afterWrite = false) {
     if (stopped || busy && !afterWrite) return;
@@ -67,8 +73,8 @@ export function renderModules(main) {
     }
     schema = results[1].status === "fulfilled" ? results[1].value : null;
     config = results[2].status === "fulfilled" ? results[2].value : null;
-    if (!schema || !config) message("Switches unavailable: " +
-      results.slice(1).filter((r) => r.status === "rejected").map((r) => r.reason.message).join("; "), true);
+    showNotice(schema && config ? "" : "Switches unavailable: " +
+      results.slice(1).filter((r) => r.status === "rejected").map((r) => r.reason.message).join("; "));
     if (inventory) error = inventory.error || "";
     inventoryError.textContent = error;
     inventoryError.hidden = !error;
@@ -125,8 +131,7 @@ export function renderModules(main) {
     const apply = writable ? APPLY[spec.apply] : null;
     let control;
     if (writable) {
-      control = toggle(row.name, { checked: value, disabled: busy, onchange: (on) => save(spec, on) });
-      control.querySelector(".switch-label").className = "visually-hidden";
+      control = toggle(row.name, { checked: value, disabled: busy, hideLabel: true, onchange: (on) => save(spec, on) });
     } else control = h("span", { class: "muted" }, spec ? "Locked" : "No switch");
     const words = statusWords(row.status);
     const details = [

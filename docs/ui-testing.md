@@ -122,7 +122,8 @@ python scripts/ui_instance.py signin-link --dir <instance-dir>
 ```
 
 The link works once, for ten minutes, and signs **one tab** in: the session is an HttpOnly cookie plus a per-tab
-`sessionStorage` value. A new tab or a new browser context needs a new link. Opening the link swaps the fragment for
+`sessionStorage` value. A new tab or a new browser context needs a new link. A new tab in the same browser context
+joins the session the cookie already holds, so earlier tabs stay signed in; a new context starts a session of its own. Opening the link swaps the fragment for
 `#/overview`.
 
 **Roles.** The owner is the only role. Members and Apps never use the Hub. Tailnet sign-in needs a real tailnet

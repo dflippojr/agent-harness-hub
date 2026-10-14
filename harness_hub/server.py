@@ -59,6 +59,7 @@ from .views import (
     registry_view,
     scope_disclosures,
     settings_error,
+    spend_view,
     valid_limits,
 )
 
@@ -71,6 +72,8 @@ SESSION_HEADER = "x-hub-session"
 MAX_SIGNIN_BODY = 1024
 ALLOWED_LOGINS_SECONDS = 5.0  # how long a tailnet sign-in reuses the daemon's allowed_logins answer
 PAIRING_COUNT_SECONDS = 5.0  # how long Overview waits for its optional pairing count, consent lock included
+SPEND_CAP_READS = 8  # App session-cap reads in flight at once; every live App is read
+RESTART_GRACE_SECONDS = 1.0  # how long after a restart request the Hub ignores health that predates it
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 SECURITY_HEADERS = [
@@ -301,11 +304,11 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             refusal = await tailnet_sign_in(request)
             if refusal is not None:
                 return refusal
-            credentials = sessions.create()
+            credentials = sessions.create(request.cookies.get(settings.cookie_name))
         else:
             code = body.get("code") if isinstance(body, dict) else None
             was_throttled = sessions.throttled()
-            credentials = sessions.redeem_code(code)
+            credentials = sessions.redeem_code(code, request.cookies.get(settings.cookie_name))
             if credentials is None:
                 if was_throttled:
                     return _error(429, "too many sign-in attempts; wait a minute")
@@ -313,6 +316,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                               signin_command=SIGNIN_COMMAND)
         session, binding = credentials
         response = Response(status_code=204, headers={SESSION_HEADER: binding})
+        if session == request.cookies.get(settings.cookie_name):
+            return response  # another tab of the signed-in session: the cookie and its expiry stay as they were
         response.set_cookie(settings.cookie_name, session, max_age=SESSION_TTL_SECONDS,
                             httponly=True, samesite="strict",
                             secure=settings.secure_cookies, path="/")
@@ -333,7 +338,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     # Share observations across pages/tabs; record successful Hub confirmations under the same lock as polls.
     browser_slot_states: dict[tuple[str, str], tuple[str, bool]] = {}
 
-    def observe_browser_slots(rows: list, key_id: str, *, confirmed_id: str = "") -> str:
+    def observe_browser_slots(rows: list, key_id: str, *, confirmed_id: str = "") -> bool:
+        """Whether an observed browser claim looks like it skipped confirmation; `skipped_confirmation` rules on it."""
         warning = False
         for raw in rows:
             row = pairing_request_view(raw)
@@ -347,7 +353,27 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 browser_slot_states.pop(next(iter(browser_slot_states)))
             browser_slot_states[identity] = (row["state"], bypassed)
             warning = warning or bypassed
-        return "This daemon approved the claim without confirmation; update the daemon." if warning else ""
+        return warning
+
+    async def skipped_confirmation(key: dict, suspected: bool) -> str:
+        """The warning for a suspected bypass, only from a daemon that does not enforce confirmation.
+
+        Owner API 1.24 and later enforce typed-code confirmation, so from them an `armed` slot that turned `approved`
+        between listings was confirmed outside the Hub (the host CLI, another Hub process, a Hub restart): no warning,
+        and the stale suspicion is dropped. A daemon whose version is old or cannot be read keeps it."""
+        if not suspected:
+            return ""
+        try:
+            reply = await daemon.admin(key["token"])
+        except DaemonUnreachable:
+            reply = None
+        if reply is not None and reply.ok and ownership_view(
+                reply.body, {}, "")["compatibility"] in ("supported", "no_tailnet_signin"):
+            for identity, (state, _) in list(browser_slot_states.items()):
+                if identity[0] == key["key_id"]:
+                    browser_slot_states[identity] = (state, False)
+            return ""
+        return "This daemon approved the claim without confirmation; update the daemon."
 
     async def retained(token: str) -> str:
         """The daemon answered 401: drop the key only if a second read confirms it, else say it was kept.
@@ -427,11 +453,19 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         await retained(token)
         return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
 
+    def cacheable(body: Any, key_id: str) -> bool:
+        """Whether no page that reads the shared cache would show a credential-like string from this snapshot."""
+        secrets = tuple(store.secrets())
+        views = (module_view(body), apps_view(body, key_id, secrets), entries_view(body, secrets))
+        return not leaks(json.dumps(views).encode(), store.secrets())
+
     async def read_inventory(key: dict, shown) -> tuple[dict | None, str, str, bool] | JSONResponse:
         """The last good inventory (refreshed when the daemon answers with a valid one), its state, any error, and
         whether the daemon answered at all (the shell's status reads that instead of the error text).
 
-        `shown` projects an inventory into its browser view, so a snapshot whose view would leak is never cached."""
+        `shown` projects an inventory into the asking page's browser view; a snapshot whose view would leak is not
+        shown. Modules, Apps and Marketplace share the cache, so a snapshot that would leak on any of them is never
+        cached either: the page whose own view is clean shows it once, and the earlier last-good stays."""
         good = inventory.get(key["key_id"])
         state, error, reachable = "ready", "", True
         try:
@@ -443,8 +477,10 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     state, error = "error", "The daemon returned an invalid inventory."
                 elif leaks(json.dumps(shown(reply.body)).encode(), store.secrets()):
                     state, error = "error", "Inventory withheld: it contained a credential-like string."
-                else:
+                elif cacheable(reply.body, key["key_id"]):
                     good = inventory.save(reply.body, key["key_id"])
+                else:
+                    good = {"inventory": reply.body, "fetched_at": time.time()}
             elif reply.status == 404:
                 state, error = "absent", "The Hub inventory module is not installed."
             elif reply.status == 400 and "disabled" in reply.detail.lower():
@@ -477,6 +513,66 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             shown = {"modules": module_view(good["inventory"]) if good else None}
         return {"state": state, "error": error, "stale": state != "ready" and good is not None,
                 "reachable": reachable, "fetched_at": good["fetched_at"] if good else None, **shown}
+
+    async def refused_spend(token: str) -> JSONResponse:
+        """A 401 during a Spend read; the refusal's own confirmation read may also go unanswered."""
+        try:
+            return await refused(token)
+        except DaemonUnreachable:
+            return _error(503, "The daemon did not answer. Spend is unavailable until it does.")
+
+    @app.get("/api/spend")
+    async def get_spend():
+        """Read-only: each App's usage and session-cap use, and each backend's windows. It writes nothing, not even
+        the inventory cache, so its poll adds no disk writes; a failed read falls back to the cached inventory."""
+        key = claims.key()
+        if key is None:
+            return _error(409, "Claim this Hub on Overview before reading spend.")
+        secrets = tuple(store.secrets())
+        good = inventory.get(key["key_id"])
+        body, error, fetched_at = (good["inventory"], "", good["fetched_at"]) if good else (None, "", None)
+        # Each read stands alone: one that fails or times out never hides what another one returned.
+        reply, backends = await concurrently(daemon.inventory(key["token"]), daemon.settings(key["token"], "backends"))
+        for result in (reply, backends):
+            if isinstance(result, BaseException) and not isinstance(result, DaemonUnreachable):
+                raise result
+        if 401 in (getattr(reply, "status", None), getattr(backends, "status", None)):
+            return await refused_spend(key["token"])
+        if isinstance(reply, DaemonUnreachable):
+            error = "The daemon did not answer."
+        elif reply.ok and valid_inventory(reply.body):
+            body, fetched_at = reply.body, time.time()
+        else:
+            error = "The daemon returned an invalid inventory." if reply.ok else settings_error(
+                reply.body, reply.status)["detail"]
+        live = [row["id"] for row in (body or {}).get("apps", []) if isinstance(row, dict)
+                and row.get("kind") == "app" and row.get("revoked_at") is None and row.get("id") != key["key_id"]
+                and isinstance(row.get("id"), str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", row["id"])]
+        gate = asyncio.Semaphore(SPEND_CAP_READS)
+
+        async def read_caps(app_id: str):
+            async with gate:
+                return await daemon.apps(key["token"], "limits", app_id)
+
+        replies = await concurrently(*(read_caps(app_id) for app_id in live))
+        for result in replies:
+            if isinstance(result, BaseException) and not isinstance(result, DaemonUnreachable):
+                raise result
+        if any(getattr(result, "status", None) == 401 for result in replies):
+            return await refused_spend(key["token"])
+        limits = {app_id: result.body for app_id, result in zip(live, replies, strict=True)
+                  if getattr(result, "ok", False)}
+        backend_rows = backends.body if getattr(backends, "ok", False) else None
+        shown = spend_view(body, backend_rows, limits, key["key_id"], secrets)
+        if body is None:
+            shown["apps"] = None
+        if leaks(json.dumps(shown).encode(), store.secrets()):
+            return _error(502, "Spend withheld: it contained a credential-like string.")
+        return {"error": error, "stale": bool(error) and body is not None, "fetched_at": fetched_at,
+                # Any read the daemon answered shows it is up; the shell's status reads this, not the error text.
+                "reachable": not all(isinstance(result, DaemonUnreachable) for result in (reply, backends)),
+                "backends_error": "" if backend_rows is not None else "The daemon's backend usage was unavailable.",
+                **shown}
 
     # Bound to the Hub key and the entry's displayed identity, with a bounded ten-minute lifetime.
     consent_copies: dict[tuple[str, str], tuple[str, float, list[dict], bool]] = {}
@@ -512,13 +608,13 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return _error(409, "Claim this Hub on Overview before reading the Marketplace.")
         secrets = tuple(store.secrets())
 
-        async def read_slots() -> tuple[Any, str]:
+        async def read_slots() -> tuple[Any, bool]:
             # Only the pairing read and what it observes hold the consent lock; the inventory read never waits on it.
             async with pairing_consent_lock:
                 reply = await daemon.pairing(key["token"], "list")
                 if reply.ok and isinstance(reply.body, list):
                     return reply, observe_browser_slots(reply.body, key["key_id"])
-                return reply, ""
+                return reply, False
 
         # Both reads run together, but a refusal from the inventory read returns at once: the slots read can wait on
         # the consent lock for as long as another tab's arm request holds it, so it is cancelled, not awaited.
@@ -538,11 +634,12 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         entries, withheld = entries_view(good["inventory"], secrets) if good else (None, 0)
         slots, slots_error, confirmation_warning = {}, "", ""
         try:
-            reply, confirmation_warning = settled(slots_read)
+            reply, suspected = settled(slots_read)
             if reply.status == 401:
                 return await refused(key["token"])
             if reply.ok and isinstance(reply.body, list):
                 slots = marketplace_slots(reply.body, secrets)
+                confirmation_warning = await skipped_confirmation(key, suspected)
             else:
                 slots_error = f"Armed slots could not be read (HTTP {reply.status})."
         except DaemonUnreachable:
@@ -808,7 +905,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 if acknowledged:
                     body["acknowledge_elevated"] = True
         try:
-            reply = None
+            reply, suspected = None, False
             if operation == "approve" and "acknowledge_elevated" not in body:
                 # Never send an approval for elevated scopes without the owner's separate acknowledgement.
                 reply = await daemon.pairing(key["token"], "list")
@@ -826,7 +923,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     reply = await daemon.pairing(key["token"], operation, rid, body)
                     if reply.ok:
                         if operation == "list" and isinstance(reply.body, list):
-                            confirmation_warning = observe_browser_slots(reply.body, key["key_id"])
+                            suspected = observe_browser_slots(reply.body, key["key_id"])
                         elif operation == "confirm":
                             observe_browser_slots([reply.body], key["key_id"], confirmed_id=rid)
             if reply.status == 401:
@@ -838,7 +935,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         if operation == "list":
             if not isinstance(reply.body, list):
                 return _error(502, "The daemon returned invalid pairing requests.")
-            return {**pairing_view(reply.body, tuple(store.secrets())), "confirmation_warning": confirmation_warning}
+            return {**pairing_view(reply.body, tuple(store.secrets())),
+                    "confirmation_warning": await skipped_confirmation(key, suspected)}
         return pairing_request_view(reply.body, tuple(store.secrets()))
 
     @app.get("/api/manage/catalog")
@@ -994,7 +1092,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return _forwarded(reply)
         if operation == "restart" and isinstance(reply.body, dict) and reply.body.get("accepted") is True:
             restart.update(active=True, target=reply.body.get("target_revision"),
-                           not_before=time.monotonic() + 1)
+                           not_before=time.monotonic() + RESTART_GRACE_SECONDS)
         shown = registry_view(reply.body) if operation in (
             "schema", "config", "validate", "save", "rollback", "restart") else control_view(operation, reply.body)
         return JSONResponse(shown, status_code=reply.status)

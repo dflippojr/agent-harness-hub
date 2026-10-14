@@ -23,9 +23,9 @@ let reads = 0; // request counter for callers that pass no start order (tests)
 const listeners = new Set();
 
 // Whether a 2xx answer to this Hub read could only have come from the daemon's owner API. Overview and the health poll
-// report reachability in their bodies instead, and so do Apps, Modules and Marketplace, which answer 200 from the Hub's
+// report reachability in their bodies instead, and so do Apps, Modules, Marketplace and Spend, which answer 200 from the Hub's
 // last good inventory either way; the Accounts catalog never asks the daemon.
-const INVENTORY = new Set(["apps", "modules", "marketplace"]);
+const INVENTORY = new Set(["apps", "modules", "marketplace", "spend"]);
 function daemonAnswered(path) {
   return path === "pairing" || path.startsWith("apps/")
     || (path.startsWith("settings/") && path !== "settings/health")
@@ -71,7 +71,9 @@ export function noteRead(path, status, data, started = ++reads) {
   } else if (INVENTORY.has(path) && body) {
     if (typeof body.reachable === "boolean") answered(body.reachable, true, started);
     // Only an inventory the daemon served ("ready") shows its owner API answering; an HTTP error from it does not.
-    if (body.state === "ready" && newer("owner", started)) ownerError = "";
+    // Spend has no state: its inventory read is served when it carries no error.
+    const served = path === "spend" ? body.error === "" : body.state === "ready";
+    if (served && newer("owner", started)) ownerError = "";
   } else if (ok && daemonAnswered(path)) {
     answered(true, true, started);
     if (newer("owner", started)) ownerError = "";

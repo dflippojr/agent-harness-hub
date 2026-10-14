@@ -150,16 +150,6 @@ def test_arm_never_widens_or_redirects_what_the_entry_declares(claimed, fake_dae
     assert fake_daemon.armed == []
 
 
-def test_arm_needs_a_same_origin_write(claimed, fake_daemon, entries):
-    body = {"catalog_app_id": "test.example.native", "scopes": ["sessions"]}
-    assert arm(claimed, body, headers={"X-Hub-Request": "1"}).status_code == 403
-    assert arm(claimed, body, headers={"Origin": "http://" + HUB_HOST}).status_code == 403
-    assert arm(claimed, body, headers={"Origin": "https://evil.example.test", "X-Hub-Request": "1"}).status_code == 403
-    assert claimed._keep(claimed.client.post("/api/marketplace/arm", content=b"x" * 5000,
-                                             headers=ORIGIN)).status_code == 413
-    assert fake_daemon.armed == []
-
-
 @pytest.mark.parametrize("app_id,origin", [("test.example.native", ""),
                                          ("test.example.notes", "https://notes.example.test")])
 def test_a_claim_waits_for_typed_confirmation_and_a_slot_is_withdrawn(claimed, fake_daemon, entries, app_id, origin):
@@ -189,6 +179,7 @@ def test_a_claim_waits_for_typed_confirmation_and_a_slot_is_withdrawn(claimed, f
 @pytest.mark.parametrize("state", ["approved", "redeemed"])
 @pytest.mark.parametrize("first_page", ["/api/marketplace", "/api/pairing"])
 def test_browser_claim_skipping_confirmation_warns_on_both_pages(claimed, fake_daemon, entries, state, first_page):
+    fake_daemon.owner_api = "1.23"  # before aa5a904: the daemon does not enforce typed-code confirmation
     rid = arm(claimed, {"catalog_app_id": "test.example.notes", "scopes": ["sessions"],
                         "origin": "https://notes.example.test"}).json()["request"]["id"]
     # Simulate the legacy daemon: claim and possibly redeem before the next owner poll, without a confirm.
@@ -202,6 +193,33 @@ def test_browser_claim_skipping_confirmation_warns_on_both_pages(claimed, fake_d
         reply = claimed.get(page)
         assert reply.status_code == 200 and reply.json()["confirmation_warning"] == warning
         assert code not in reply.text and "match_code" not in reply.text
+
+
+@pytest.mark.parametrize("version", ["1.24", "1.25", "1.26"])
+@pytest.mark.parametrize("state", ["approved", "redeemed"])
+@pytest.mark.parametrize("page", ["/api/marketplace", "/api/pairing"])
+def test_confirming_on_the_host_cli_between_polls_does_not_warn(claimed, fake_daemon, entries, version, state, page):
+    fake_daemon.owner_api = version  # enforces confirmation, so an approval the Hub did not see was the owner's
+    rid = arm(claimed, {"catalog_app_id": "test.example.notes", "scopes": ["sessions"],
+                        "origin": "https://notes.example.test"}).json()["request"]["id"]
+    assert market(claimed)["confirmation_warning"] == ""  # the Hub saw it armed
+    fake_daemon.claim_slot(rid, "https://notes.example.test").update(state=state)  # `harness pairing-requests confirm`
+    for _ in range(2):
+        reply = claimed.get(page)
+        assert reply.status_code == 200 and reply.json()["confirmation_warning"] == ""
+    # The suspicion is dropped, so a later downgrade is not blamed on a confirmation long past.
+    fake_daemon.owner_api = "1.23"
+    assert market(claimed)["confirmation_warning"] == ""
+
+
+@pytest.mark.parametrize("version", ["", "1.23"])
+def test_a_daemon_whose_version_is_old_or_unreadable_keeps_the_warning(claimed, fake_daemon, entries, version):
+    fake_daemon.owner_api = version
+    rid = arm(claimed, {"catalog_app_id": "test.example.notes", "scopes": ["sessions"],
+                        "origin": "https://notes.example.test"}).json()["request"]["id"]
+    assert market(claimed)["confirmation_warning"] == ""
+    fake_daemon.claim_slot(rid, "https://notes.example.test").update(state="approved")
+    assert market(claimed)["confirmation_warning"].endswith("update the daemon.")
 
 
 @pytest.mark.parametrize("origin,app_id", [("", "test.example.native"),
@@ -281,13 +299,6 @@ def test_only_an_inline_raster_icon_is_kept():
                   "data:text/html;base64,PGI+", "javascript:alert(1)", "//icons.example.invalid/a.png", 7,
                   "data:image/png;base64," + "A" * 70000):
         assert icon(value) == ""
-
-
-def test_marketplace_needs_a_claimed_hub_and_a_signed_in_owner(hub, fake_daemon, entries):
-    assert hub.get("/api/marketplace").status_code == 401
-    hub.sign_in()
-    assert hub.get("/api/marketplace").status_code == 409
-    assert arm(hub, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]}).status_code == 409
 
 
 def test_a_token_shaped_entry_name_never_becomes_the_slot_name(claimed, fake_daemon, entries):

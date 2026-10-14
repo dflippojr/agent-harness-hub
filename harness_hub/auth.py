@@ -8,6 +8,10 @@ line or a Referer. The page posts the code once; the Hub answers with an HttpOnl
 and a separate origin binding that the browser keeps in sessionStorage and sends as a header.
 Codes last ten minutes and work once. Sessions live in the server's memory and end when it restarts.
 
+A browser has one cookie per origin, so a second tab that signs in with its own code while the cookie's session is still
+live joins that session: it gets a binding of its own, the cookie and the expiry stay as they were, and every binding
+works until the session expires or signs out (which ends them all). A binding authorizes only its own session's cookie.
+
 The owner's tailnet identity is the other proof the daemon accepts: on a request that tailscaled forwarded
 (tailnet.py), the page can ask for a session with `{"method": "tailnet"}`, and the server grants it only for a login
 the daemon lists in `allowed_logins` (server.py).
@@ -28,6 +32,7 @@ from .state import SIGNIN_FILE, prepare_dir, read_json, signin_lock, write_priva
 CODE_TTL_SECONDS = 600
 SESSION_TTL_SECONDS = 12 * 3600
 MAX_CODES = 5
+MAX_BINDINGS = 32  # tabs per session; one more drops the oldest tab's binding
 FAILURES_PER_MINUTE = 10
 TAILNET_ATTEMPTS_PER_MINUTE = 5  # per login, apart from the link throttle so no one else can lock the owner out
 TAILNET_LOGINS_TRACKED = 256
@@ -61,7 +66,7 @@ class Sessions:
     def __init__(self, state_dir: Path, clock=time.time):
         self.path = state_dir / SIGNIN_FILE
         self.clock = clock
-        self._sessions: dict[str, tuple[float, str]] = {}
+        self._sessions: dict[str, tuple[float, list[str]]] = {}  # digest -> (expiry, binding digests)
         self._failures: list[float] = []
         self._tailnet: dict[str, list[float]] = {}
         self._lock = threading.Lock()
@@ -85,8 +90,9 @@ class Sessions:
                 del self._tailnet[next(iter(self._tailnet))]
             return allowed
 
-    def redeem_code(self, code: str | None) -> tuple[str, str] | None:
-        """Spend a sign-in code; returns a cookie id and an origin binding, or None."""
+    def redeem_code(self, code: str | None, joining: str | None = None) -> tuple[str, str] | None:
+        """Spend a sign-in code; returns a cookie id and an origin binding, or None. With the caller's live cookie id
+        in `joining`, the binding joins that session and the same cookie id comes back."""
         now = self.clock()
         with self._lock, signin_lock(self.path.parent):
             codes = _live_codes(self.path, now)
@@ -98,17 +104,23 @@ class Sessions:
                 return None
             codes.remove(match)
             write_private(self.path, json.dumps(codes) + "\n")
-            return self._start(now)
+            return self._start(now, joining)
 
-    def create(self) -> tuple[str, str]:
-        """A session for a caller proved some other way (a tailnet login the daemon lists as the owner's)."""
+    def create(self, joining: str | None = None) -> tuple[str, str]:
+        """A session for a caller proved some other way (a tailnet login the daemon lists as the owner's); `joining`
+        works as in `redeem_code`."""
         with self._lock:
-            return self._start(self.clock())
+            return self._start(self.clock(), joining)
 
-    def _start(self, now: float) -> tuple[str, str]:
-        session = secrets.token_urlsafe(32)
+    def _start(self, now: float, joining: str | None) -> tuple[str, str]:
         binding = secrets.token_urlsafe(32)
-        self._sessions[_digest(session)] = (now + SESSION_TTL_SECONDS, _digest(binding))
+        record = self._sessions.get(_digest(joining)) if joining else None
+        if record is not None and record[0] > now:
+            record[1].append(_digest(binding))
+            del record[1][:-MAX_BINDINGS]
+            return joining, binding
+        session = secrets.token_urlsafe(32)
+        self._sessions[_digest(session)] = (now + SESSION_TTL_SECONDS, [_digest(binding)])
         return session, binding
 
     def valid(self, session: str | None, binding: str | None = None) -> bool:
@@ -121,7 +133,8 @@ class Sessions:
             if record is None or record[0] <= now:
                 self._sessions.pop(key, None)
                 return False
-            return hmac.compare_digest(record[1], _digest(binding))
+            given = _digest(binding)
+            return any([hmac.compare_digest(known, given) for known in record[1]])  # no early exit
 
     def end(self, session: str | None) -> None:
         if session:

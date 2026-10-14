@@ -88,7 +88,8 @@ AUDIT = {
     "target_kind": "account",
     "action": "create",
     "outcome": "ok",
-    "at": 1700000000,
+    "ts": 1700000000.5,
+    "detail": "added member",
     "metadata": {"fields": ["max_running"], "new_max_running": 1, "credential": "provider-secret-sentinel"},
 }
 SCAN = {

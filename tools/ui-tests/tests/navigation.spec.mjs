@@ -22,7 +22,7 @@ test("the rail groups the sections, shows the daemon chip and banner, and rememb
   const nav = page.getByRole("navigation", { name: "Sections" });
   await expect(page.locator(".topbar")).toBeHidden();
   await expect(nav.getByRole("list", { name: "Access" }).getByRole("link"))
-    .toHaveText([/^Pairing requests/, "Apps", "Marketplace"]);
+    .toHaveText([/^Pairing requests/, "Apps", "Spend", "Marketplace"]);
   await expect(nav.getByRole("list", { name: "Daemon" }).getByRole("link"))
     .toHaveText(["Settings", "Modules", "Accounts and maintenance"]);
   // The pinned daemon (aa5a904) reports Owner API 1.24: live, but below the 1.26 tailnet sign-in needs.

@@ -67,6 +67,7 @@ Sign-in and readiness follow docs/ui-testing.md "Seed and sign-in" and the Journ
 | `signin` | `#signin=<code>` → `#/overview` | a fresh `signin-link`, opened in a new tab | URL becomes `#/overview`, no sign-in card |
 | `overview` | `#/overview` | open | heading "Daemon" |
 | `apps` | `#/apps` | open | heading "Paired apps and keys" |
+| `spend` | `#/spend` | open, sort by App | the Synthetic App row, Cost then App as the sorted column, the backend table, no sideways scroll |
 | `modules` | `#/modules` | open | heading "Installed" (with its count) |
 | `pairing` | `#/pairing` | open | heading "History · last day" (with its count) |
 | `settings` | `#/settings` | Maximum turns +1, Validate, Save, reload; Roll back → Confirm rollback, reload (HUB-04's save and rollback) | "Saved.", the new value after reload, then "Rolled back to revision" and the original value after reload |

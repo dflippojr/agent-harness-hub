@@ -59,6 +59,13 @@ test("banner: bad is an alert, the others are status", () => {
   assert.equal(dom.banner("info", "Plain").children[0].className, "banner-text");
 });
 
+test("every rail section has an icon, and an unknown name is a bug rather than a blank", () => {
+  for (const id of ["overview", "pairing", "apps", "spend", "marketplace", "settings", "modules", "admin"]) {
+    assert.ok(dom.icon(id).children.length > 0, id);
+  }
+  assert.throws(() => dom.icon("no-such-icon"), TypeError);
+});
+
 test("toggle is a checkbox with role=switch and reports changes", () => {
   let seen;
   const row = dom.toggle("Show host commands", { checked: true, onchange: (on) => { seen = on; } });
@@ -69,6 +76,13 @@ test("toggle is a checkbox with role=switch and reports changes", () => {
   input.checked = false;
   input.listeners.get("change")();
   assert.equal(seen, false);
+});
+
+test("toggle can keep its label for screen readers only", () => {
+  const row = dom.toggle("search", { hideLabel: true });
+  assert.equal(row.children[0].className, "visually-hidden");
+  assert.equal(row.children[0].textContent, "search");
+  assert.equal(dom.toggle("search").children[0].className, "switch-label");
 });
 
 test("table builds column heads and rows", () => {

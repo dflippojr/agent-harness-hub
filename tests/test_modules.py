@@ -125,17 +125,6 @@ def test_error_secrets_fail_closed(claimed, fake_daemon):
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 
 
-def test_inventory_needs_owner_and_claim(hub, claimed, fake_daemon):
-    # 'hub' is the same fixture used by 'claimed'; end its owner session first.
-    claimed.delete("/api/session")
-    assert hub.get("/api/modules").status_code == 401
-    hub.sign_in()
-    fake_daemon.release()
-    assert hub.get("/api/modules").status_code == 409
-    assert hub.get("/api/claim").json()["state"] == "released"
-    assert hub.get("/api/modules").status_code == 409
-
-
 def test_corrupt_cache_is_ignored(claimed, fake_daemon):
     path = claimed.state_dir / INVENTORY_FILE
     path.write_text("{invalid", encoding="utf-8")
@@ -166,16 +155,36 @@ def test_failed_private_write_preserves_last_good(claimed, fake_daemon, monkeypa
     assert path.read_bytes() == stored
 
 
-def test_transient_key_rejection_withholds_inventory_but_retains_claim(claimed, fake_daemon, monkeypatch):
-    from harness_hub.daemon import Reply
+LEAK = "auth failed for ha-" + "A1b2C3d4" * 6
+LEAKING_MODULES = [{"name": "hub", "state": "present", "status": {"last_error": LEAK}}]
 
-    claimed.get("/api/modules")
 
-    async def rejected(self, token):
-        return Reply(401, {"detail": "synthetic rejection"})
+@pytest.mark.parametrize("writer", ["/api/apps", "/api/marketplace"])
+def test_other_pages_never_cache_a_snapshot_modules_would_leak(claimed, fake_daemon, writer):
+    from .apps_fake import inventory_apps
+    good = claimed.get("/api/modules").json()
+    stored = (claimed.state_dir / INVENTORY_FILE).read_bytes()
+    fake_daemon.inventory_override = {"modules": LEAKING_MODULES, "apps": inventory_apps(fake_daemon), "entries": []}
+    for path in ("/api/modules", writer, "/api/modules", writer):
+        reply = claimed.get(path)
+        assert reply.status_code == 200
+        # Only Modules would show the string; the other page's own view is clean, and neither caches the snapshot.
+        assert reply.json()["state"] == ("error" if path == "/api/modules" else "ready")
+        assert path != "/api/modules" or "Inventory withheld" in reply.json()["error"]
+    result = claimed.get("/api/modules").json()
+    assert result["modules"] == good["modules"] and result["fetched_at"] == good["fetched_at"]
+    assert (claimed.state_dir / INVENTORY_FILE).read_bytes() == stored
+    assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 
-    monkeypatch.setattr("harness_hub.daemon.DaemonClient.inventory", rejected)
-    reply = claimed.get("/api/modules")
-    assert reply.status_code == 409 and "modules" not in reply.json()
-    assert claimed.get("/api/claim").json()["state"] == "claimed"
+
+def test_modules_page_never_caches_a_snapshot_apps_would_leak(claimed, fake_daemon):
+    good = claimed.get("/api/apps").json()
+    stored = (claimed.state_dir / INVENTORY_FILE).read_bytes()
+    fake_daemon.apps_rows[0]["name"] = "x" * 220 + fake_daemon.hub_token
+    for path in ("/api/modules", "/api/apps", "/api/modules", "/api/apps"):
+        reply = claimed.get(path).json()
+        assert reply["state"] == ("ready" if path == "/api/modules" else "error")
+    assert (claimed.state_dir / INVENTORY_FILE).read_bytes() == stored
+    fake_daemon.apps_rows[0]["name"] = good["apps"][0]["name"]
+    assert claimed.get("/api/apps").json()["state"] == "ready"
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)

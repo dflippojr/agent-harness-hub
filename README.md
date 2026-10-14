@@ -11,7 +11,7 @@ Installing the Hub is optional. Every Hub action is also a `harness` CLI command
 ## Status
 
 The Hub includes the server, first-run claim, sign-in, **Overview**, **Settings**, **Modules**, **Apps**,
-**Pairing requests**, **Marketplace** and **Accounts and maintenance**.
+**Spend**, **Pairing requests**, **Marketplace** and **Accounts and maintenance**.
 
 Settings renders the daemon's complete registry: a category list with a filter, beside one category at a time. Each
 setting is a row with its label, help, key, when a change applies (Live or Restart) and its default; an unset value
@@ -29,6 +29,13 @@ and pushes to its library), member GitHub access, read-only Google sign-in statu
 references remain file paths: the Hub never opens or resolves those files. Installer-only secrets remain hidden
 and read-only. Every action has its daemon CLI equivalent behind a **Host command** button. When the daemon has no `memory_library` module
 (not installed, or switched off), the memory section says so and shows how to enable it instead of an error.
+
+Spend is read-only. It lists every App in one sortable table with its requests, tokens, cost and use of its
+session caps, and flags Apps whose sessions reach 80% of a cap. It also shows each backend's usage today and over
+the last 7 days. Local-model backends show tokens only; their cost is "—", never a notional price. The daemon
+reports only lifetime totals per App, so per-App today, 7-day and 30-day windows and a daily trend wait on
+[agent-harness #686](https://github.com/dflippojr/agent-harness/issues/686). Spend polls once a minute, pauses
+in a hidden tab and writes nothing to disk.
 
 ## Install and run
 
@@ -86,7 +93,9 @@ The link works once, for ten minutes. Its code travels in the URL fragment, whic
 or puts in a Referer; a truncated or mangled link is refused on the page without being sent. The page posts a
 well-formed code once and gets an HttpOnly, SameSite=Strict session cookie for twelve hours.
 The cookie alone cannot authorize requests: a second per-session value is kept in origin-scoped `sessionStorage`
-and sent in `X-Hub-Session`. Each new tab needs its own sign-in link. HTTPS uses a `__Host-hub_session` cookie
+and sent in `X-Hub-Session`. Each new tab needs its own sign-in link; a tab that signs in while the browser's session
+is still live joins it, so the tabs stay signed in together, share the original twelve-hour expiry, and signing
+out in one signs out all of them. HTTPS uses a `__Host-hub_session` cookie
 with `Secure`, `HttpOnly`, `SameSite=Strict` and no Domain attribute.
 Proving you can read the Hub's owner-only state directory is the same proof the daemon uses for local callers.
 

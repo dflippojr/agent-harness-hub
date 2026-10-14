@@ -131,11 +131,12 @@ export function banner(tone, title, detail, action, { lead } = {}) {
 }
 
 // A labelled on/off switch: a real checkbox with role=switch, so keyboards and screen readers treat it as one.
-export function toggle(label, { checked = false, disabled = false, onchange } = {}) {
+// hideLabel keeps the label for screen readers only, where a table column already says what the switch is.
+export function toggle(label, { checked = false, disabled = false, onchange, hideLabel = false } = {}) {
   const input = h("input", { type: "checkbox", role: "switch", disabled });
   input.checked = checked;
   if (onchange) input.addEventListener("change", () => onchange(input.checked));
-  return h("label", { class: "switch" }, h("span", { class: "switch-label" }, label),
+  return h("label", { class: "switch" }, h("span", { class: hideLabel ? "visually-hidden" : "switch-label" }, label),
     h("span", { class: "switch-track" }, input, h("i", { "aria-hidden": "true" })));
 }
 
@@ -176,6 +177,7 @@ const ICONS = {
   overview: [["path", { d: "M4 15a8 8 0 1 1 16 0" }], ["path", { d: "m12 15 4-5" }], ["path", { d: "M4 19h16" }]],
   pairing: [["path", { d: "M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" }], ["path", { d: "M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" }]],
   apps: [4, 14].flatMap((y) => [4, 14].map((x) => ["rect", { x, y, width: 6, height: 6, rx: 1 }])),
+  spend: [["path", { d: "M4 20V4M4 20h16" }], ["path", { d: "M8 16v-4M12 16V8M16 16v-6" }]],
   marketplace: [["path", { d: "M5 8h14l-1 12H6z" }], ["path", { d: "M9 8a3 3 0 0 1 6 0" }]],
   settings: [["path", { d: "M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1" }], ["circle", { cx: 15, cy: 6, r: 2 }],
     ["circle", { cx: 9, cy: 12, r: 2 }], ["circle", { cx: 17, cy: 18, r: 2 }]],

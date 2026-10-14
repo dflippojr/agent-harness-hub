@@ -6,6 +6,7 @@ import { renderModules } from "../harness_hub/static/pages/modules.mjs";
 import { renderOverview } from "../harness_hub/static/pages/overview.mjs";
 import { renderPairing } from "../harness_hub/static/pages/pairing.mjs";
 import { renderSettings } from "../harness_hub/static/pages/settings.mjs";
+import { renderSpend } from "../harness_hub/static/pages/spend.mjs";
 import { deferred, mount, response } from "./page-fake.mjs";
 
 const HOUR = 3600 * 1000;
@@ -20,6 +21,7 @@ const PAGES = [
   ["Settings", renderSettings, ["/api/settings/health"], 5000],
   ["Modules", renderModules, ["/api/modules", "/api/settings/schema", "/api/settings/config"], 30000],
   ["Apps", renderApps, ["/api/apps", "/api/apps/erasures"], 30000],
+  ["Spend", renderSpend, ["/api/spend"], 60000],
   ["Pairing requests", renderPairing, ["/api/pairing"], 5000],
   ["Marketplace", renderMarketplace, ["/api/marketplace"], 5000],
 ];
