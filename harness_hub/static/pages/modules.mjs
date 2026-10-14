@@ -105,8 +105,9 @@ export function renderModules(main) {
     // A poll that finds nothing new leaves the page alone, so a focused switch keeps its focus.
     // Each read stamps a fresh fetched_at, which the page shows only for a stale snapshot.
     const shown = inventory && { ...inventory, fetched_at: inventory.stale ? inventory.fetched_at : null };
+    // busy is part of it: a draw made while a refresh runs has its switches disabled, and the next draw replaces it.
     const key = JSON.stringify([shown, config?.revision, installed.map(({ spec, value, pending, writable }) =>
-      [spec?.key, spec?.apply, spec?.guidance, spec?.label, value, pending, writable])]);
+      [spec?.key, spec?.apply, spec?.guidance, spec?.label, value, pending, writable]), busy]);
     if (key === drawn) return;
     drawn = key;
     revision.textContent = config ? "Settings revision " + config.revision : "";

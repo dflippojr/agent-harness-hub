@@ -80,6 +80,12 @@ test("a switch moved while a refresh is under way goes back and saves nothing", 
   assert.equal(shown.checked, true);
   assert.equal(page.calls.filter((call) => call.method === "PATCH").length, 0);
   pending.resolve(response(inventory));
+  pending = null;
   await refreshed;
-  assert.equal(find(page.main, (el) => el.attrs.get("role") === "switch").checked, true);
+  const after = find(page.main, (el) => el.attrs.get("role") === "switch");
+  assert.equal(after.checked, true);
+  // The refresh found nothing new, yet the switches drawn while it ran (disabled) are replaced by enabled ones.
+  assert.equal(after.attrs.has("disabled"), false);
+  await page.advance(30000);
+  assert.equal(find(page.main, (el) => el.attrs.get("role") === "switch").attrs.has("disabled"), false);
 });
