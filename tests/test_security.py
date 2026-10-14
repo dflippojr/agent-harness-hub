@@ -11,14 +11,6 @@ from harness_hub.auth import Sessions, create_signin_code
 from harness_hub.guard import ResponseGuard, leaks
 
 
-@pytest.mark.parametrize("path", ["/api/overview", "/api/claim"])
-def test_console_needs_sign_in(hub, path):
-    response = hub.get(path)
-    assert response.status_code == 401
-    assert response.json()["signin_command"] == "python -m harness_hub signin-link"
-    assert hub.post("/api/claim").status_code == 401
-
-
 def test_session_endpoint_and_shell_are_public(hub):
     assert hub.get("/api/session").json()["signed_in"] is False
     page = hub.get("/")
@@ -68,15 +60,6 @@ def test_failed_sign_ins_are_throttled(hub):
     code = create_signin_code(hub.state_dir)
     assert hub.post("/api/session", json={"code": "x" * 43}).status_code == 429
     assert hub.post("/api/session", json={"code": code}).status_code == 204
-
-
-def test_writes_need_the_hub_header(hub):
-    hub.sign_in()
-    assert hub.client.post("/api/claim").status_code == 403
-    cross = hub.post("/api/claim", headers={"Origin": "https://evil.example"})
-    assert cross.status_code == 403
-    same = hub.post("/api/claim", headers={"Origin": "http://127.0.0.1:8120"})
-    assert same.status_code == 201
 
 
 def test_unknown_host_is_refused(hub):

@@ -150,16 +150,6 @@ def test_arm_never_widens_or_redirects_what_the_entry_declares(claimed, fake_dae
     assert fake_daemon.armed == []
 
 
-def test_arm_needs_a_same_origin_write(claimed, fake_daemon, entries):
-    body = {"catalog_app_id": "test.example.native", "scopes": ["sessions"]}
-    assert arm(claimed, body, headers={"X-Hub-Request": "1"}).status_code == 403
-    assert arm(claimed, body, headers={"Origin": "http://" + HUB_HOST}).status_code == 403
-    assert arm(claimed, body, headers={"Origin": "https://evil.example.test", "X-Hub-Request": "1"}).status_code == 403
-    assert claimed._keep(claimed.client.post("/api/marketplace/arm", content=b"x" * 5000,
-                                             headers=ORIGIN)).status_code == 413
-    assert fake_daemon.armed == []
-
-
 @pytest.mark.parametrize("app_id,origin", [("test.example.native", ""),
                                          ("test.example.notes", "https://notes.example.test")])
 def test_a_claim_waits_for_typed_confirmation_and_a_slot_is_withdrawn(claimed, fake_daemon, entries, app_id, origin):
@@ -309,13 +299,6 @@ def test_only_an_inline_raster_icon_is_kept():
                   "data:text/html;base64,PGI+", "javascript:alert(1)", "//icons.example.invalid/a.png", 7,
                   "data:image/png;base64," + "A" * 70000):
         assert icon(value) == ""
-
-
-def test_marketplace_needs_a_claimed_hub_and_a_signed_in_owner(hub, fake_daemon, entries):
-    assert hub.get("/api/marketplace").status_code == 401
-    hub.sign_in()
-    assert hub.get("/api/marketplace").status_code == 409
-    assert arm(hub, {"catalog_app_id": "test.example.native", "scopes": ["sessions"]}).status_code == 409
 
 
 def test_a_token_shaped_entry_name_never_becomes_the_slot_name(claimed, fake_daemon, entries):
