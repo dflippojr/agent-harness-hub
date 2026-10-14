@@ -330,7 +330,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     # Share observations across pages/tabs; record successful Hub confirmations under the same lock as polls.
     browser_slot_states: dict[tuple[str, str], tuple[str, bool]] = {}
 
-    def observe_browser_slots(rows: list, key_id: str, *, confirmed_id: str = "") -> str:
+    def observe_browser_slots(rows: list, key_id: str, *, confirmed_id: str = "") -> bool:
+        """Whether an observed browser claim looks like it skipped confirmation; `skipped_confirmation` rules on it."""
         warning = False
         for raw in rows:
             row = pairing_request_view(raw)
@@ -344,7 +345,27 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 browser_slot_states.pop(next(iter(browser_slot_states)))
             browser_slot_states[identity] = (row["state"], bypassed)
             warning = warning or bypassed
-        return "This daemon approved the claim without confirmation; update the daemon." if warning else ""
+        return warning
+
+    async def skipped_confirmation(key: dict, suspected: bool) -> str:
+        """The warning for a suspected bypass, only from a daemon that does not enforce confirmation.
+
+        Owner API 1.24 and later enforce typed-code confirmation, so from them an `armed` slot that turned `approved`
+        between listings was confirmed outside the Hub (the host CLI, another Hub process, a Hub restart): no warning,
+        and the stale suspicion is dropped. A daemon whose version is old or cannot be read keeps it."""
+        if not suspected:
+            return ""
+        try:
+            reply = await daemon.admin(key["token"])
+        except DaemonUnreachable:
+            reply = None
+        if reply is not None and reply.ok and ownership_view(
+                reply.body, {}, "")["compatibility"] in ("supported", "no_tailnet_signin"):
+            for identity, (state, _) in list(browser_slot_states.items()):
+                if identity[0] == key["key_id"]:
+                    browser_slot_states[identity] = (state, False)
+            return ""
+        return "This daemon approved the claim without confirmation; update the daemon."
 
     async def retained(token: str) -> str:
         """The daemon answered 401: drop the key only if a second read confirms it, else say it was kept.
@@ -509,13 +530,13 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return _error(409, "Claim this Hub on Overview before reading the Marketplace.")
         secrets = tuple(store.secrets())
 
-        async def read_slots() -> tuple[Any, str]:
+        async def read_slots() -> tuple[Any, bool]:
             # Only the pairing read and what it observes hold the consent lock; the inventory read never waits on it.
             async with pairing_consent_lock:
                 reply = await daemon.pairing(key["token"], "list")
                 if reply.ok and isinstance(reply.body, list):
                     return reply, observe_browser_slots(reply.body, key["key_id"])
-                return reply, ""
+                return reply, False
 
         # Both reads run together, but a refusal from the inventory read returns at once: the slots read can wait on
         # the consent lock for as long as another tab's arm request holds it, so it is cancelled, not awaited.
@@ -535,11 +556,12 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         entries, withheld = entries_view(good["inventory"], secrets) if good else (None, 0)
         slots, slots_error, confirmation_warning = {}, "", ""
         try:
-            reply, confirmation_warning = settled(slots_read)
+            reply, suspected = settled(slots_read)
             if reply.status == 401:
                 return await refused(key["token"])
             if reply.ok and isinstance(reply.body, list):
                 slots = marketplace_slots(reply.body, secrets)
+                confirmation_warning = await skipped_confirmation(key, suspected)
             else:
                 slots_error = f"Armed slots could not be read (HTTP {reply.status})."
         except DaemonUnreachable:
@@ -805,7 +827,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 if acknowledged:
                     body["acknowledge_elevated"] = True
         try:
-            reply = None
+            reply, suspected = None, False
             if operation == "approve" and "acknowledge_elevated" not in body:
                 # Never send an approval for elevated scopes without the owner's separate acknowledgement.
                 reply = await daemon.pairing(key["token"], "list")
@@ -823,7 +845,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     reply = await daemon.pairing(key["token"], operation, rid, body)
                     if reply.ok:
                         if operation == "list" and isinstance(reply.body, list):
-                            confirmation_warning = observe_browser_slots(reply.body, key["key_id"])
+                            suspected = observe_browser_slots(reply.body, key["key_id"])
                         elif operation == "confirm":
                             observe_browser_slots([reply.body], key["key_id"], confirmed_id=rid)
             if reply.status == 401:
@@ -835,7 +857,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         if operation == "list":
             if not isinstance(reply.body, list):
                 return _error(502, "The daemon returned invalid pairing requests.")
-            return {**pairing_view(reply.body, tuple(store.secrets())), "confirmation_warning": confirmation_warning}
+            return {**pairing_view(reply.body, tuple(store.secrets())),
+                    "confirmation_warning": await skipped_confirmation(key, suspected)}
         return pairing_request_view(reply.body, tuple(store.secrets()))
 
     @app.get("/api/manage/catalog")
