@@ -75,7 +75,7 @@ test("entries show their state, the not-verified label and native keys; nothing 
   await expect(card(page, "test.example.ops").locator('[data-field="pending"]')).toHaveText("Pending");
   await expect(card(page, "test.example.ops")).toContainText("The requester chose that id; it is not verified.");
   for (const id of ["test.example.notes", "test.example.native", "test.example.ops"]) {
-    await expect(card(page, id).getByText("Local entry, not verified", { exact: true })).toBeVisible();
+    await expect(card(page, id).getByText("Local · not verified", { exact: true })).toBeVisible();
   }
   const native = card(page, "test.example.native").locator('[data-field="unverified"]');
   await expect(native).toContainText("Native keys and requests (origin not verified)");
@@ -99,7 +99,7 @@ test("Set up opens the consent screen and nothing is armed until Approve; then t
   await expect(consent.getByRole("heading", { name: "Set up Synthetic native (test.example.native)?" })).toBeVisible();
   await expect(consent.locator('[data-scope="sessions"] .disclosure-text')).toHaveText(SESSIONS.text);
   await expect(consent).toContainText("Publisher's reason (not verified): " + SESSIONS.justification);
-  await expect(consent).toContainText("Native app: when it claims the slot");
+  await expect(consent).toContainText("Native app. When it claims the slot, you confirm it here or on Pairing requests");
   await expect(consent.getByText("harness pairing-requests arm test.example.native --scopes sessions", { exact: true })).toBeVisible();
   await consent.getByRole("button", { name: "Cancel" }).click();
   await expect(consent).toHaveCount(0);
@@ -121,6 +121,65 @@ test("Set up opens the consent screen and nothing is armed until Approve; then t
   expect(errors).toEqual([]);
 });
 
+test("the consent opens inside the entry's card and keeps its choices and focus across a poll (Hub design 10)", async ({ page }) => {
+  await page.clock.install({ time: NOW * 1000 });
+  const ops = entry("test.example.ops", { scopes: [SESSIONS, HOMELAB], elevated: ["homelab"],
+    browser_origins: ["https://ops.example.test", "https://ops2.example.test"] });
+  const { writes, errors } = await mount(page, view([ops, entry("test.example.native")]));
+  // A calm info line, not a warn box; the entries under an uppercase header with their count; Troubleshooting last.
+  await expect(page.locator(".banner.info")).toContainText("Being listed here grants nothing.");
+  await expect(page.locator("main .notice.warn")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Entries 2" })).toBeVisible();
+  expect(await page.locator("main > *").last().evaluate(el => el.matches("details.pairing-recovery"))).toBe(true);
+  await expect(card(page, "test.example.ops").getByText("homelab · elevated", { exact: true })).toBeVisible();
+
+  await card(page, "test.example.ops").getByRole("button", { name: "Set up Synthetic ops" }).click();
+  const consent = card(page, "test.example.ops").getByRole("region", { name: "Set up Synthetic ops (test.example.ops)?" });
+  await expect(consent).toBeVisible();
+  await expect(consent.getByRole("heading", { level: 3 })).toBeFocused();
+  await expect(page.locator(".market-consent")).toHaveCount(1);
+  await expect(card(page, "test.example.ops").getByRole("button", { name: /^Set up/ })).toHaveCount(0);
+  await expect(card(page, "test.example.native").getByRole("button", { name: "Set up Synthetic native" })).toBeVisible();
+  await consent.getByRole("radio", { name: "https://ops2.example.test" }).check();
+  await consent.getByRole("checkbox").check();
+
+  await page.route("http://hub.test/api/marketplace", route => route.fulfill({ json: view([ops,
+    entry("test.example.native"), entry("test.example.new")]) }));
+  await page.clock.runFor(5500);
+  await expect(card(page, "test.example.new")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Entries 3" })).toBeVisible();
+  await expect(consent.getByRole("radio", { name: "https://ops2.example.test" })).toBeChecked();
+  await expect(consent.getByRole("checkbox")).toBeChecked();
+  await expect(consent.getByRole("checkbox")).toBeFocused();
+  await expect(consent.getByRole("button", { name: "Approve" })).toBeEnabled();
+
+  await consent.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.locator(".market-consent")).toHaveCount(0);
+  await expect(card(page, "test.example.ops").getByRole("button", { name: "Set up Synthetic ops" })).toBeFocused();
+  expect(writes).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test("a slot shows Pairing's countdown chip, and Withdraw asks inside its own slot", async ({ page }) => {
+  await page.clock.install({ time: NOW * 1000 });
+  const { writes, errors } = await mount(page, view([entry("test.example.native", { slots: [slot("pr-armed")] })]));
+  const box = card(page, "test.example.native").locator('[data-slot="pr-armed"]');
+  await expect(box.getByText("Waiting for the app", { exact: true })).toBeVisible();
+  await expect(box.locator(".countdown")).toHaveText(/^[89]:\d\d left$/);
+  const before = await box.locator(".countdown").textContent();
+  await page.clock.runFor(2000);
+  await expect(box.locator(".countdown")).not.toHaveText(before);
+  await box.getByRole("button", { name: "Withdraw slot for Synthetic native" }).click();
+  const ask = box.getByRole("alert");
+  await expect(ask.getByRole("heading", { name: "Withdraw the slot for Synthetic native?" })).toBeVisible();
+  await expect(ask.getByRole("button", { name: "Confirm withdraw" })).toBeFocused();
+  await ask.getByRole("button", { name: "Cancel" }).click();
+  await expect(box.getByRole("alert")).toHaveCount(0);
+  await expect(box.getByRole("button", { name: "Withdraw slot for Synthetic native" })).toBeFocused();
+  expect(writes).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
 test("elevated scopes need the acknowledgement and a browser app needs its exact origin chosen", async ({ page }) => {
   const ops = entry("test.example.ops", { scopes: [SESSIONS, HOMELAB], elevated: ["homelab"],
     browser_origins: ["https://ops.example.test", "https://ops2.example.test"] });
@@ -130,7 +189,7 @@ test("elevated scopes need the acknowledgement and a browser app needs its exact
   await card(page, "test.example.ops").getByRole("button", { name: /^Set up/ }).click();
   const consent = page.locator(".market-consent");
   await expect(consent).toContainText("Claims and redemption must use the chosen exact origin");
-  await expect(consent.locator('[data-scope="homelab"] .pill')).toHaveText("elevated");
+  await expect(consent.locator('[data-scope="homelab"] .pill')).toHaveText("Elevated");
   await expect(consent.locator('[data-scope="homelab"] .disclosure-text'))
     .toHaveText("This app's tasks can read your homelab services' logs.");
   await expect(consent.locator('[data-scope="homelab"] .disclosure-text strong')).toHaveText("read your homelab services' logs");
@@ -312,7 +371,7 @@ test("disclosure drift reopens daemon consent and sends its digest only after a 
   await page.locator(".market-consent").getByRole("button", { name: "Approve" }).click();
   const consent = page.locator(".market-consent");
   await expect(consent.locator(".disclosure-text")).toHaveText(daemon.scopes[0].text);
-  await expect(consent.getByRole("heading", { level: 2 })).toContainText(original.catalog_app_id);
+  await expect(consent.getByRole("heading", { level: 3 })).toContainText(original.catalog_app_id);
   await expect(page.locator(".market-handoff")).toHaveCount(0);
   await expect(consent.getByRole("checkbox")).not.toBeChecked();
   await expect(consent.getByRole("button", { name: "Approve" })).toBeDisabled();
