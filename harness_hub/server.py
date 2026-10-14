@@ -29,11 +29,12 @@ from .auth import SESSION_TTL_SECONDS, Sessions
 from .claim import CLAIMED, ClaimError, ClaimManager
 from .config import Settings
 from .daemon import ADMIN_ROUTES, DaemonClient, DaemonUnreachable
-from .guard import ResponseGuard, leaks
+from .guard import TOKEN_SHAPE, ResponseGuard, leaks
 from .inventory import InventoryCache, valid_inventory
 from .state import SERVER_FILE, StateStore, write_private
 from .tailnet import PeerCheck, TailnetIdentity, login
 from .views import (
+    REDACTED,
     administration_view,
     app_view,
     apps_view,
@@ -197,10 +198,12 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     @app.get("/api/session")
     async def get_session(request: Request):
         # `tailnet_login` is the caller's own identity, present only when tailscaled added it (tailnet.py). Whether
-        # it is the owner's is decided at sign-in, against the daemon's list.
+        # it is the owner's is decided at sign-in, against the daemon's list. A token-shaped login is redacted here, so
+        # the response guard never withholds this route: the page reads it first on every load.
+        caller = TOKEN_SHAPE.sub(REDACTED, login(request.headers))
         return {"signed_in": sessions.valid(request.cookies.get(settings.cookie_name),
                                             request.headers.get(SESSION_HEADER)), "signin_command": SIGNIN_COMMAND,
-                "tailnet_login": login(request.headers) or None, "version": __version__}
+                "tailnet_login": caller or None, "version": __version__}
 
     owner_logins: dict[str, Any] = {}  # the daemon's allowed_logins, kept briefly: {"until": ..., "logins": [...]}
 

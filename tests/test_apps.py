@@ -139,9 +139,12 @@ def test_bad_body_route_and_daemon_errors_fail_closed(claimed, fake_daemon):
     fake_daemon.down = True
     assert write(claimed, "DELETE", "k-minute/revoke", {"confirm": True}).status_code == 503
     fake_daemon.down = False
-    for secret in (fake_daemon.hub_token, "ha-synthetic-secret", "hp-synthetic-secret"):
+    for secret in (fake_daemon.hub_token, "ha-" + "synthetic-secret" * 3, "hp-" + "synthetic-secret" * 2):
         fake_daemon.apps_error = (409, {"detail": secret})
         assert claimed.get("/api/apps/erasures").status_code == 500
+    fake_daemon.apps_error = (409, {"detail": "key ha-synthetic-secret is busy"})
+    refused = claimed.get("/api/apps/erasures")
+    assert refused.status_code == 409 and refused.json()["detail"] == "key [withheld: token-shaped] is busy"
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 
 

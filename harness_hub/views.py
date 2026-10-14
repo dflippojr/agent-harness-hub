@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from . import __version__
 from .administration import TARGET
 from .claim import CLAIMED, PENDING, RELEASE_COMMAND, ClaimManager
-from .guard import TOKEN_SHAPE
+from .guard import KEY_PREFIX_SHAPE, TOKEN_SHAPE
 
 MESSAGES = {
     "unclaimed": "This Hub has not claimed the daemon yet.",
@@ -35,6 +35,19 @@ MESSAGES = {
 
 def _str(value: Any, limit: int = 200) -> str:
     return value[:limit] if isinstance(value, str) else ""
+
+
+REDACTED = "[withheld: token-shaped]"
+
+
+def _prefix(match: re.Match) -> str:
+    # A full token is left in place: the response guard must withhold the entire view, not hide a daemon leak.
+    return match[0] if TOKEN_SHAPE.match(match[0]) else REDACTED
+
+
+def _text(value: Any, limit: int = 200) -> str:
+    """Daemon diagnostic text, which can echo a key's display prefix: each token-shaped word is redacted in place."""
+    return KEY_PREFIX_SHAPE.sub(_prefix, value)[:limit] if isinstance(value, str) else ""
 
 
 def _bool(value: Any) -> bool | None:
@@ -173,7 +186,7 @@ def setting_value(value: Any) -> Any:
 def field_errors(value: Any) -> dict:
     if not isinstance(value, dict):
         return {}
-    return {key: {"code": _str(row.get("code"), 64), "message": _str(row.get("message"), 2000)}
+    return {key: {"code": _str(row.get("code"), 64), "message": _text(row.get("message"), 2000)}
             for key, row in value.items() if isinstance(key, str) and isinstance(row, dict)}
 
 
@@ -181,11 +194,11 @@ def settings_error(body: Any, status: int) -> dict:
     body = body if isinstance(body, dict) else {}
     error = body.get("error") if isinstance(body.get("error"), dict) else {}
     details = error.get("details") if isinstance(error.get("details"), dict) else {}
-    return {"detail": _str(body.get("detail"), 2000) or f"The daemon answered HTTP {status}",
+    return {"detail": _text(body.get("detail"), 2000) or f"The daemon answered HTTP {status}",
             "error": {"code": _str(error.get("code"), 64), "keys": field_errors(error.get("keys")),
                       "details": {"expected_revision": _num(details.get("expected_revision")),
                                   "current_revision": _num(details.get("current_revision")),
-                                  "manual": _str(details.get("manual"), 1000)}}}
+                                  "manual": _text(details.get("manual"), 1000)}}}
 
 
 def registry_entry(body: Any) -> dict:
@@ -213,7 +226,7 @@ def registry_view(body: Any) -> dict:
            ("confirmed", "supervised_restart", "restart_required", "accepted")},
         "status": _str(body.get("status"), 64),
         "recovery": recovery_view(body.get("recovery")),
-        "warning": _str(body.get("warning"), 2000),
+        "warning": _text(body.get("warning"), 2000),
         "settings": [registry_entry(row) for row in rows],
         "changes": [{"key": _str(row.get("key"), 200), "from": setting_value(row.get("from")),
                      "to": setting_value(row.get("to")), "apply": _str(row.get("apply"), 32),
@@ -225,14 +238,15 @@ def registry_view(body: Any) -> dict:
 def recovery_view(value: Any) -> dict | None:
     if not isinstance(value, dict):
         return {"recovery": _str(value, 64)} if isinstance(value, str) and value else None
-    return {"recovery": _str(value.get("recovery"), 64), "reason": _str(value.get("reason"), 2000),
-            "warning": _str(value.get("warning"), 2000), "at": _num(value.get("at"))}
+    return {"recovery": _str(value.get("recovery"), 64), "reason": _text(value.get("reason"), 2000),
+            "warning": _text(value.get("warning"), 2000), "at": _num(value.get("at"))}
 
 
 def preflight_view(value: Any) -> dict | None:
     if not isinstance(value, dict):
         return None
-    return {"ok": _bool(value.get("ok")), "problems": _names(value.get("problems")),
+    problems = value.get("problems") if isinstance(value.get("problems"), list) else []
+    return {"ok": _bool(value.get("ok")), "problems": [_text(v, 64) for v in problems[:32] if isinstance(v, str)],
             "checked_at": _num(value.get("checked_at"))}
 
 
@@ -259,7 +273,7 @@ def control_view(operation: str, body: Any, installed: bool = True) -> Any:
     body = body if isinstance(body, dict) else {}
     if operation in ("smart", "smart_save"):
         return {"mode": _str(body.get("mode"), 32), "enabled": _bool(body.get("enabled")),
-                "configured": _bool(body.get("configured")), "secret_ref": _str(body.get("secret_ref"), 4000)}
+                "configured": _bool(body.get("configured")), "secret_ref": _text(body.get("secret_ref"), 4000)}
     if operation in ("memory", "memory_save"):
         commit = body.get("last_commit") if isinstance(body.get("last_commit"), dict) else {}
         return {"installed": installed, "enabled": _bool(body.get("enabled")),
@@ -268,7 +282,7 @@ def control_view(operation: str, body: Any, installed: bool = True) -> Any:
                 "last_commit": {"head": _str(commit.get("head"), 64), "path": _str(commit.get("path"), 4000),
                                 "summary": _str(commit.get("summary"), 200), "at": _num(commit.get("at")),
                                 "pushed": _bool(commit.get("pushed"))},
-                "refresh_error": _str(body.get("refresh_error"), 2000)}
+                "refresh_error": _text(body.get("refresh_error"), 2000)}
     if operation in ("github", "github_save"):
         return {"enabled": _bool(body.get("enabled")), "configured": _bool(body.get("configured")),
                 "preflight": preflight_view(body.get("preflight"))}
@@ -291,7 +305,7 @@ def module_view(body: Any) -> list[dict]:
                 if not isinstance(key, str) or len(key) > 200:
                     continue
                 if isinstance(value, str):
-                    fields[key] = _str(value, 200)
+                    fields[key] = _text(value, 200)
                 elif value is None or type(value) is bool or type(value) is int and value.bit_length() <= 64 or (
                         type(value) is float and math.isfinite(value)):
                     fields[key] = value
@@ -322,8 +336,8 @@ def _app_text(value: Any, limit: int = 200, secrets: tuple[str, ...] = ()) -> st
         for secret in secrets:
             if secret and secret in value:
                 return secret  # The response guard must withhold the entire view.
-        if TOKEN_SHAPE.search(value):
-            return "[withheld: token-shaped]"
+        if KEY_PREFIX_SHAPE.search(value):
+            return REDACTED
     return _str(value, limit)
 
 
