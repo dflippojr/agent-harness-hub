@@ -48,10 +48,9 @@ export function noteRead(path, status, data, started = ++reads) {
   } else if (path === "overview" && body) {
     if (newer("overview", started)) overview = body;
     if (body.reachable && newer("lastGood", started)) lastGood = body;
-    if (newer("reach", started)) {
-      silent = !body.reachable;
-      ownerError = body.reachable ? body.error || "" : "";
-    }
+    if (newer("reach", started)) silent = !body.reachable;
+    // Owner API evidence has its own order: a health poll says nothing about the owner API, so it cannot hide this.
+    if (newer("owner", started)) ownerError = body.reachable ? body.error || "" : "";
     if (newer("restart", started)) restarting = body.restarting === true;
     if (body.reachable) health(body.health, started);
     if (body.attention !== undefined && newer("attention", started)) attention = body.attention;
@@ -64,16 +63,12 @@ export function noteRead(path, status, data, started = ++reads) {
       if (body.reachable) health(body.health, started);
     }
   } else if (INVENTORY.has(path) && body) {
-    if (typeof body.reachable === "boolean" && newer("reach", started)) {
-      silent = !body.reachable;
-      // Only an inventory the daemon served ("ready") shows its owner API answering; an HTTP error from it does not.
-      if (body.state === "ready") ownerError = "";
-    }
+    if (typeof body.reachable === "boolean" && newer("reach", started)) silent = !body.reachable;
+    // Only an inventory the daemon served ("ready") shows its owner API answering; an HTTP error from it does not.
+    if (body.state === "ready" && newer("owner", started)) ownerError = "";
   } else if (ok && daemonAnswered(path)) {
-    if (newer("reach", started)) {
-      silent = false;
-      ownerError = "";
-    }
+    if (newer("reach", started)) silent = false;
+    if (newer("owner", started)) ownerError = "";
   }
   if (body && path === "pairing" && Array.isArray(body.requests) && newer("attention", started)) {
     attention = pairingAttention(body);

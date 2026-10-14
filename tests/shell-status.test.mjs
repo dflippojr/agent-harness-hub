@@ -257,3 +257,16 @@ test("an inventory error from the daemon leaves an owner API failure standing; a
   noteRead("modules", 200, { state: "ready", stale: false, reachable: true });
   assert.equal(daemonBanner(), null);
 });
+
+test("a newer health poll cannot hide an older Overview's owner API failure; a newer owner API read can", () => {
+  resetStatus();
+  noteRead("overview", 200, answer(), 1);
+  // Overview's request started at 2; the Settings health poll started at 3 and answered first.
+  noteRead("settings/health", 200, { reachable: true, restarting: false, health: { ok: true } }, 3);
+  noteRead("overview", 200, answer({ error: "the owner API answered HTTP 500", ownership: null }), 2);
+  assert.equal(daemonBanner().title, "The daemon answered, but its owner API did not.");
+  noteRead("settings/config", 200, { revision: 1, pending_revision: null, restart_required: false }, 4);
+  assert.equal(daemonBanner(), null);
+  noteRead("overview", 200, answer({ error: "the owner API answered HTTP 500", ownership: null }), 2);
+  assert.equal(daemonBanner(), null);
+});
