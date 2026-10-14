@@ -24,18 +24,36 @@ export function noteRead(path, status, data) {
       if (data.reachable) {
         lastGood = data;
         failures.clear();
+        settle(data.health);
       }
       if (data.attention !== undefined) attention = data.attention;
     } else if (path === "pairing" && Array.isArray(data.requests)) {
       attention = pairingAttention(data);
     } else if (path === "settings/config") {
       config = data;
-    } else if (path === "settings/health" && data.reachable === false) {
-      // Settings polls health while a restart runs; the Hub answers 200 even when the daemon does not.
-      failures.add(path);
+    } else if (path === "settings/health") {
+      // Settings polls health around a restart; the Hub answers 200 even when the daemon does not. A newer poll
+      // overrides what Overview last said about reachability and the restart.
+      if (data.reachable === false) failures.add(path);
+      else if (data.reachable === true) {
+        failures.clear();
+        if (overview && !overview.reachable) overview = { ...overview, reachable: true, error: "" };
+        settle(data.health);
+      }
+      if (overview && typeof data.restarting === "boolean") overview = { ...overview, restarting: data.restarting };
     }
   }
   for (const listener of listeners) listener();
+}
+
+// A daemon that reports a confirmed revision at or past the saved (pending) one needs no restart for it, whatever the last
+// Settings read said.
+function settle(health) {
+  if (!config || !config.restart_required || !health || health.config_confirmed !== true) return;
+  const saved = config.pending_revision;
+  if (typeof health.config_revision === "number" && typeof saved === "number" && health.config_revision >= saved) {
+    config = { ...config, restart_required: false, revision: health.config_revision, pending_revision: null };
+  }
 }
 
 export function subscribe(listener) {

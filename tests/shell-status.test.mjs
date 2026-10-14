@@ -105,3 +105,27 @@ test("an owner API failure behind a healthy /health is a bad banner, not silence
   assert.deepEqual(daemonBanner(), { tone: "bad", title: "The daemon answered, but its owner API did not.",
     detail: "The owner API answered HTTP 500. Overview shows what the Hub last read." });
 });
+
+test("a reachable Settings health poll supersedes Overview's outage and restart", () => {
+  resetStatus();
+  noteRead("overview", 200, answer({ reachable: false, restarting: true, error: "the daemon did not answer", ownership: null }));
+  assert.equal(daemonBanner().tone, "bad");
+  noteRead("settings/health", 200, { reachable: true, restarting: true, health: { ok: true } });
+  assert.equal(daemonBanner().title, "The daemon is restarting.");
+  noteRead("settings/health", 200, { reachable: true, restarting: false, health: { ok: true } });
+  assert.equal(daemonBanner(), null);
+});
+
+test("restart needed clears once the daemon confirms the saved revision", () => {
+  resetStatus();
+  noteRead("settings/config", 200, { revision: 1, pending_revision: 2, restart_required: true });
+  noteRead("overview", 200, answer({ health: { config_revision: 1, config_confirmed: true } }));
+  assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
+  noteRead("overview", 200, answer({ health: { config_revision: 2, config_confirmed: false } }));
+  assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
+  noteRead("overview", 200, answer({ health: { config_revision: 2, config_confirmed: true } }));
+  assert.equal(daemonBanner(), null);
+  noteRead("settings/config", 200, { revision: 2, pending_revision: 3, restart_required: true });
+  noteRead("settings/health", 200, { reachable: true, restarting: false, health: { config_revision: 3, config_confirmed: true } });
+  assert.equal(daemonBanner(), null);
+});
