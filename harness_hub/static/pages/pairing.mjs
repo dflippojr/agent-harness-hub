@@ -160,13 +160,15 @@ export function renderPairing(main) {
   }
   function about(row) {
     const owned = row.kind === "app" && row.armed;
-    const rows = owned ? [["Slot", h("span", { class: "mono" }, row.id)], ["Bound to", `${source(row)} (set by you)`],
-      ["Scopes", row.disclosures.length ? h("span", { class: "chips" }, row.disclosures.map((item) =>
-        h("span", { class: "scope-chip" }, tier(item), " ", item.scope))) : row.scopes.join(", ") || "None"]] :
+    // Every requested scope, whether or not the daemon described it: the owner approves the whole list.
+    const scopes = ["Scopes", row.scopes.length ? h("span", { class: "chips" }, row.scopes.map((scope) =>
+      h("span", { class: "scope-chip" },
+        tier({ tier: row.elevated.includes(scope) ? "elevated" : "standard" }), " ", scope))) : "None"];
+    const rows = owned ? [["Slot", h("span", { class: "mono" }, row.id)], ["Bound to", `${source(row)} (set by you)`], scopes] :
       [["Request", h("span", { class: "mono" }, row.id)],
         ["From", row.kind === "hub" ? "Hub claim" : source(row)],
         row.kind === "app" ? ["Started from", `The app · ${stamp(row.created_at)}`] : ["Created", stamp(row.created_at)],
-        ...(row.disclosures.length ? [] : [["Scopes", row.scopes.join(", ") || "None"]])];
+        scopes];
     if (row.key_id) rows.push(["Key id", h("span", { class: "mono" }, row.key_id)]);
     return h("div", { class: "decision-about" }, h("p", { class: "caveat" }, caveat(row)), facts(rows),
       !owned && row.disclosures.length ? [h("h4", { class: "card-sub" }, "What each scope allows"),

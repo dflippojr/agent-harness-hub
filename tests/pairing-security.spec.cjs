@@ -430,3 +430,15 @@ test("with no requests the page says how one appears", async ({ page }) => {
   await expect(page.locator(".pairing-group")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+for (const [state, needs, armed] of [["pending", "approve", false], ["claimed", "confirm", true]]) {
+  test(`a ${state} card lists every requested scope, also one the daemon did not describe`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const { errors } = await mount(page, [request("pr-s", { state, needs, armed, scopes: ["sessions", "images"],
+      disclosures: [{ scope: "sessions", tier: "standard", text: "This app can start agent tasks." }] })]);
+    const scopes = card(page, "pr-s").locator("dt").filter({ hasText: /^Scopes$/ }).locator("+ dd");
+    await expect(scopes).toBeVisible();
+    await expect(scopes.locator(".scope-chip")).toHaveText(["Standard sessions", "Standard images"]);
+    expect(errors).toEqual([]);
+  });
+}
