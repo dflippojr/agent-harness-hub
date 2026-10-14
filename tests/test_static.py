@@ -126,6 +126,8 @@ def test_rail_groups_and_footer():
     for marker in ('id="daemon-chip"', 'role="status"', 'id="host-commands"', 'role="switch"', 'id="signout-button"'):
         assert marker in nav, marker
     assert "signout" not in html[html.index('<header class="topbar">'):html.index("</header>")]
+    # Hub design 3 (#70) shows the switch once host commands follow it.
+    assert 'class="switch host-commands" hidden' in nav
     css = text(STATIC / "style.css")
     assert "body:not(.signed-out) .topbar { display: none; }" in css
 

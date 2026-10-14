@@ -137,10 +137,12 @@ test("any page's read that only the daemon could answer clears an older 503 from
   assert.deepEqual(daemonChip(), { tone: "bad", text: "Daemon not answering" });
   noteRead("pairing", 200, { requests: [], now: 1 });
   assert.deepEqual(daemonChip(), { tone: "ok", text: "Daemon live · API 1.27" });
-  // A cached Modules or Marketplace answer proves nothing about the daemon.
+  // A cached inventory or the Hub's own Accounts catalog proves nothing about the daemon.
   noteRead("apps/erasures", 503, null);
-  noteRead("modules", 200, { state: "stale" });
+  for (const path of ["modules", "apps", "marketplace", "manage/catalog"]) noteRead(path, 200, { state: "stale" });
   assert.equal(daemonChip().tone, "bad");
+  noteRead("manage/skills", 200, []);
+  assert.equal(daemonChip().tone, "ok");
 });
 
 test("a reply to an older request cannot overwrite newer evidence", () => {

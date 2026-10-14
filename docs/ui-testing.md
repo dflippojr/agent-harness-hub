@@ -158,8 +158,8 @@ theme case when they run one at a time, apart from the pairing request limit abo
 - **Breakpoints.** Below 900 px the navigation is a drawer opened by the **Sections** button (`#menu-button`,
   `aria-expanded`) over a dimmed backdrop. From 900 px it is a fixed left rail and there is no top bar. The rail
   groups the sections (Overview; Access: Pairing requests, Apps, Marketplace; Daemon: Settings, Modules, Accounts and
-  maintenance), and its footer holds the daemon chip (`role=status`), the **Show host commands** switch (remembered
-  per browser in `localStorage`) and **Sign out**; on a phone, open the drawer to reach them. The banner slot
+  maintenance), and its footer holds the daemon chip (`role=status`), **Sign out** (the **Show host commands** switch
+  there stays hidden until Hub design 3, #70); on a phone, open the drawer to reach them. The banner slot
   (`#banner-slot`) sits under each page head and shows one daemon message from what the pages already read. Content has a maximum width of
   about 1036 px, so at 2560 px the lines stay readable.
 - **Live resize (menu and partly filled form).** On Settings, type a new Maximum turns without saving. Shrink

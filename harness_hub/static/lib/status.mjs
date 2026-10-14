@@ -17,9 +17,14 @@ let evidenceAt = 0; // when the request behind the latest evidence started; olde
 let reads = 0; // request counter for callers that pass no start order (tests)
 const listeners = new Set();
 
-// Hub reads whose 2xx answer only the daemon could have given. Overview and the health poll report reachability in
-// their bodies; Modules and Marketplace can answer from the Hub's last good copy.
-const ANSWERED_ELSEWHERE = new Set(["overview", "settings/health", "modules", "marketplace", "claim"]);
+// Whether a 2xx answer to this Hub read could only have come from the daemon. Overview and the health poll report
+// reachability in their bodies instead; Apps, Modules and Marketplace can answer from the Hub's last good inventory,
+// and the Accounts catalog never asks the daemon.
+function daemonAnswered(path) {
+  return path === "pairing" || path.startsWith("apps/")
+    || (path.startsWith("settings/") && path !== "settings/health")
+    || (path.startsWith("manage/") && path !== "manage/catalog");
+}
 
 // Let evidence from a request that started at `started` decide reachability, unless newer evidence already has.
 function fresh(started) {
@@ -53,7 +58,7 @@ export function noteRead(path, status, data, started = ++reads) {
       restarting = body.restarting === true;
       if (body.reachable) settle(body.health);
     }
-  } else if (ok && !ANSWERED_ELSEWHERE.has(path)) {
+  } else if (ok && daemonAnswered(path)) {
     if (fresh(started)) silent = false;
   }
   if (body && path === "pairing" && Array.isArray(body.requests)) attention = pairingAttention(body);

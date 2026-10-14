@@ -250,6 +250,7 @@ body.menu-open::after {
 .daemon-chip.bad { background: var(--bad-bg); color: var(--bad); }
 .daemon-chip.bad::before { background: var(--bad); }
 .host-commands { padding: 0 0 0 10px; font-size: .85rem; }
+.host-commands[hidden] { display: none; }
 .host-commands .nav-icon { color: var(--muted); }
 .signout { display: flex; align-items: center; gap: 8px; padding: 0 10px; border-color: transparent; font-size: .9rem; }
 .signout .nav-icon { color: currentColor; }
