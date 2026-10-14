@@ -442,3 +442,17 @@ for (const [state, needs, armed] of [["pending", "approve", false], ["claimed", 
     expect(errors).toEqual([]);
   });
 }
+
+test("a claimed slot keeps the daemon's scope text one tap away", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const { errors } = await mount(page, [request("pr-k", { state: "claimed", needs: "confirm", armed: true,
+    scopes: ["sessions:all"], elevated: ["sessions:all"], disclosures: [{ scope: "sessions:all", tier: "elevated",
+      text: "This app can **read every session on this harness**." }] })]);
+  const box = card(page, "pr-k");
+  const text = box.locator('[data-scope="sessions:all"] .disclosure-text');
+  await expect(text).toBeHidden();
+  await box.getByText("What each scope allows").click();
+  await expect(text).toHaveText("This app can read every session on this harness.");
+  await expect(box.locator('[data-scope="sessions:all"] .pill')).toHaveText("Elevated");
+  expect(errors).toEqual([]);
+});

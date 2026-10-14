@@ -170,12 +170,15 @@ export function renderPairing(main) {
         row.kind === "app" ? ["Started from", `The app · ${stamp(row.created_at)}`] : ["Created", stamp(row.created_at)],
         scopes];
     if (row.key_id) rows.push(["Key id", h("span", { class: "mono" }, row.key_id)]);
+    if (!row.disclosures.length) return h("div", { class: "decision-about" }, h("p", { class: "caveat" }, caveat(row)), facts(rows));
+    const list = h("ul", { class: "disclosures" }, row.disclosures.map((item) => h("li", { "data-scope": item.scope },
+      h("p", { class: "disclosure-head" }, tier(item), " ", h("code", {}, item.scope)),
+      h("p", { class: "disclosure-text" }, emphasis(item.text || "The daemon supplied no description for this scope.")))));
+    // You consented to an armed slot's scopes when you armed it, so their text starts closed; it is still one tap away.
     return h("div", { class: "decision-about" }, h("p", { class: "caveat" }, caveat(row)), facts(rows),
-      !owned && row.disclosures.length ? [h("h4", { class: "card-sub" }, "What each scope allows"),
-        h("ul", { class: "disclosures" }, row.disclosures.map((item) => h("li", { "data-scope": item.scope },
-          h("p", { class: "disclosure-head" }, tier(item), " ", h("code", {}, item.scope)),
-          h("p", { class: "disclosure-text" },
-            emphasis(item.text || "The daemon supplied no description for this scope.")))))] : null);
+      owned ? h("details", { class: "scope-details" },
+        h("summary", { class: "card-sub" }, icon("chevron", "icon chevron"), "What each scope allows"), list) :
+        [h("h4", { class: "card-sub" }, "What each scope allows"), list]);
   }
   function act(row, name) {
     if (row.kind === "hub") {

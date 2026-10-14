@@ -157,12 +157,12 @@ export function clock(seconds) {
   return hours ? `${hours}:${pad(minutes)}:${pad(s % 60)}` : `${minutes}:${pad(s % 60)}`;
 }
 
-// A chip with the time left on a code or slot, warn in the last minute; none left reads Expired. The caller
-// re-renders it, so this adds no timers.
-export function countdown(secondsLeft) {
+// A chip with the time left on a code or slot, warn in the last minute (or the last warnBelow seconds); none left
+// reads Expired. The caller re-renders it, so this adds no timers.
+export function countdown(secondsLeft, { warnBelow = 60 } = {}) {
   if (typeof secondsLeft !== "number" || !Number.isFinite(secondsLeft)) return null;
   if (secondsLeft <= 0) return h("span", { class: "countdown" }, icon("clock"), "Expired");
-  return h("span", { class: secondsLeft < 60 ? "countdown warn" : "countdown" }, icon("clock"),
+  return h("span", { class: secondsLeft < warnBelow ? "countdown warn" : "countdown" }, icon("clock"),
     `${clock(secondsLeft)} left`);
 }
 

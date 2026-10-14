@@ -503,7 +503,7 @@ body.show-host-commands .host-command-toggle { display: none; }
 details summary { min-height: var(--tap); display: flex; align-items: center; cursor: pointer; }
 
 @media (prefers-reduced-motion: reduce) {
-  .nav, .switch-track i::after, .signin-docker .chevron, .troubleshoot .chevron { transition: none; }
+  .nav, .switch-track i::after, .signin-docker .chevron, .troubleshoot .chevron, .scope-details .chevron { transition: none; }
 }
 
 /* Overview (Hub design 4): the Needs you card, three status tiles, then Capabilities and Details side by side. On a
@@ -818,6 +818,11 @@ body.signed-out .topbar { display: none; }
 .decision-about .facts { grid-template-columns: max-content minmax(0, 1fr); gap: 8px 24px; margin: 0; font-size: .9rem; }
 .decision-about .card-sub { margin-top: 18px; }
 .scope-chip { display: inline-flex; align-items: center; gap: 6px; }
+.decision-about .scope-details { margin-top: 10px; }
+.card .scope-details summary { gap: 8px; margin: 0; list-style: none; }
+.scope-details summary::-webkit-details-marker { display: none; }
+.scope-details .chevron { transition: transform .15s ease; }
+.scope-details[open] .chevron { transform: rotate(90deg); }
 .decision-act {
   display: flex;
   flex-direction: column;
