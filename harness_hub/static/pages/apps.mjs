@@ -61,7 +61,9 @@ export function renderApps(main) {
   let selected = null; // the key whose detail is open
   let confirming = null; // "revoke" or "retention": the question asked inside the open detail (decision 5 of #65)
   let detail = null; // { id, data } or { id, error } or { id, loading }: the open App's session caps and retention
-  let drafts = {}; // the owner's typing in the open detail's fields, kept across a redraw
+  // The open detail's fields the owner has typed in, by name. A redraw puts the same element back, so the browser keeps
+  // its raw text and validity (an unfinished "1e" stays invalid instead of reading as blank).
+  let drafts = new Map();
   let reading = 0; // the newest caps and retention read; an older reply that lands later is dropped
   const poll = poller(() => load());
   const updated = h("span", { class: "muted refreshed" });
@@ -233,7 +235,7 @@ export function renderApps(main) {
   function openDetail(id) {
     if (stopped) return;
     if (selected === id) { closeDetail(); return; }
-    drafts = {};
+    drafts = new Map();
     forgetDetail();
     selected = id;
     confirming = null;
@@ -244,7 +246,7 @@ export function renderApps(main) {
   }
   function closeDetail() {
     const id = selected;
-    selected = null; confirming = null; drafts = {};
+    selected = null; confirming = null; drafts = new Map();
     forgetDetail();
     draw(true);
     focusField(`open-${id}`);
@@ -314,9 +316,15 @@ export function renderApps(main) {
     const retention = numberField("retention", "Retention days", data.retention_days, 36500, "Keep until deleted", "any");
     const saveCaps = button("Save session caps", () => {
       if (!running.input.reportValidity() || !queued.input.reportValidity()) return;
+      // Only the caps the owner changed: the daemon keeps a field left out, so a cap changed on the host since this
+      // detail was read is not written back.
+      const body = {};
+      for (const [key, input] of [["max_running", running.input], ["max_queued", queued.input]]) {
+        if (numberValue(input) !== data.configured[key]) body[key] = numberValue(input);
+      }
+      if (!Object.keys(body).length) { message("Nothing to save: both caps are as the daemon has them."); return; }
       void perform(async () => {
-        await api("apps/" + row.id + "/limits", { method: "PUT", body: {
-          max_running: numberValue(running.input), max_queued: numberValue(queued.input) } });
+        await api("apps/" + row.id + "/limits", { method: "PUT", body });
         message("Session caps saved.");
       });
     }, { class: "btn primary", "data-field": "save-caps", disabled: !ready() });
@@ -334,7 +342,7 @@ export function renderApps(main) {
         h("p", { class: "hint" }, `Effective caps: running ${figure(data.effective.max_running)} · queued ` +
           `${figure(data.effective.max_queued)}. Counting now: running ${figure(data.running)} · queued ` +
           `${figure(data.queued)} · parked ${figure(data.parked)}; parked sessions count toward both caps. ` +
-          "Leave a field blank to use the daemon default."),
+          "Leave a field blank to use the daemon default. Saving sends only the caps you changed."),
         h("div", { class: "apps-actions" }, saveCaps),
         command(["harness apps set-limits " + row.id + " --max-running <integer> --max-queued <integer>",
           "harness apps set-limits " + row.id + " --set max_running=null --set max_queued=null"], { parity: true })),
@@ -456,7 +464,7 @@ export function renderApps(main) {
     try {
       if (inventory?.state !== "ready") throw new Error("The app inventory could not be refreshed.");
       await action();
-      drafts = {};
+      drafts = new Map();
     }
     catch (error) {
       if (!stopped) message(error.message + " Refresh and review the state before trying again.", true);
@@ -471,10 +479,15 @@ export function renderApps(main) {
   }
   function numberField(field, label, value, max, placeholder, step = "1") {
     const id = `app-${field}`;
-    const input = h("input", { type: "number", id, min: step === "any" ? "0.000001" : "1", max, step, placeholder,
-      "data-field": field, inputmode: step === "any" ? "decimal" : "numeric" });
-    input.value = field in drafts ? drafts[field] : value === null || value === undefined ? "" : String(value);
-    input.addEventListener("input", () => { drafts[field] = input.value; });
+    let input = drafts.get(field);
+    if (input) input.setAttribute("placeholder", placeholder);
+    else {
+      input = h("input", { type: "number", id, min: step === "any" ? "0.000001" : "1", max, step, placeholder,
+        "data-field": field, inputmode: step === "any" ? "decimal" : "numeric" });
+      input.value = value === null || value === undefined ? "" : String(value);
+      const typed = input;
+      input.addEventListener("input", () => { drafts.set(field, typed); });
+    }
     return { input, field: h("div", { class: "apps-field" }, h("label", { for: id }, label), input) };
   }
   function numberValue(input) { return input.value.trim() === "" ? null : Number(input.value); }

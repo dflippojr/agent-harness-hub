@@ -317,7 +317,8 @@ succeeds.
 A row opens its detail beside the list from 1200 px wide, and in its place below that (**Back to all apps** returns).
 The detail has usage tiles (requests, tokens in and out, cost, errors), the identity facts, and for an App its
 running/queued session caps and retention. A blank cap shows the daemon default as its placeholder and restores it
-on save; blank retention keeps sessions until deleted. Saving retention asks first, inside its card, because
+on save; a save sends only the caps you changed, so a cap changed on the host meanwhile is kept. Blank retention
+keeps sessions until deleted. Saving retention asks first, inside its card, because
 shortening it can erase older sessions during cleanup.
 
 Revoke sits in the detail's danger zone and is offered only for App and device keys. Its question, asked in place,

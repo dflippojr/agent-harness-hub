@@ -41,11 +41,11 @@ async function mount(page, rows, { entries = [], erasures = [], invalidDetails =
   await expect(page.locator("[data-app-id]")).toHaveCount(rows.length);
   return { writes, errors };
 }
-const card = (page, id) => page.locator('[data-app-id="' + id + '"]');
+const row = (page, id) => page.locator('[data-app-id="' + id + '"]');
 // A row's button opens its detail beside the list (or in its place on a narrow screen); a second press closes it.
 async function open(page, id) {
   const detail = page.locator('[data-detail-id="' + id + '"]');
-  if (!await detail.count()) await card(page, id).getByRole("button").click();
+  if (!await detail.count()) await row(page, id).getByRole("button").click();
   await expect(detail).toBeVisible();
   return detail;
 }
@@ -67,8 +67,8 @@ test("redacted App remains revocable, owner and runner keys never enter the App 
   await expect(device.getByRole("button", { name: /^Revoke/ })).toBeEnabled();
   await expect(device.getByRole("button", { name: "Save session caps" })).toHaveCount(0);
   // A revoked App's row shows its erasure and leads to the host-only restore command, which always shows.
-  await expect(card(page, "k-pending-device")).toContainText("Revoked · erases");
-  await expect(card(page, "k-pending-device").getByRole("button", { name: "Restore command for Pending device" }))
+  await expect(row(page, "k-pending-device")).toContainText("Revoked · erases");
+  await expect(row(page, "k-pending-device").getByRole("button", { name: "Restore command for Pending device" }))
     .toBeVisible();
   await expect((await open(page, "k-pending-device")).getByText("harness apps restore k-pending-device", { exact: true }))
     .toBeVisible();
@@ -102,14 +102,14 @@ test("duplicate and reserved names are flagged and confirmation identifies the a
     { name: "Web entry", catalog_app_id: "catalog-web", paired: ["k-real"], verified: true },
     { name: "Untrusted entry", catalog_app_id: "catalog-copy", paired: ["k-copy"], verified: false }] });
   for (const id of ["k-real", "k-copy"]) {
-    await expect(card(page, id)).toContainText("Duplicate name");
+    await expect(row(page, id)).toContainText("Duplicate name");
     await expect(await open(page, id)).toContainText("matches another paired key");
   }
-  await expect(card(page, "k-impostor")).toContainText("Reserved name");
+  await expect(row(page, "k-impostor")).toContainText("Reserved name");
   await expect(await open(page, "k-impostor")).toContainText("reserved This Hub label");
-  await expect(card(page, "k-hub")).not.toContainText("Reserved name");
+  await expect(row(page, "k-hub")).not.toContainText("Reserved name");
   await expect(await open(page, "k-hub")).not.toContainText("reserved This Hub label");
-  await expect(card(page, "k-copy")).toContainText("k-copy · App-supplied name");
+  await expect(row(page, "k-copy")).toContainText("k-copy · App-supplied name");
   const copy = await open(page, "k-copy");
   await expect(copy.getByRole("heading", { level: 2 })).toHaveText("web client");
   await expect(copy.locator(".apps-detail-head")).toContainText("k-copy");
@@ -167,17 +167,17 @@ test("readable states in the table, the detail beside it, caps with the default 
       app("k-gone", "Gone app", { state: "erasure_pending", revoked_at: now - 60, erase_after: now + 5 * 86400 })];
     const { writes, errors } = await mount(page, rows, { erasures: [rows[4]] });
     for (const [id, label] of [["k-live", "Active"], ["k-new", "Never used"], ["k-idle", "Idle"], ["k-old", "Stale"],
-      ["k-gone", "Revoked · erases"]]) await expect(card(page, id).locator(".app-status")).toContainText(label);
-    await expect(card(page, "k-live")).toContainText("Errors, 24 h");
-    await expect(card(page, "k-live")).toContainText("Just now");
-    await expect(card(page, "k-old")).toContainText("Token 90+ days");
-    await expect(card(page, "k-old")).toContainText("120 days");
+      ["k-gone", "Revoked · erases"]]) await expect(row(page, id).locator(".app-status")).toContainText(label);
+    await expect(row(page, "k-live")).toContainText("Errors, 24 h");
+    await expect(row(page, "k-live")).toContainText("Just now");
+    await expect(row(page, "k-old")).toContainText("Token 90+ days");
+    await expect(row(page, "k-old")).toContainText("120 days");
     await expect(page.locator("main")).not.toContainText(/never_used|erasure_pending|1700000000/);
 
     await page.setViewportSize({ width: 1440, height: 900 });
     const detail = await open(page, "k-live");
     await expect(detail.getByRole("heading", { level: 2, name: "Live app" })).toBeFocused();
-    await expect(card(page, "k-live")).toHaveClass(/selected/);
+    await expect(row(page, "k-live")).toHaveClass(/selected/);
     for (const text of ["Requests", "1,234", "Tokens in · out", "100 · 40", "Cost", "$0.50", "Running 2 · done 3",
       "Errors in the last 24 hours: provider_limit"]) await expect(detail).toContainText(text);
     // Once the caps have loaded (a redraw), the heading still has focus and the list sits beside the detail.
@@ -194,7 +194,8 @@ test("readable states in the table, the detail beside it, caps with the default 
     await running.fill("4");
     await detail.getByRole("button", { name: "Save session caps" }).click();
     await expect(page.getByText("Session caps saved.", { exact: true })).toBeVisible();
-    expect(writes[0]).toEqual({ path: "/api/apps/k-live/limits", method: "PUT", body: { max_running: 4, max_queued: 10 } });
+    // Only the changed cap goes out; the daemon keeps the one left out.
+    expect(writes[0]).toEqual({ path: "/api/apps/k-live/limits", method: "PUT", body: { max_running: 4 } });
     await expect(detail.getByLabel("Retention days")).toBeVisible();
 
     await detail.getByLabel("Retention days").fill("7");
@@ -216,7 +217,7 @@ test("readable states in the table, the detail beside it, caps with the default 
     await expect(page.locator(".apps-keys")).toBeHidden();
     await detail.getByRole("button", { name: "Back to all apps" }).click();
     await expect(detail).toHaveCount(0);
-    await expect(card(page, "k-live").getByRole("button", { name: "Open Live app" })).toBeFocused();
+    await expect(row(page, "k-live").getByRole("button", { name: "Open Live app" })).toBeFocused();
     for (const width of [1440, 1024, 390]) {
       await page.setViewportSize({ width, height: 900 });
       if (width === 390) await open(page, "k-live");
@@ -241,11 +242,11 @@ test("Refresh reads the open App's caps again, and an older caps reply never rep
     if (reads === 1) { await held; return route.fulfill({ json: limits(2) }); } // the first read answers last
     return route.fulfill({ json: limits(reads === 2 ? 6 : 8) });
   });
-  await card(page, "k-a").getByRole("button").click();
+  await row(page, "k-a").getByRole("button").click();
   await expect.poll(() => reads).toBe(1);
   const b = await open(page, "k-b");
   await expect(b.getByLabel("Maximum running (1–100)")).toBeVisible();
-  await card(page, "k-a").getByRole("button").click();
+  await row(page, "k-a").getByRole("button").click();
   const a = page.locator('[data-detail-id="k-a"]');
   await expect(a.getByLabel("Maximum running (1–100)")).toHaveValue("6");
   release();
@@ -271,7 +272,7 @@ test("Refresh drops a caps read still in flight, and a save made during a refres
     if (reads === 1) { await heldRead; return route.fulfill({ json: limits(2) }); }
     return route.fulfill({ json: limits(6) });
   });
-  await card(page, "k-a").getByRole("button").click();
+  await row(page, "k-a").getByRole("button").click();
   await expect.poll(() => reads).toBe(1);
   await page.getByRole("button", { name: "Refresh apps" }).click();
   const a = page.locator('[data-detail-id="k-a"]');
@@ -293,7 +294,7 @@ test("Refresh drops a caps read still in flight, and a save made during a refres
   expect(writes).toHaveLength(0);
   releaseInventory();
   await expect.poll(() => writes.length).toBe(1);
-  expect(writes[0]).toEqual({ path: "/api/apps/k-a/limits", method: "PUT", body: { max_running: 6, max_queued: 12 } });
+  expect(writes[0]).toEqual({ path: "/api/apps/k-a/limits", method: "PUT", body: { max_queued: 12 } });
   await expect(page.getByText("Session caps saved.", { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });
@@ -316,12 +317,12 @@ test("an abandoned caps read never leaves the detail loading, and a read from be
   const a = page.locator('[data-detail-id="k-a"]');
   const field = a.getByLabel("Maximum running (1–100)");
   // Leave A while its read is held, let that read land, and come back: A reads again.
-  await card(page, "k-a").getByRole("button").click();
+  await row(page, "k-a").getByRole("button").click();
   await expect.poll(() => reads).toBe(1);
   await open(page, "k-owner");
   gates.shift()();
   await page.waitForTimeout(200);
-  await card(page, "k-a").getByRole("button").click();
+  await row(page, "k-a").getByRole("button").click();
   await expect(field).toHaveValue("3");
 
   // Save while Refresh reads the inventory: the caps read that Refresh starts is older than the save, so it is dropped.
@@ -344,5 +345,22 @@ test("an abandoned caps read never leaves the detail loading, and a read from be
   while (gates.length) gates.shift()();
   await page.waitForTimeout(300);
   await expect(field).toHaveValue("7");
+  expect(errors).toEqual([]);
+});
+
+test("an unfinished number stays invalid across a redraw, and an unchanged form sends nothing", async ({ page }) => {
+  const { writes, errors } = await mount(page, [app("k-a", "App A")]);
+  const a = await open(page, "k-a");
+  const running = a.getByLabel("Maximum running (1–100)");
+  await expect(running).toBeVisible();
+  await a.getByRole("button", { name: "Save session caps" }).click();
+  await expect(page.getByText("Nothing to save: both caps are as the daemon has them.", { exact: true })).toBeVisible();
+  await running.pressSequentially("1e");
+  await page.getByRole("button", { name: "Refresh apps" }).click();
+  await expect(a.getByText("Reading session caps and retention…")).toHaveCount(0);
+  await expect.poll(() => running.evaluate((input) => input.validity.badInput)).toBe(true);
+  await a.getByRole("button", { name: "Save session caps" }).click();
+  await page.waitForTimeout(200);
+  expect(writes).toHaveLength(0);
   expect(errors).toEqual([]);
 });
