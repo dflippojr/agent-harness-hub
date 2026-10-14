@@ -33,7 +33,7 @@ def test_error_keeps_complete_last_good_in_memory_and_on_disk(claimed, fake_daem
     stored = path.read_bytes()
     fake_daemon.inventory_error = "hub.entries: invalid JSON"
     bad = claimed.get("/api/modules").json()
-    assert bad["state"] == "error" and bad["error"] == fake_daemon.inventory_error
+    assert bad["state"] == "error" and bad["error"] == fake_daemon.inventory_error and bad["reachable"] is True
     assert bad["stale"] and bad["modules"] == good["modules"] and bad["fetched_at"] == good["fetched_at"]
     assert path.read_bytes() == stored
     cache = InventoryCache(claimed.state_dir, "https://daemon.test")
@@ -116,9 +116,12 @@ def test_partial_or_secret_snapshot_never_replaces_good(claimed, fake_daemon):
 
 
 def test_error_secrets_fail_closed(claimed, fake_daemon):
-    for secret in (fake_daemon.hub_token, "ha-synthetic-secret", "hp-synthetic-secret"):
+    for secret in (fake_daemon.hub_token, "ha-" + "synthetic-secret" * 3, "hp-" + "synthetic-secret" * 2):
         fake_daemon.inventory_error = "hub.entries: " + secret
         assert claimed.get("/api/modules").status_code == 500
+    fake_daemon.inventory_error = "hub.entries: ha-synthetic-secret"
+    shown = claimed.get("/api/modules")
+    assert shown.status_code == 200 and "ha-synthetic" not in shown.text
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 
 
@@ -178,7 +181,7 @@ def test_transient_key_rejection_withholds_inventory_but_retains_claim(claimed, 
     assert_no_secrets(claimed.bodies, fake_daemon.hub_token)
 
 
-LEAKING_MODULES = [{"name": "hub", "state": "present", "status": {"last_error": "auth failed for ha-abcdefgh"}}]
+LEAKING_MODULES = [{"name": "hub", "state": "present", "status": {"last_error": "auth failed for ha-" + "A1b2C3d4" * 6}}]
 
 
 @pytest.mark.parametrize("writer", ["/api/apps", "/api/marketplace"])

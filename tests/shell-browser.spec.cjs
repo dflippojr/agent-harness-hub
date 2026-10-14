@@ -51,7 +51,8 @@ async function mount(page, hash, { signedIn = true, memoryReply = memory } = {})
 for (const hash of ["#signin=bogus-code", "#signin=" + CODE + ".", "#signin=" + CODE + ")", "#signin="]) {
   test(`a malformed sign-in link (${hash.replace(CODE, "<code>")}) is refused without posting it`, async ({ page }) => {
     const { posts, errors } = await mount(page, hash, { signedIn: false });
-    await expect(page.getByRole("alert")).toHaveText("that sign-in link is not valid; links work once, for ten minutes");
+    await expect(page.getByRole("alert")).toHaveText(
+      "That sign-in link is not valid.Links work once, for ten minutes. Make a new one below.");
     expect(new URL(page.url()).hash).toBe("#/overview");
     expect(posts).toEqual([]);
     expect(errors).toEqual([]);
@@ -118,7 +119,8 @@ test.describe("phone drawer", () => {
     await mount(page, "#/modules");
     const menu = page.getByRole("button", { name: "Sections" });
     await menu.tap();
-    await page.locator("#nav").tap({ position: { x: 20, y: 600 } });
+    // A group label: inside the drawer, but not a link or a footer control.
+    await page.locator("#nav .nav-group").first().tap();
     await expect(menu).toHaveAttribute("aria-expanded", "true");
   });
 });

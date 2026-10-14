@@ -26,6 +26,8 @@ from harness_hub.tailnet import (
     tcp_forwards,
 )
 
+from .test_token_words import FULL_TOKENS
+
 OWNER = "owner@example.test"
 REMOTE = "100.64.0.7"  # another node on the tailnet
 OWN_ADDRESSES = {"100.100.1.1", "fd7a:115c:a1e0::1", "127.0.0.1", "::1", "192.168.1.20"}  # this machine's
@@ -508,3 +510,22 @@ def test_serve_config_is_decoded_as_utf8(monkeypatch, tmp_path):
 def test_real_serve_config_is_readable():
     config = serve_config()
     assert config is None or isinstance(config, dict)
+
+
+# #84: the page reads /api/session first on every load, so a login's text must never make the guard withhold it.
+WORD_LOGIN = "ha-jung.kim@example.test"
+
+
+def test_tailnet_login_with_a_prefix_word_can_read_its_session(tailnet_hub):
+    reply = tailnet_hub.get("/api/session", headers=identity(WORD_LOGIN))
+    assert reply.status_code == 200 and reply.json()["tailnet_login"] == WORD_LOGIN
+    tailnet_hub.sign_in()
+    signed_in = tailnet_hub.get("/api/session", headers=identity(WORD_LOGIN))
+    assert signed_in.status_code == 200 and signed_in.json()["signed_in"] is True
+
+
+@pytest.mark.parametrize("token", FULL_TOKENS)
+def test_a_token_shaped_login_is_redacted_not_withheld(tailnet_hub, token):
+    reply = tailnet_hub.get("/api/session", headers=identity(token + "@example.test"))
+    assert reply.status_code == 200
+    assert reply.json()["tailnet_login"] == "[withheld: token-shaped]@example.test"

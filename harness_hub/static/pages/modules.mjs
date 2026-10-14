@@ -18,7 +18,7 @@ export function renderModules(main) {
   const list = h("div", { class: "grid" });
   const reload = button("Refresh modules", () => load());
   clear(main, h("header", { class: "page-head" }, h("h1", {}, "Modules"), reload),
-    command("harness hub status"), notice, inventoryError, summary, list);
+    command("harness hub status", { parity: true }), notice, inventoryError, summary, list);
 
   function button(label, action) {
     return h("button", { type: "button", class: "btn", onclick: action }, label);
@@ -58,7 +58,7 @@ export function renderModules(main) {
       "Settings could not be loaded."),
     config?.restart_required ? h("p", { class: "notice" }, "Restart needed to apply saved switches.") : null,
     config?.restart_required ? restartLink() : null,
-    config?.restart_required ? command("harness config restart --confirm") : null,
+    config?.restart_required ? command("harness config restart --confirm", { parity: true }) : null,
     inventory?.stale ? h("p", { class: "notice" }, "Last good inventory from " + when(inventory.fetched_at) +
       ". These running states may be out of date.") : null);
     clear(list);
@@ -88,7 +88,7 @@ export function renderModules(main) {
         const target = !value;
         const toggle = button("Switch " + row.name + (target ? " on" : " off"), () => save(spec, target));
         toggle.disabled = busy;
-        box.append(toggle, command("harness config set " + spec.key + "=" + target));
+        box.append(toggle, command("harness config set " + spec.key + "=" + target, { parity: true }));
         if (spec.apply === "daemon_restart") box.append(h("p", { class: "muted" }, "Changing this switch needs a daemon restart."));
       } else box.append(h("p", { class: "muted" }, spec?.guidance || "No writable module switch is available in the settings registry."));
       list.append(box);

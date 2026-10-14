@@ -91,7 +91,7 @@ export function renderAdmin(main) {
     form.append(h("button", { type: "submit", class: "btn" }, selected.label));
     clear(workspace, h("h2", {}, GROUPS.find(([id]) => id === active)[1]),
       h("div", { class: "setting-field" }, h("label", {}, "Choose action", choices)),
-      command(selected.cli), form, h("div", { class: "admin-confirmation" }));
+      form, command(selected.cli, { parity: true }), h("div", { class: "admin-confirmation" }));
   }
   async function confirmProjects(op, targets, body) {
     setBusy(true); message("Reading the current project allowlist…");

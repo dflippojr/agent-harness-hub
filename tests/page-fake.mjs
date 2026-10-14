@@ -51,6 +51,7 @@ export function mount(t, render, fetcher) {
   const document = {
     visibilityState: "visible",
     createElement: (tag) => new Element(tag),
+    createElementNS: (namespace, tag) => new Element(tag),
     createTextNode: (text) => Object.assign(new Element("text"), { text }),
     addEventListener: (name, fn) => { listeners.add([name, fn]); },
     removeEventListener: (name, fn) => {

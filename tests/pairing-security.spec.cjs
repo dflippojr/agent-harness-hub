@@ -45,6 +45,8 @@ async function mount(page, initial, { answer } = {}) {
   });
   await page.goto("http://hub.test/");
   await expect(page.locator("[data-request-id]")).toHaveCount(initial.length);
+  // These regressions read each action's CLI equivalent, so the Show host commands switch is on (Hub design 3, #70).
+  await page.evaluate(() => document.body.classList.add("show-host-commands"));
   return { writes, errors };
 }
 const card = (page, id) => page.locator('[data-request-id="' + id + '"]');
@@ -58,7 +60,7 @@ for (const [kind, origin] of [["browser", "https://app.test"], ["native", ""]]) 
         error: { code: "match_mismatch" } } } : null });
     const box = card(page, row.id), input = box.getByLabel("Match code the app shows");
     const confirm = box.getByRole("button", { name: /^Confirm/ });
-    await expect(box).toContainText("Redemption is waiting for confirmation.");
+    await expect(box).toContainText("Redemption is waiting for confirmation");
     await expect(box).not.toContainText("A native app claimed");
     await expect(input).toHaveValue("");
     await expect(confirm).toBeDisabled();
@@ -68,27 +70,33 @@ for (const [kind, origin] of [["browser", "https://app.test"], ["native", ""]]) 
     await input.fill("000000");
     await confirm.click();
     await expect(page.getByText("the match code does not match the one the App shows")).toBeVisible();
-    await expect(box).toContainText("Redemption is waiting for confirmation.");
+    await expect(box).toContainText("Redemption is waiting for confirmation");
     await expect(box).not.toContainText("482913");
     await input.fill(" 482913 ");
     await confirm.click();
-    await expect(page.locator('[data-state="approved"] [data-request-id="pr-confirm"]')).toBeVisible();
+    await expect(page.locator('[data-group="waiting"] [data-request-id="pr-confirm"][data-state="approved"]')).toBeVisible();
     expect(writes.map(w => w.body)).toEqual([{ match: "000000" }, { match: "482913" }]);
     expect(writes.every(w => w.path === "/api/pairing/pr-confirm/confirm")).toBe(true);
     await expect(box.getByLabel("Match code the app shows")).toHaveCount(0);
-    await expect(box).toContainText("waiting for the app to fetch its own token");
+    await expect(box).toContainText("Waiting for the app to fetch its own token");
     expect(errors).toEqual([]);
   });
 }
 
 test("already-claimed recovery distinguishes redeemed keys from unredeemed claims", async ({ page }) => {
-  await mount(page, [request("pr-redeemed", { state: "redeemed", needs: "", key_id: "k-recovery", match_code: "" })]);
-  const recovery = page.locator(".pairing-recovery");
+  await mount(page, [request("pr-redeemed", { state: "redeemed", needs: "", key_id: "k-recovery", match_code: "",
+    finished_at: NOW - 5 })]);
+  // Troubleshooting is a closed disclosure at the foot of the page until the owner opens it.
+  const recovery = page.locator("details.pairing-recovery");
+  await expect(recovery.getByText("harness pairing-requests list", { exact: true })).toBeHidden();
+  await recovery.getByText("Troubleshooting: the app says the slot was already claimed").click();
   await expect(recovery).toContainText("For a redeemed row, revoke its key_id. For an approved or claimed row, deny it.");
   for (const cli of ["harness pairing-requests list", "harness keys revoke <key_id>", "harness pairing-requests deny <id>"]) {
     await expect(recovery.getByText(cli, { exact: true })).toBeVisible();
   }
-  await expect(card(page, "pr-redeemed").getByText("harness keys revoke k-recovery", { exact: true })).toBeVisible();
+  // The redeemed row is a History row naming its key, which Apps (or harness keys revoke) can revoke.
+  await expect(card(page, "pr-redeemed").locator("td")).toHaveText(
+    ["Synthetic pr-redeemed", "App", "Paired", "sessions", /\d/, "k-recovery"]);
 });
 
 test("approve needs the typed code; it is never pre-filled and a wrong code shows the daemon's 400", async ({ page }) => {
@@ -115,7 +123,7 @@ test("approve needs the typed code; it is never pre-filled and a wrong code show
   await card(page, "pr-a").getByRole("button", { name: /^Approve/ }).click();
   await expect.poll(() => writes.length).toBe(2);
   expect(writes[1]).toMatchObject({ path: "/api/pairing/pr-a/approve", body: { match: "482913" } });
-  await expect(page.locator('[data-state="approved"] [data-request-id="pr-a"]')).toBeVisible();
+  await expect(page.locator('[data-group="waiting"] [data-request-id="pr-a"][data-state="approved"]')).toBeVisible();
   expect(errors).toEqual([]);
 });
 
@@ -125,7 +133,8 @@ test("elevated scopes keep Approve disabled until the separate acknowledgement i
     { scope: "approvals", tier: "elevated", text: "This app can **approve or deny tool calls** in its own tasks." }] });
   const { writes, errors } = await mount(page, [row]);
   const box = card(page, "pr-e");
-  await expect(box.locator('[data-scope="approvals"] .pill')).toHaveText("elevated");
+  await expect(box.locator('[data-scope="approvals"] .pill')).toHaveText("Elevated");
+  await expect(box.locator(".decision-head .pill")).toHaveText(["Needs approval", "Elevated scope"]);
   await expect(box.locator('[data-scope="approvals"] .disclosure-text'))
     .toHaveText("This app can approve or deny tool calls in its own tasks.");
   await expect(box.locator('[data-scope="approvals"] .disclosure-text strong')).toHaveText("approve or deny tool calls");
@@ -149,8 +158,8 @@ test("disclosure text and names render as text, never as HTML", async ({ page })
     disclosures: [{ scope: "sessions", tier: "standard", text: markup }] })]);
   await expect(card(page, "pr-x").locator(".disclosure-text")).toHaveText(markup);
   await expect(card(page, "pr-x").locator(".disclosure-text strong")).toHaveCount(0);
-  await expect(card(page, "pr-x").locator("h3")).toHaveText(markup + " · pr-x");
-  await expect(card(page, "pr-x")).toContainText("native app");
+  await expect(card(page, "pr-x").locator("h3")).toHaveText(markup);
+  await expect(card(page, "pr-x")).toContainText("Native app · catalog test.example.notes");
   await expect(page.locator("main img, main script")).toHaveCount(0);
   expect(await page.evaluate(() => window.injected)).toBeUndefined();
   expect(errors).toEqual([]);
@@ -207,7 +216,7 @@ test("409 and 404 answers refresh the list with a short note", async ({ page }) 
   await card(page, "pr-n").getByLabel("Match code the app shows").fill("482913");
   await card(page, "pr-n").getByRole("button", { name: /^Approve/ }).click();
   await expect(page.getByText(/changed state before your decision/)).toBeVisible();
-  await expect(page.locator('[data-state="expired"] [data-request-id="pr-n"]')).toBeVisible();
+  await expect(page.locator('[data-group="history"] [data-request-id="pr-n"][data-state="expired"]')).toBeVisible();
   await card(page, "pr-g").getByRole("button", { name: /^Deny/ }).click();
   await page.getByRole("button", { name: "Confirm deny", exact: true }).click();
   await expect(page.getByText("That request no longer exists. The list was refreshed.")).toBeVisible();
@@ -221,10 +230,14 @@ for (const [label, width] of [["phone", 390], ["desktop", 1280]]) {
     const row = request("pr-l", { scopes: ["sessions", "homelab"], elevated: ["homelab"], disclosures: [
       { scope: "homelab", tier: "elevated", text: "A long disclosure ".repeat(20) }] });
     const { errors } = await mount(page, [row, request("pr-m", { state: "armed", needs: "claim", match_code: "" })]);
-    for (const target of await page.locator("main button, main input").all()) {
-      const box = await target.boundingBox();
-      expect(box.height, await target.evaluate(el => el.outerHTML.slice(0, 80))).toBeGreaterThanOrEqual(44);
-      expect(box.width).toBeGreaterThanOrEqual(44);
+    // Host commands shown, then hidden behind their Host command buttons: every target is measured either way.
+    for (const shown of [true, false]) {
+      await page.evaluate(on => document.body.classList.toggle("show-host-commands", on), shown);
+      for (const target of await page.locator("main button:visible, main input:visible").all()) {
+        const box = await target.boundingBox();
+        expect(box.height, await target.evaluate(el => el.outerHTML.slice(0, 80))).toBeGreaterThanOrEqual(44);
+        expect(box.width).toBeGreaterThanOrEqual(44);
+      }
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     expect(errors).toEqual([]);
@@ -242,7 +255,7 @@ for (const [state, needs] of [["pending", "approve"], ["claimed", "confirm"]]) {
     await expect(box.getByLabel("Match code the app shows")).toHaveValue("");
     await expect(box).toContainText("If the app shows no code or an error, deny.");
     if (state === "claimed") {
-      await expect(box).toContainText("Redemption is waiting for confirmation.");
+      await expect(box).toContainText("Redemption is waiting for confirmation");
     }
     expect(errors).toEqual([]);
   });
@@ -253,12 +266,16 @@ test("requester metadata is unverified and owner-armed metadata explains its sou
   const { errors } = await mount(page, [request("pr-app"),
     request("pr-owner", { state: "claimed", needs: "confirm", armed: true })]);
   const app = card(page, "pr-app"), owner = card(page, "pr-owner");
-  await expect(app.locator("dt").filter({ hasText: "stated by the requester, not verified" })).toHaveCount(2);
-  await expect(app.locator("dt").filter({ hasText: /^Started from$/ }).locator("+ dd")).toHaveText("the app");
-  await expect(app).toContainText("only the match code on your app's screen proves this is your app");
-  await expect(owner.locator("dt").filter({ hasText: /^Started from$/ }).locator("+ dd")).toHaveText("this Hub");
-  await expect(owner).toContainText("You set the origin and catalog app id when you armed this slot.");
-  await expect(owner).not.toContainText("stated by the requester, not verified");
+  // Said once per card, not inside every label.
+  await expect(app.locator(".caveat")).toHaveText("Name, origin and catalog id are stated by the app, not verified. " +
+    "Only the match code on your app's screen proves this is your app.");
+  await expect(app.locator("dt").filter({ hasText: /^Started from$/ }).locator("+ dd")).toHaveText(/^The app · /);
+  await expect(app.locator("dt").filter({ hasText: /^From$/ }).locator("+ dd"))
+    .toHaveText("https://app.test · catalog test.example.notes");
+  await expect(owner.locator("dt").filter({ hasText: /^Bound to$/ }).locator("+ dd"))
+    .toHaveText("https://app.test · catalog test.example.notes (set by you)");
+  await expect(owner.locator(".caveat")).toContainText("You armed this slot and set its origin and catalog app id");
+  await expect(owner).not.toContainText("not verified");
   expect(errors).toEqual([]);
 });
 
@@ -312,5 +329,130 @@ test("a refused approve below the fold brings the message into view and focuses 
   await expect(note).toBeFocused();
   await expect(note).toBeInViewport();
   expect(await page.evaluate(() => document.activeElement !== document.body)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+
+test("requests group into Needs you, Waiting for the app and History, each with its count", async ({ page }) => {
+  const { errors } = await mount(page, [request("pr-p"), request("pr-c", { state: "claimed", needs: "confirm", armed: true }),
+    request("pr-a", { state: "approved", needs: "redeem" }), request("pr-s", { state: "armed", needs: "claim", armed: true }),
+    request("pr-r", { state: "redeemed", needs: "", key_id: "k-synthetic", finished_at: NOW - 5 }),
+    request("pr-d", { state: "denied", needs: "", finished_at: NOW - 50 }),
+    request("pr-x", { state: "expired", needs: "", finished_at: NOW - 90 })]);
+  await expect(page.locator(".pairing-group .section-head")).toHaveText(["Needs you2", "Waiting for the app2", "History · last day3"]);
+  await expect(page.locator(".pairing-group").first().locator(".count")).toHaveClass("count warn");
+  await expect(page.locator('[data-group="needs"] [data-request-id]')).toHaveCount(2);
+  await expect(card(page, "pr-p").locator(".decision-head .pill")).toHaveText("Needs approval");
+  await expect(card(page, "pr-c").locator(".decision-head .pill")).toHaveText("Needs confirmation");
+  await expect(card(page, "pr-a").locator(".pill")).toHaveText("Approved");
+  await expect(card(page, "pr-s").locator(".pill")).toHaveText("Waiting for the app");
+  await expect(card(page, "pr-s")).toContainText("Waiting for the app to claim this slot · sessions");
+  await expect(card(page, "pr-a")).toContainText(/\d+:\d\d left/);
+  const history = page.getByRole("table", { name: "Finished pairing requests" });
+  await expect(history.locator("thead th")).toHaveText(["Name", "Kind", "State", "Scopes", "Finished", "Key"]);
+  await expect(history.locator("tbody tr .pill")).toHaveText(["Paired", "Denied", "Expired"]);
+  await expect(card(page, "pr-r").locator(".pill")).toHaveClass("pill ok");
+  await expect(card(page, "pr-d").locator(".pill")).toHaveClass("pill muted");
+  expect(errors).toEqual([]);
+});
+
+test("the countdown chip ticks and turns warn in the last two minutes", async ({ page }) => {
+  await page.clock.install({ time: NOW * 1000 });
+  const { errors } = await mount(page, [request("pr-t", { expires_at: NOW + 300 }),
+    request("pr-u", { expires_at: NOW + 110 }), request("pr-v", { expires_at: NOW - 1 })]);
+  const later = card(page, "pr-t").locator(".countdown");
+  await expect(later).toHaveText(/^[45]:\d\d left$/);
+  await expect(later).toHaveClass("countdown");
+  await expect(card(page, "pr-u").locator(".countdown")).toHaveText(/^1:\d\d left$/);
+  await expect(card(page, "pr-u").locator(".countdown")).toHaveClass("countdown warn");
+  await expect(card(page, "pr-v").locator(".countdown")).toHaveText("Expired");
+  // Between polls the chip counts down every second on its own.
+  const before = await later.textContent();
+  await page.clock.runFor(2000);
+  await expect(later).not.toHaveText(before);
+  expect(errors).toEqual([]);
+});
+
+test("deny asks inside the card that was clicked, survives a poll, and Cancel returns to Deny", async ({ page }) => {
+  await page.clock.install({ time: NOW * 1000 });
+  const { writes, errors } = await mount(page, [request("pr-1"), request("pr-2")]);
+  await card(page, "pr-2").getByLabel("Match code the app shows").fill("12");
+  await card(page, "pr-2").getByRole("button", { name: "Deny Synthetic pr-2" }).click();
+  const confirm = card(page, "pr-2").getByRole("alert");
+  await expect(confirm.getByRole("heading", { name: "Deny Synthetic pr-2?" })).toBeVisible();
+  await expect(confirm).toContainText("Deny pairing request pr-2 from https://app.test.");
+  await expect(confirm.getByRole("button", { name: "Confirm deny" })).toBeFocused();
+  await expect(card(page, "pr-1").getByRole("alert")).toHaveCount(0);
+  // A poll that changes the list redraws the cards; the question stays where it was asked.
+  await page.route("http://hub.test/api/pairing", route => route.fulfill({ json: {
+    requests: [request("pr-1"), request("pr-2"), request("pr-3")], now: NOW } }));
+  await page.clock.runFor(5500);
+  await expect(card(page, "pr-3")).toBeVisible();
+  await expect(card(page, "pr-2").getByRole("button", { name: "Confirm deny" })).toBeVisible();
+  await card(page, "pr-2").getByRole("button", { name: "Cancel" }).click();
+  await expect(card(page, "pr-2").getByRole("alert")).toHaveCount(0);
+  await expect(card(page, "pr-2").getByRole("button", { name: "Deny Synthetic pr-2" })).toBeFocused();
+  await expect(card(page, "pr-2").getByLabel("Match code the app shows")).toHaveValue("12");
+  expect(writes).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test("Withdraw asks inside the waiting row", async ({ page }) => {
+  const { writes, errors } = await mount(page, [request("pr-w", { state: "armed", needs: "claim", armed: true, origin: "",
+    browser: false })]);
+  await card(page, "pr-w").getByRole("button", { name: "Withdraw Synthetic pr-w" }).click();
+  const confirm = card(page, "pr-w").getByRole("alert");
+  await expect(confirm).toContainText("Withdraw slot pr-w from a native app. The app cannot use it afterwards; it must ask again.");
+  await expect(card(page, "pr-w").getByRole("button", { name: /^Withdraw/ })).toHaveCount(0);
+  await confirm.getByRole("button", { name: "Confirm withdraw" }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0]).toMatchObject({ path: "/api/pairing/pr-w/deny", body: { confirm: true } });
+  await expect(page.locator('[data-group="history"] [data-request-id="pr-w"][data-state="denied"]')).toBeVisible();
+  await expect(page.getByText("Withdrew Synthetic pr-w.")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("with no requests the page says how one appears", async ({ page }) => {
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.route("http://hub.test/**", async route => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === "/api/pairing") return route.fulfill({ json: { requests: [], now: NOW } });
+    if (pathname === "/") return route.fulfill({ contentType: "text/html", body:
+      '<link rel="stylesheet" href="/static/style.css"><main id="main" class="main"></main>' +
+      '<script type="module">import {renderPairing} from "/static/pages/pairing.mjs"; renderPairing(document.querySelector("main"));</script>' });
+    return route.fulfill({ contentType: pathname.endsWith(".css") ? "text/css" : "text/javascript",
+      body: await readFile(path.join(__dirname, "../harness_hub", pathname), "utf8") });
+  });
+  await page.goto("http://hub.test/");
+  await expect(page.getByRole("heading", { name: "No pairing requests in the last day" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open Marketplace" })).toHaveAttribute("href", "#/marketplace");
+  await expect(page.locator(".pairing-group")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+for (const [state, needs, armed] of [["pending", "approve", false], ["claimed", "confirm", true]]) {
+  test(`a ${state} card lists every requested scope, also one the daemon did not describe`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const { errors } = await mount(page, [request("pr-s", { state, needs, armed, scopes: ["sessions", "images"],
+      disclosures: [{ scope: "sessions", tier: "standard", text: "This app can start agent tasks." }] })]);
+    const scopes = card(page, "pr-s").locator("dt").filter({ hasText: /^Scopes$/ }).locator("+ dd");
+    await expect(scopes).toBeVisible();
+    await expect(scopes.locator(".scope-chip")).toHaveText(["Standard sessions", "Standard images"]);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("a claimed slot keeps the daemon's scope text one tap away", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const { errors } = await mount(page, [request("pr-k", { state: "claimed", needs: "confirm", armed: true,
+    scopes: ["sessions:all"], elevated: ["sessions:all"], disclosures: [{ scope: "sessions:all", tier: "elevated",
+      text: "This app can **read every session on this harness**." }] })]);
+  const box = card(page, "pr-k");
+  const text = box.locator('[data-scope="sessions:all"] .disclosure-text');
+  await expect(text).toBeHidden();
+  await box.getByText("What each scope allows").click();
+  await expect(text).toHaveText("This app can read every session on this harness.");
+  await expect(box.locator('[data-scope="sessions:all"] .pill')).toHaveText("Elevated");
   expect(errors).toEqual([]);
 });
