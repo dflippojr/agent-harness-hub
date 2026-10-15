@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { api } from "../harness_hub/static/lib/api.mjs";
 import { daemonBanner, daemonChip, noteRead, pairingCount, resetStatus } from "../harness_hub/static/lib/status.mjs";
 
 const answer = (extra = {}) => ({
@@ -409,4 +410,101 @@ test("a daemon that answers /health with an error is answering: a restart shows 
   noteRead("settings/health", 200, { reachable: true, answered: true, restarting: false, health: { ok: true } });
   assert.deepEqual(daemonChip(), { tone: "ok", text: "Daemon live · API 1.27" });
   assert.equal(daemonBanner(), null);
+});
+
+
+test("ending an older restart does not settle a revision saved during it", () => {
+  for (const reverse of [false, true]) {
+    resetStatus();
+    noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true }, 1);
+    noteRead("overview", 200, answer({ restarting: true }), 2);
+    noteRead("settings/config", 200, { revision: 5, pending_revision: 5, restart_required: true }, 3);
+    const active = () => noteRead("settings/health", 200, { reachable: true, restarting: true, health: null }, 4);
+    const done = () => noteRead("overview", 200, answer({ health: { config_revision: 4, config_confirmed: true } }), 5);
+    if (reverse) { done(); active(); } else { active(); done(); }
+    assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
+    assert.equal(daemonBanner().detail, "Revision 5 is saved; the daemon still runs revision 4.");
+    noteRead("settings/health", 200, { reachable: true, restarting: false,
+      health: { config_revision: 5, config_confirmed: true } }, 6);
+    assert.equal(daemonBanner(), null);
+  }
+});
+
+test("owner API replies change reachability without erasing a health failure", () => {
+  for (const [path, status, data] of [
+    ["settings/backends", 200, {}],
+    ["pairing", 503, { reachable: true }],
+    ["modules", 200, { reachable: true, state: "ready" }],
+    ["spend", 200, { reachable: true, error: "" }],
+  ]) {
+    resetStatus();
+    noteRead("overview", 200, answer(), 1);
+    noteRead("settings/health", 200, { reachable: false, answered: true, restarting: false, health: null }, 3);
+    noteRead(path, status, data, 5);
+    assert.equal(daemonChip().text, "Daemon unhealthy", path);
+    assert.equal(daemonBanner().title, "The daemon answered, but its health check failed.");
+    // An older healthy read is still older health evidence, despite the newer owner API reply.
+    noteRead("overview", 200, answer(), 2);
+    assert.equal(daemonChip().text, "Daemon unhealthy");
+    noteRead("pairing", 503, GONE, 6);
+    assert.equal(daemonChip().text, "Daemon not answering");
+    // Health has its own order: this delayed poll predates the owner API read, but follows the health failure.
+    noteRead("settings/health", 200, { reachable: true, restarting: false, health: { ok: true } }, 4);
+    assert.equal(daemonChip().text, "Daemon not answering");
+    noteRead(path, status, data, 7);
+    assert.equal(daemonChip().tone, "ok");
+  }
+});
+
+test("an accepted restart settles a warning even when navigation skips every active health poll", async (t) => {
+  resetStatus();
+  const originalFetch = globalThis.fetch;
+  const originalStorage = globalThis.sessionStorage;
+  t.after(() => { globalThis.fetch = originalFetch; globalThis.sessionStorage = originalStorage; });
+  globalThis.sessionStorage = { getItem: () => null };
+  let accepted = false;
+  globalThis.fetch = async (url) => new Response(JSON.stringify(
+    url === "/api/settings/config" ? { revision: 3, pending_revision: null, restart_required: true } :
+    url === "/api/settings/restart" ? { accepted, target_revision: 3 } :
+    answer({ health: { config_revision: 3, config_confirmed: true } })), { status: 200 });
+  await api("settings/config");
+  await api("settings/restart", { method: "POST", body: { revision: 3, confirm: true } });
+  await api("overview");
+  assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
+  accepted = true;
+  await api("settings/restart", { method: "POST", body: { revision: 3, confirm: true } });
+  // The owner moves to Apps before a poll fires, then returns to Overview after completion.
+  await api("overview");
+  assert.equal(daemonBanner(), null);
+});
+
+
+test("health requested before restart acceptance cannot settle that accepted restart", async (t) => {
+  resetStatus();
+  const originalFetch = globalThis.fetch;
+  const originalStorage = globalThis.sessionStorage;
+  t.after(() => { globalThis.fetch = originalFetch; globalThis.sessionStorage = originalStorage; });
+  globalThis.sessionStorage = { getItem: () => null };
+  let accept;
+  globalThis.fetch = async (url) => {
+    if (url === "/api/settings/restart") return new Promise((resolve) => {
+      accept = () => resolve(new Response(JSON.stringify({ accepted: true, target_revision: 3 }), { status: 202 }));
+    });
+    return new Response(JSON.stringify(url === "/api/settings/config"
+      ? { revision: 3, pending_revision: null, restart_required: true }
+      : answer({ health: { config_revision: 3, config_confirmed: true } })), { status: 200 });
+  };
+  await api("settings/config");
+  const pending = api("settings/restart", { method: "POST", body: { revision: 3, confirm: true } });
+  await api("overview");
+  assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
+  accept();
+  await pending;
+  assert.equal(daemonBanner().title, "The daemon is restarting.");
+  await api("overview");
+  assert.equal(daemonBanner(), null);
+  // A subsequent Settings read that still asks for a restart is newer evidence.
+  await api("settings/config");
+  await api("overview");
+  assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
 });

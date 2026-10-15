@@ -188,12 +188,14 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     app.state.store = store
     app.state.sessions = sessions
     app.state.inventory = inventory
-    restart = {"active": False, "target": None, "not_before": 0.0}
+    restart = {"active": False, "target": None, "generation": 0, "not_before": 0.0}
 
-    def observe_restart(shown: dict | None) -> None:
+    def observe_restart(shown: dict | None, health_generation: int) -> None:
         """End a restart the Hub started once the daemon answers healthy with confirmed settings, at the target revision
-        or after a recovery. Overview and the Settings health poll both look, so neither page has to stay open."""
-        if time.monotonic() >= restart["not_before"] and shown and shown["ok"] and shown["config_confirmed"] and (
+        or after a recovery. Only a health request begun since this restart can end it. Overview and the Settings
+        health poll both look, so neither page has to stay open."""
+        if (health_generation == restart["generation"] and time.monotonic() >= restart["not_before"]
+                and shown and shown["ok"] and shown["config_confirmed"]) and (
                 restart["target"] is None or shown["config_revision"] == restart["target"] or shown["recovery"]):
             restart["active"] = False
 
@@ -409,6 +411,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         # failed read, or the deadline, cancels it instead.
         pairing_task = asyncio.ensure_future(read_pairing()) if key else None
         deadline = asyncio.get_running_loop().time() + PAIRING_COUNT_SECONDS
+        health_generation = restart["generation"]
         try:
             reads = await concurrently(daemon.health(), *(
                 (daemon.admin(key["token"]), daemon.admin(key["token"], "/hub-claim")) if key else ()))
@@ -448,7 +451,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 pairing_task.cancel()
                 await concurrently(pairing_task)
         result = overview(claims, settings.daemon_url, health, ownership, error)
-        observe_restart(health["health"] if health else None)
+        observe_restart(health["health"] if health else None, health_generation)
         result["answered"] = answered
         result["restarting"] = restart["active"]
         result["attention"] = attention
@@ -1026,12 +1029,13 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     @app.get("/api/settings/health")
     async def settings_health():
+        health_generation = restart["generation"]
         try:
             reply = await daemon.health()
         except DaemonUnreachable:
             return {"reachable": False, "answered": False, "restarting": restart["active"], "health": None}
         shown = health_view(reply.body)["health"] if reply.ok else None
-        observe_restart(shown)
+        observe_restart(shown, health_generation)
         # reachable: a health answer was read; answered: the daemon replied at all, a 503 mid-restart included.
         return {"reachable": reply.ok, "answered": True, "status": reply.status, "restarting": restart["active"],
                 "health": shown}
@@ -1097,8 +1101,9 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         if not reply.ok:
             return _forwarded(reply)
         if operation == "restart" and isinstance(reply.body, dict) and reply.body.get("accepted") is True:
-            restart.update(active=True, target=reply.body.get("target_revision"),
-                           not_before=time.monotonic() + RESTART_GRACE_SECONDS)
+            accepted_at = time.monotonic()
+            restart.update(active=True, target=reply.body.get("target_revision"), generation=restart["generation"] + 1,
+                           not_before=accepted_at + RESTART_GRACE_SECONDS)
         shown = registry_view(reply.body) if operation in (
             "schema", "config", "validate", "save", "rollback", "restart") else control_view(operation, reply.body)
         return JSONResponse(shown, status_code=reply.status)

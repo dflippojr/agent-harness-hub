@@ -1,7 +1,7 @@
 // Calls to this Hub's own server. The browser talks only to the Hub; the Hub alone talks to the daemon.
 
 import { sentence } from "./dom.mjs";
-import { noteRead } from "./status.mjs";
+import { noteRead, noteRestart } from "./status.mjs";
 
 // The Hub's own server did not answer: the browser's bare "Failed to fetch", worded as a page shows it.
 export const HUB_DOWN = "The Hub server is not answering. Check that it is still running on the daemon host, then retry.";
@@ -44,8 +44,10 @@ export async function api(path, { method = "GET", body } = {}) {
   } catch {
     data = { detail: text.slice(0, 200) };
   }
-  // The shell's daemon status and banner are worked out from the reads the pages make anyway.
+  // The shell uses the reads the pages make and accepted restarts, even when navigation skips the health poll.
   if (method === "GET" && path !== "session") noteRead(path.split("?")[0], response.status, data, order);
+  // Acceptance is new evidence: only health requested after it can settle this restart.
+  if (method === "POST" && path === "settings/restart" && response.ok && data?.accepted === true) noteRestart(++started);
   if (!response.ok) {
     if (response.status === 401 && path !== "session") window.dispatchEvent(new CustomEvent("hub:signed-out"));
     throw new ApiError(response.status, data);
