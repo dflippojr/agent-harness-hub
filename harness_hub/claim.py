@@ -73,6 +73,7 @@ class ClaimManager:
         self._redeemed_key: dict | None = None
         self._terminal_outcome: dict | None = None
         # The request id whose redeem went unanswered after it may have reached the daemon (a minted key can be lost).
+        # Also saved on the pending claim as `redeem_unanswered`, so a restart before the retry still detects it.
         self._redeem_unanswered: str | None = None
         self._shutdown_task: asyncio.Task | None = None
         self._persist_failures = 0
@@ -291,7 +292,7 @@ class ClaimManager:
             reply = await self.daemon.redeem_hub_claim(claim["request_id"], claim["verifier"])
         except DaemonUnreachable as exc:
             if exc.sent:
-                self._redeem_unanswered = claim["request_id"]
+                await self._note_unanswered(claim)
             if self.clock() > claim["expires_at"] + 300:  # the approve and redeem windows have both passed
                 return await self._finish(EXPIRED)
             return False
@@ -304,7 +305,7 @@ class ClaimManager:
         if reply.status == 409 and reply.code == "hub_claimed":
             return await self._finish(REFUSED)
         elif (reply.status == 400 and "already redeemed" in reply.detail
-              and self._redeem_unanswered == claim["request_id"]):
+              and (self._redeem_unanswered == claim["request_id"] or claim.get("redeem_unanswered") is True)):
             # The daemon minted the key for the attempt whose reply never arrived; it will not issue it again.
             log.error("Hub claim %s: the daemon issued the Hub key but the reply was lost; release the Hub on the "
                       "daemon host and claim again", claim["request_id"])
@@ -316,6 +317,16 @@ class ClaimManager:
         else:
             log.warning("Hub claim %s ended: HTTP %s", claim["request_id"], reply.status)
             return await self._finish(FAILED)
+
+    async def _note_unanswered(self, claim: dict) -> None:
+        """The daemon may have minted the key for this attempt: remember it, also across a restart."""
+        self._redeem_unanswered = claim["request_id"]
+        if claim.get("redeem_unanswered") is not True:
+            try:
+                await asyncio.to_thread(self.store.update, claim={**claim, "redeem_unanswered": True})
+            except OSError:
+                log.warning("Hub claim %s: could not save that a redeem went unanswered; the Hub remembers it "
+                            "until it stops", claim["request_id"])
 
     async def _store_key(self, body, claim: dict) -> bool:
         token = body.get("token") if isinstance(body, dict) else None

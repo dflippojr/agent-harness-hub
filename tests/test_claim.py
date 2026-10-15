@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
 
 import pytest
 
-from harness_hub.state import STATE_FILE
+from harness_hub.claim import ClaimManager
+from harness_hub.daemon import DaemonUnreachable, Reply
+from harness_hub.state import STATE_FILE, StateStore
 
 from .conftest import assert_no_secrets
 
@@ -213,3 +216,33 @@ def test_state_is_owner_only(hub, fake_daemon):
     hub.post("/api/claim")
     assert (hub.state_dir / STATE_FILE).stat().st_mode & 0o077 == 0
     assert hub.state_dir.stat().st_mode & 0o077 == 0
+
+
+class _Redeems:
+    """A daemon stand-in for one redeem each: the given replies or exceptions, in order."""
+
+    base_url = "https://daemon.test"
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+
+    async def redeem_hub_claim(self, *_):
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+@pytest.mark.parametrize("sent, expected", [(True, "lost"), (False, "failed")])
+def test_an_unanswered_redeem_is_remembered_across_a_restart(tmp_path, sent, expected):
+    # The Hub stops after the reply was lost and before its retry; the restarted Hub reads the saved claim.
+    store = StateStore(tmp_path)
+    store.update(claim={"request_id": "pr-lost", "verifier": "synthetic-verifier", "match_code": "123456",
+                        "started_at": 0, "expires_at": time.time() + 600, "daemon_url": _Redeems.base_url})
+    before = ClaimManager(store, _Redeems(DaemonUnreachable("ReadTimeout", sent=sent)))
+    assert asyncio.run(before.poll_once()) is False
+    assert StateStore(tmp_path).get("claim").get("redeem_unanswered") is (True if sent else None)
+    after = ClaimManager(StateStore(tmp_path),
+                         _Redeems(Reply(400, {"detail": "this pairing request was already redeemed"})))
+    assert asyncio.run(after.poll_once()) is True
+    assert after.state() == expected and StateStore(tmp_path).get("outcome")["state"] == expected
