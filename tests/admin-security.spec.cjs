@@ -50,8 +50,11 @@ const proposal = { id: "p-synthetic", title: "Synthetic proposal", content_hash:
   examples: [{ prompt: "<script>example prompt</script>", expected: "<img src=x onerror=alert(1)>expected text" }],
   references: [{ path: "notes.txt", content: "<script>fixture</script>" }] };
 
-async function mount(page, { failure = false, overrides = {} } = {}) {
+// Accounts follow tests/admin_fake.py: a member read answers for the member asked for, and a saved change stays.
+// hold(id, method), when given, may return a promise the reply waits for (a slow daemon).
+async function mount(page, { failure = false, overrides = {}, hold = () => null } = {}) {
   const writes = [], reads = [], errors = [];
+  const people = structuredClone(Array.isArray(overrides.accounts) ? overrides.accounts : [member]);
   page.on("pageerror", error => errors.push(error.message));
   await page.route("http://hub.test/**", async route => {
     const request = route.request(), url = new URL(request.url()), pathname = url.pathname;
@@ -62,8 +65,16 @@ async function mount(page, { failure = false, overrides = {} } = {}) {
       if (id === "catalog") return route.fulfill({ json: { operations: catalog, not_offered: [
         { label: "Owner keys", reason: "Hub key cannot mint owner keys", cli: "harness keys create" }] } });
       if (failure && id === "cleanup") return route.fulfill({ status: 503, json: { detail: "Daemon unavailable; inspect state." } });
+      await hold(id, request.method());
       if (overrides[id] instanceof Error) return route.fulfill({ status: 502, json: { detail: overrides[id].message } });
-      const replies = { accounts: [member], account: member, account_save: { ...member, enabled: false }, credentials: [],
+      const person = people.find(row => row.user_id === url.searchParams.get("user_id"));
+      if (id === "accounts") return route.fulfill({ json: people });
+      if ((id === "account" || id === "account_save") && !overrides[id]) {
+        if (!person) return route.fulfill({ status: 404, json: { detail: "no household account matches that id" } });
+        if (id === "account_save") { const { confirm, ...changes } = request.postDataJSON(); Object.assign(person, changes); }
+        return route.fulfill({ json: person });
+      }
+      const replies = { credentials: [],
         skills: { enabled: true, proposals: [proposal], installed: [] }, proposal, skill_install: {}, maintenance: { free_gb: 10 },
         retention_preview: { count: 2, bytes: 1024, confirmation: "DELETE 2 synthetic" }, retention_apply: { removed: 2 },
         runners: [], google_invite: { code: "ahg-synthetic-once", expires_at: 4102444800 },
@@ -97,7 +108,8 @@ test("disable and cleanup require explicit confirmation; cancel sends nothing", 
   await expect.poll(() => writes.length).toBe(1);
   expect(writes[0]).toEqual({ id: "account_save", method: "PATCH", target: { user_id: "u-synthetic" }, body: { enabled: false, confirm: true } });
   await expect(notice(page)).toHaveText("Daemon accepted update member.");
-  await expect(pane(page).getByRole("button", { name: "Disable", exact: true })).toBeEnabled();
+  await expect(pane(page).getByRole("button", { name: "Enable", exact: true })).toBeEnabled();
+  await expect(page.getByRole("table", { name: "Members" })).toContainText("Disabled");
   await page.getByRole("button", { name: "Maintenance", exact: true }).click(); await expect(page.getByRole("status")).toHaveText("Current daemon state.");
   await select(page, "cleanup"); await form(page).getByRole("button").click();
   await page.getByRole("button", { name: "Confirm clean up" }).click();
@@ -147,7 +159,47 @@ test("edit sends only the changed fields after a question in the pane", async ({
   expect(writes[0]).toEqual({ id: "account_save", method: "PATCH", target: { user_id: "u-synthetic" },
     body: { display_name: "Renamed member", disk_quota_bytes: 10 * 1024 ** 3, confirm: true } });
   await expect(pane(page).getByRole("button", { name: "Edit member" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Renamed member", level: 2 })).toBeVisible();
+  await expect(pane(page)).toContainText("0 B of 10 GiB");
   expect(errors).toEqual([]);
+});
+
+test("a field left as it was filled is not sent, even when a late read changes the daemon's value", async ({ page }) => {
+  let release;
+  const detail = new Promise(resolve => { release = resolve; });
+  const { writes, errors } = await mount(page, { overrides: { account: { ...member, login: "rebound@example.test" } },
+    hold: id => id === "account" ? detail : null });
+  await pane(page).getByRole("button", { name: "Edit member" }).click();
+  await pane(page).getByLabel("Display name").fill("Renamed member");
+  release();
+  await expect(pane(page)).toContainText("rebound@example.test");
+  await expect(pane(page).getByLabel("Display name")).toHaveValue("Renamed member");
+  await pane(page).getByRole("button", { name: "Save changes" }).click();
+  await expect(asked(page)).not.toContainText("Exact Tailscale login");
+  await page.getByRole("button", { name: "Confirm update member", exact: true }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0].body).toEqual({ display_name: "Renamed member", confirm: true });
+  expect(errors).toEqual([]);
+});
+
+test("a confirmed write takes its question away at once and holds the controls until the reads finish", async ({ page }) => {
+  let release;
+  const reread = new Promise(resolve => { release = resolve; });
+  let wrote = false;
+  const { writes, errors } = await mount(page, { hold: (id, method) => {
+    if (method !== "GET") wrote = true;
+    return wrote && id === "accounts" ? reread : null;
+  } });
+  await pane(page).getByRole("button", { name: "Disable", exact: true }).click();
+  const confirm = page.getByRole("button", { name: "Confirm update member", exact: true });
+  await confirm.click();
+  await expect(asked(page)).toHaveCount(0);
+  await expect.poll(() => writes.length).toBe(1);
+  await expect(pane(page).getByRole("button", { name: "Disable", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Open Synthetic member" }).click({ force: true });
+  release();
+  await expect(pane(page).getByRole("button", { name: "Enable", exact: true })).toBeEnabled();
+  expect(writes).toHaveLength(1); expect(errors).toEqual([]);
 });
 
 test("Add member is the primary action and sends only what was typed", async ({ page }) => {
@@ -202,8 +254,13 @@ test("Google code is shown once and is cleared by navigation and disposal", asyn
   await page.getByRole("button", { name: "Accounts", exact: true }).click();
   await pane(page).getByRole("button", { name: "Create link code" }).click();
   await expect(page.locator("[data-link-code]")).toBeVisible();
+  await pane(page).getByRole("button", { name: "Cancel link code" }).click();
+  await page.getByRole("button", { name: "Confirm cancel Google link code", exact: true }).click();
+  await expect(page.getByText("ahg-synthetic-once")).toHaveCount(0);
+  await pane(page).getByRole("button", { name: "Create link code" }).click();
+  await expect(page.locator("[data-link-code]")).toBeVisible();
   await page.evaluate(() => window.stopAdmin()); await expect(page.getByText("ahg-synthetic-once")).toHaveCount(0);
-  expect(writes.map(write => write.id)).toEqual(["google_invite", "google_invite", "google_invite"]);
+  expect(writes.map(write => write.id)).toEqual(["google_invite", "google_invite", "google_invite", "google_cancel", "google_invite"]);
   expect(writes[0].target).toEqual({ user_id: "u-synthetic" }); expect(errors).toEqual([]);
 });
 
@@ -256,6 +313,16 @@ for (const width of [390, 1280]) test("layout and audit paging at " + width, asy
   expect((await heights()).every(height => height >= 44)).toBe(true); expect(errors).toEqual([]);
 });
 
+
+test("a long login at 320px stays inside the members table's box", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 900 });
+  const { errors } = await mount(page, { overrides: { accounts: [{ ...member, login: "householdmemberwithalonglogin@example.test" }] } });
+  await expect(pane(page)).toContainText("0 B of 20 GiB");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  const open = await page.getByRole("button", { name: "Open Synthetic member" }).boundingBox();
+  expect(open.x + open.width).toBeLessThanOrEqual(320);
+  expect(errors).toEqual([]);
+});
 
 test("incomplete review blocks both the install shortcut and a manually selected install", async ({ page }) => {
   const { writes } = await mount(page, { overrides: { proposal: { ...proposal, review_complete: false } } });

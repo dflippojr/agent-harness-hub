@@ -1098,7 +1098,8 @@ body.signed-out .topbar { display: none; }
 .member-title { display: block; font-weight: 650; overflow-wrap: break-word; }
 .member-sub { display: block; font-size: .82rem; color: var(--muted); overflow-wrap: break-word; }
 .member-meta { display: none; font-size: .82rem; color: var(--muted); overflow-wrap: anywhere; }
-.admin-table td.member-open { width: 1%; padding: 4px 8px; text-align: right; white-space: nowrap; }
+/* Positioned, so the Open button's screen-reader label stays inside the table's scroll box. */
+.admin-table td.member-open { position: relative; width: 1%; padding: 4px 8px; text-align: right; white-space: nowrap; }
 .btn.open-member { padding: 0; display: inline-grid; place-items: center; color: var(--muted); }
 .card.admin-member { padding: 18px 20px; border-radius: 14px; overflow-wrap: anywhere; }
 .admin-member-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
@@ -1146,6 +1147,8 @@ body.signed-out .topbar { display: none; }
   .segmented button { flex: 1 1 auto; }
   .admin-table thead, .admin-table .col-wide { display: none; }
   .admin-table .member-meta { display: block; }
+  /* At 320px a login is wider than its column: let it break anywhere rather than widen the table. */
+  .admin-table .member-title, .admin-table .member-sub, .admin-table .member-meta { overflow-wrap: anywhere; }
 }
 
 /* Pairing requests (Hub design 6): Needs you as two-half decision cards (who and what, then the decision on a grey

@@ -116,7 +116,7 @@ export function renderAdmin(main) {
       return;
     }
     clear(accountsView);
-    selected = opFor(DEFAULT[group]); drawForm(); execute(selected, {}, {});
+    selected = opFor(DEFAULT[group]); drawForm(); void execute(selected, {}, {});
   }
 
   // Accounts: the members table and the open member's detail pane.
@@ -180,6 +180,7 @@ export function renderAdmin(main) {
           button("Household audit", () => execute(opFor("account_audit"), {}, {}), { class: "btn ghost", "data-field": "account-audit" }) : null),
         opFor("accounts") ? command(opFor("accounts").cli, { parity: true }) : null),
       pane));
+    if (busy) for (const control of accountsView.querySelectorAll("button, input")) control.disabled = true;
     if (focused) focusField(focused, caret);
   }
   function memberTable() {
@@ -213,7 +214,7 @@ export function renderAdmin(main) {
     const field = `action-${id}`;
     return button(label, () => op.confirmation ?
       ask(place, op, { user_id: row.user_id }, {}, [["Member", `${memberName(row)} (${row.user_id})`]], field) :
-      run(op, { user_id: row.user_id }, {}), { "data-field": field, ...extra });
+      void run(op, { user_id: row.user_id }, {}), { "data-field": field, ...extra });
   }
   function memberPane() {
     const row = current();
@@ -276,6 +277,7 @@ export function renderAdmin(main) {
         max: number ? Number.MAX_SAFE_INTEGER : undefined, inputmode: number ? "numeric" : undefined, required,
         autocomplete: "off", "data-field": key });
       input.value = value === undefined || value === null ? "" : String(value);
+      input.dataset.initial = input.value;
       if (name === "disk_quota_bytes") input.addEventListener("input", () => {
         const hint = input.parentElement?.querySelector(".hint");
         if (hint) hint.textContent = quotaHint(input.value);
@@ -307,7 +309,7 @@ export function renderAdmin(main) {
       if (!values) return;
       const body = Object.fromEntries(Object.entries(values).filter(([name, value]) => value !== "" ||
         op.fields.find(spec => spec.name === name)?.required));
-      run(op, {}, body);
+      void run(op, {}, body);
     } }, h("div", { class: "admin-fields" }, op.fields.map(spec => field("add", spec.name, spec.type, "", spec.required))),
     h("div", { class: "admin-actions" }, h("button", { type: "submit", class: "btn primary", "data-field": "add-submit" }, "Add member"),
       button("Cancel", () => { paneMode = null; drafts = new Map(); drawAccounts(); focusField("member-title"); }, { "data-field": "add-cancel" })));
@@ -331,16 +333,21 @@ export function renderAdmin(main) {
         button("Cancel", () => { paneMode = null; asking = null; drafts = new Map(); drawAccounts(); focusField("edit"); }, { "data-field": "edit-cancel" })));
     return form;
   }
-  // Only the fields that differ from the daemon's values go in the question and the write.
+  // Only the fields the owner changed go in the question and the write. A field left as it was filled is never sent,
+  // even when a later read shows the daemon's value has moved on (a login rebound on the host stays rebound).
   function saveEdit(row, op) {
-    const values = typed("edit", editFields(op));
-    if (!values) return;
     const body = {}, changes = [];
-    for (const [name, value] of Object.entries(values)) {
-      if (value === (row[name] ?? "")) continue;
-      if (value === "") { message(`${LABELS[name] || readable(name)} cannot be empty.`, true); return; }
-      body[name] = value;
-      changes.push([LABELS[name] || readable(name), `${shown(name, row[name])} → ${shown(name, value)}`]);
+    for (const spec of editFields(op)) {
+      const input = drafts.get(`edit:${spec.name}`);
+      if (!input) continue;
+      if (!input.reportValidity()) return;
+      const raw = input.value.trim(), label = LABELS[spec.name] || readable(spec.name);
+      if (raw === input.dataset.initial.trim()) continue;
+      if (raw === "") { message(`${label} cannot be empty.`, true); return; }
+      const value = spec.type === "integer" ? Number(raw) : raw;
+      if (value === row[spec.name]) continue;
+      body[spec.name] = value;
+      changes.push([label, `${shown(spec.name, row[spec.name])} → ${shown(spec.name, value)}`]);
     }
     if (!changes.length) { message("Nothing to save: every field matches the daemon's value."); return; }
     ask("member", op, { user_id: row.user_id }, body, [["Member", `${memberName(row)} (${row.user_id})`], ...changes], "edit-save");
@@ -360,19 +367,21 @@ export function renderAdmin(main) {
       h("h4", {}, name + "?"), op.confirmation ? h("p", {}, op.confirmation) : null, facts(rows),
       h("div", { class: "admin-actions" },
         button("Cancel", () => { asking = null; drawAccounts(); focusField(back); }, { "data-field": "cancel" }),
-        button(name, () => run(op, targets, { ...body, confirm: true }),
+        button(name, () => void run(op, targets, { ...body, confirm: true }),
           { class: destructive ? "btn danger" : "btn primary", "data-field": "confirm" })));
   }
   // A write on Accounts: the daemon's answer goes in the page notice, then the list and the open member are read again.
   async function run(op, targets, body) {
     if (busy || stopped) return;
-    asking = null; setBusy(true); message("Applying " + lower(op.label) + "…");
+    asking = null; drawAccounts(); setBusy(true); message("Applying " + lower(op.label) + "…");
     const query = new URLSearchParams(targets);
     let refused = false;
     try {
       const reply = await api("manage/" + op.id + (query.size ? "?" + query : ""), { method: op.method, body });
       if (stopped) return;
       if (op.id === "google_invite") showCode(targets.user_id, reply);
+      // A cancelled or unlinked code can no longer be redeemed, so it is no longer shown for sharing.
+      if ((op.id === "google_cancel" || op.id === "google_unlink") && linkCode?.id === targets.user_id) eraseCode();
       if (op.id === "account_add" && validTarget(reply?.user_id)) { memberId = reply.user_id; detail = null; }
       if (op.id === "account_add" || op.id === "account_save") { paneMode = null; drafts = new Map(); }
       message("Daemon accepted " + lower(op.label) + ".");
@@ -381,10 +390,11 @@ export function renderAdmin(main) {
       refused = true;
       message(error.message + " Inspect current state before repeating a write.", true);
     }
-    setBusy(false);
     await loadAccounts();
-    if (refused && !stopped) reveal(notice);
-    else if (!stopped) focusField(op.id === "google_invite" ? "dismiss-code" : "member-title");
+    if (stopped) return;
+    setBusy(false);
+    if (refused) reveal(notice);
+    else focusField(op.id === "google_invite" ? "dismiss-code" : "member-title");
   }
   function focusField(name, caret = null) {
     const target = accountsView.querySelector(`[data-field="${name}"]`);
