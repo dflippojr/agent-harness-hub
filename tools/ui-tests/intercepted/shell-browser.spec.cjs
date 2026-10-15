@@ -59,7 +59,7 @@ test("a malformed sign-in link is refused without posting it", async ({ page }) 
 
 test("Modules with a healthy inventory shows no empty error box", async ({ page }) => {
   const { errors } = await mount(page, "#/modules");
-  await expect(page.getByRole("heading", { name: "hub", exact: true })).toBeVisible();
+  await expect(page.locator("tr[data-module=hub]")).toContainText("Running");
   await expect(page.locator(".notice.bad:visible")).toHaveCount(0);
   for (const alert of await page.locator("[role=alert]:visible").all()) await expect(alert).not.toHaveText("");
   expect(errors).toEqual([]);

@@ -55,6 +55,13 @@ test("every rail section has an icon, and an unknown name is a bug rather than a
   assert.throws(() => dom.icon("no-such-icon"), TypeError);
 });
 
+test("toggle can keep its label for screen readers only", () => {
+  const row = dom.toggle("search", { hideLabel: true });
+  assert.equal(row.children[0].className, "visually-hidden");
+  assert.equal(row.children[0].textContent, "search");
+  assert.equal(dom.toggle("search").children[0].className, "switch-label");
+});
+
 test("countdown reads time left, warns in the last minute, then expires", () => {
   assert.equal(dom.clock(272), "4:32");
   assert.equal(dom.clock(3725), "1:02:05");

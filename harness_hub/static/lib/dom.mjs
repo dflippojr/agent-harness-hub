@@ -131,11 +131,12 @@ export function banner(tone, title, detail, action, { lead } = {}) {
 }
 
 // A labelled on/off switch: a real checkbox with role=switch, so keyboards and screen readers treat it as one.
-export function toggle(label, { checked = false, disabled = false, onchange } = {}) {
+// hideLabel keeps the label for screen readers only, where a table column already says what the switch is.
+export function toggle(label, { checked = false, disabled = false, onchange, hideLabel = false } = {}) {
   const input = h("input", { type: "checkbox", role: "switch", disabled });
   input.checked = checked;
   if (onchange) input.addEventListener("change", () => onchange(input.checked));
-  return h("label", { class: "switch" }, h("span", { class: "switch-label" }, label),
+  return h("label", { class: "switch" }, h("span", { class: hideLabel ? "visually-hidden" : "switch-label" }, label),
     h("span", { class: "switch-track" }, input, h("i", { "aria-hidden": "true" })));
 }
 
@@ -186,6 +187,7 @@ const ICONS = {
   refresh: [["path", { d: "M20 11a8 8 0 1 0-2.3 5.7" }], ["path", { d: "M20 4v7h-7" }]],
   check: [["path", { d: "m5 12 5 5 9-10" }]],
   alert: [["path", { d: "M12 3 2 20h20z" }], ["path", { d: "M12 10v4M12 17h.01" }]],
+  info: [["circle", { cx: 12, cy: 12, r: 9 }], ["path", { d: "M12 11v5M12 8h.01" }]],
   clock: [["circle", { cx: 12, cy: 12, r: 9 }], ["path", { d: "M12 7v5l3 2" }]],
   chevron: [["path", { d: "m9 6 6 6-6 6" }]],
   shield: [["path", { d: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" }]],

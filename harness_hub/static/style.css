@@ -1024,6 +1024,50 @@ body.signed-out .topbar { display: none; }
   .apps-entry { padding: 8px 12px; }
 }
 
+/* Modules (Hub design 9): the installed table with a real switch per row, then the not-installed modules in one
+   closed row. On a phone each row stacks: name and switch, then status and when a change applies, then details. */
+.modules-head h1 { flex: 1; }
+.modules-head .btn { display: inline-flex; align-items: center; gap: 6px; }
+.modules-revision { font-size: .85rem; }
+.card.modules-table { padding: 0; overflow: hidden; border-radius: 14px; }
+.modules-table .table td { overflow-wrap: normal; }
+.modules-table td.modules-name { font-weight: 650; overflow-wrap: anywhere; }
+.modules-table td.modules-switch { width: 1%; padding-top: 0; padding-bottom: 0; white-space: nowrap; }
+.modules-switch .switch { gap: 0; }
+.modules-details { overflow-wrap: anywhere; }
+.modules-details > * { display: block; width: fit-content; }
+.modules-details > .pill { display: flex; margin-bottom: 2px; }
+.modules-details > .muted { font-size: .87rem; }
+.modules-error { color: var(--bad); font-weight: 600; }
+.card.modules-absent { margin-top: 0; }
+.modules-absent summary { flex-wrap: wrap; padding: 6px 16px; }
+.modules-absent-names { flex: 1 1 20em; min-width: 0; overflow-wrap: anywhere; }
+.modules-absent-hint { margin-left: 26px; font-size: .85rem; font-weight: 500; }
+.modules-absent .troubleshoot-body > p { margin-bottom: 8px; }
+
+@media (max-width: 699px) {
+  .modules-table thead { display: none; }
+  .modules-table tbody tr {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr) auto;
+    grid-template-areas: "name name switch" "status applies switch" "details details details";
+    align-items: center;
+    gap: 4px 10px;
+    padding: 10px 6px 12px 14px;
+    border-top: 1px solid var(--line);
+  }
+  .modules-table tbody tr:first-child { border-top: 0; }
+  .modules-table .table td { padding: 0; border: 0; }
+  .modules-table td.modules-name { grid-area: name; }
+  .modules-table td.modules-status { grid-area: status; }
+  .modules-table td.modules-applies { grid-area: applies; }
+  .modules-table td.modules-switch { grid-area: switch; width: auto; justify-self: end; }
+  .modules-table td.modules-details { grid-area: details; padding-right: 8px; }
+  /* The column head is gone, so the pill says what it is. */
+  .modules-applies:has(.pill)::before { content: "Applies"; margin-right: 6px; font-size: .8rem; color: var(--muted); }
+  .modules-applies:not(:has(.pill)) { display: none; }
+}
+
 /* Owner administration reuses the shell and form tokens. */
 .admin-workspace, .admin-output, .admin-row { margin: 16px 0; overflow-wrap: anywhere; }
 .admin-text { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; font: .9rem/1.5 var(--mono); }
@@ -1172,35 +1216,84 @@ body.signed-out .topbar { display: none; }
   .card.waiting { padding: 8px 10px 8px 14px; }
 }
 
-.pairing-confirm { margin-top: 16px; overflow-wrap: anywhere; }
 .disclosures { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .disclosures li { border-top: 1px solid var(--line); padding-top: 10px; }
 .disclosure-head { margin: 0; }
 .disclosure-text { margin: 4px 0 0; font-size: .9rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .disclosures code { font: .82rem var(--mono); }
-.pairing-decision .setting-field { margin-top: 12px; }
 .pairing-ack { display: flex; align-items: flex-start; gap: 10px; min-height: var(--tap); margin: 12px 0; cursor: pointer; }
 .pairing-ack input { flex: none; width: var(--tap); height: var(--tap); margin: 0; accent-color: var(--accent); }
 .pairing-ack span { padding-top: 10px; }
 
-/* Marketplace reuses the card, pill, disclosure and touch-target tokens. */
-.grants-nothing { font-size: 1.05rem; }
-.market-entry h2, .market-entry h3 { overflow-wrap: anywhere; }
-.market-entry h3 { color: var(--text); }
-.entry-head { display: flex; align-items: center; gap: 12px; }
-.entry-head h2 { margin: 0; }
-.entry-by { margin: 0; overflow-wrap: anywhere; }
+/* Marketplace (Hub design 10): one full-width card per entry. Set up opens the consent inside that card on a grey
+   band, and the hand-off replaces it there; slots sit in the card with Pairing's countdown chip and match-code field. */
+.market-list { display: flex; flex-direction: column; gap: 12px; }
+.card.market-entry { padding: 0; overflow: hidden; border-radius: 14px; overflow-wrap: anywhere; }
+.card.market-entry.open { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.entry-main { padding: 18px 20px; }
+.entry-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.entry-title { flex: 1 1 14em; min-width: 0; }
+.card .entry-title h2 { margin: 0; font-size: 1.08rem; }
+.entry-by { margin: 0; font-size: .85rem; }
+.entry-pills { display: flex; flex-wrap: wrap; gap: 6px; }
 .entry-icon {
   flex: none; display: inline-grid; place-items: center; width: 48px; height: 48px; border-radius: var(--radius);
   background: var(--panel-2); color: var(--muted); font-weight: 700; font-size: 1.3rem; text-transform: uppercase;
   object-fit: cover;
 }
-.entry-native, .market-slot { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 4px; }
-.market-consent, .market-handoff { margin-top: 16px; overflow-wrap: anywhere; }
-.market-consent h3, .market-handoff h3 { color: var(--text); }
-.origin-choice { border: 1px solid var(--line); border-radius: var(--radius); margin: 8px 0; padding: 4px 12px 8px; }
-.origin-choice legend { font-weight: 600; padding: 0 4px; }
+.entry-summary { margin: 12px 0 0; font-size: .92rem; }
+.entry-meta { display: flex; flex-wrap: wrap; gap: 6px 28px; margin: 10px 0 0; font-size: .88rem; }
+.entry-meta > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
+.entry-meta dt { color: var(--muted); }
+.entry-meta dd { margin: 0; min-width: 0; }
+.entry-main > .hint { margin-top: 10px; }
+.entry-native { margin-top: 14px; padding-top: 4px; border-top: 1px solid var(--line); }
+.card .entry-native h3 { margin: 10px 0 2px; font-size: .9rem; color: var(--text); }
+.entry-native .facts { font-size: .88rem; }
+
+.market-slot { display: flex; flex-direction: column; gap: 8px; padding: 14px 20px 16px; border-top: 1px solid var(--line); }
+.slot-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-height: var(--tap); }
+.card .slot-head h3 { margin: 0; font-size: .95rem; color: var(--text); }
+.slot-head .countdown { margin-left: auto; }
+.slot-text { margin: 0; font-size: .88rem; }
+.market-slot > .host-command { margin: 0; }
+.slot-decision {
+  display: flex; flex-direction: column; gap: 10px; max-width: 520px; padding: 14px 16px;
+  border-radius: var(--radius); background: var(--panel-2);
+}
+.slot-decision > * { margin: 0; }
+.slot-decision .command { margin: 0; }
+.market-slot .decision-confirm { max-width: 520px; padding: 14px 16px; border-radius: var(--radius); background: var(--panel-2); }
+.card .market-slot .scope-details summary, .card .market-handoff .scope-details summary { font-size: .88rem; color: var(--muted); }
+
+.market-consent, .market-handoff {
+  display: flex; flex-direction: column; gap: 12px; padding: 18px 20px; background: var(--panel-2);
+  border-top: 1px solid var(--line);
+}
+.market-consent > *, .market-handoff > * { margin: 0; }
+.card .market-consent h3, .card .market-handoff h3 { margin: 0; font-size: 1.05rem; color: var(--text); }
+.market-consent > p { font-size: .92rem; }
+.consent-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+@media (min-width: 1200px) { .consent-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.consent-box { padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.consent-box .disclosures li:first-child { border-top: 0; padding-top: 0; }
+.consent-box > p { margin: 0; font-size: .92rem; }
+.consent-box .hint { font-size: .8rem; }
+.consent-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.market-consent .host-command, .market-handoff .command { margin: 0; }
+.handoff-check { color: var(--ok); }
+.origin-choice { margin: 0; padding: 4px 12px 8px; border: 0; }
+.origin-choice legend { padding: 0; font-weight: 600; font-size: .92rem; }
 .origin-choice .pairing-ack { align-items: center; margin: 4px 0; }
+
+@media (max-width: 699px) {
+  .entry-main { padding: 14px; }
+  .entry-setup { flex: 1 1 100%; }
+  .market-slot { padding: 12px 14px 14px; }
+  .slot-decision .decision-buttons .btn { min-height: 50px; }
+  .market-consent, .market-handoff { padding: 14px; }
+  .consent-actions .btn { flex: 1 1 0; }
+}
 
 /* Spend: wide tables scroll inside their own box, so the page never scrolls sideways on a phone. */
 .spend-table { overflow-x: auto; margin: 8px 0 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
