@@ -1,10 +1,11 @@
 // HUB-04 settings: validation errors save nothing; a saved edit persists across a reload; rollback asks first, Cancel
 // keeps the edit, and confirming restores the previous value. Hub design 8: one category at a time from the category
 // list, the filter, the Changed pill, the save bar that shows only with edits, and Discard.
-import { confirmRollback, expect, expectNoHorizontalOverflow, openSection, saveMaxTurns, settingsControls, test }
+import { confirmRollback, expect, expectNoHorizontalOverflow, functionalProject, openSection, saveMaxTurns, settingsControls, test }
   from "./fixtures.mjs";
 
-test("validate, save, reload, then roll back with confirmation", async ({ signedIn: page, errors }) => {
+test("validate, save, reload, then roll back with confirmation", async ({ signedIn: page, errors }, testInfo) => {
+  functionalProject(testInfo);
   await openSection(page, "settings");
   const { turns, saveBar } = settingsControls(page);
   const original = Number(await turns.inputValue());

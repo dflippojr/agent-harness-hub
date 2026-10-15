@@ -1,6 +1,6 @@
 // HUB-07 pairing requests, HUB-08 marketplace and HUB-09 accounts and maintenance. Each test makes its own requests
 // and members with unique names, so the seeded rows stay as they are for the other projects.
-import { appAsksToPair, expect, openSection, test, unique } from "./fixtures.mjs";
+import { appAsksToPair, expect, functionalProject, openSection, test, unique } from "./fixtures.mjs";
 
 // A request's card (Needs you, Waiting for the app) is named by its heading; a History row carries its name in a cell.
 const card = (page, name) => page.locator("[data-request-id]").filter({ has: page.getByRole("heading", { name, exact: true }) });
@@ -69,7 +69,8 @@ test("an elevated request needs the acknowledgement; deny asks first and Cancel 
   expect(errors).toEqual([]);
 });
 
-test("marketplace: consent can be cancelled; arming lists the slot until it is withdrawn", async ({ signedIn: page, errors }) => {
+test("marketplace: consent can be cancelled; arming lists the slot until it is withdrawn", async ({ signedIn: page, errors }, testInfo) => {
+  functionalProject(testInfo);
   await openSection(page, "marketplace");
   await expect(page.getByText("Being listed here grants nothing.")).toBeVisible();
   // Consent, hand-off and the withdraw question all render inside the entry's own card (Hub design 10).
@@ -99,6 +100,7 @@ test("marketplace: consent can be cancelled; arming lists the slot until it is w
 });
 
 test("accounts: add a member, then disable it after confirmation", async ({ signedIn: page, errors }, testInfo) => {
+  functionalProject(testInfo);
   const display = unique(testInfo, "Member");
   const login = `${display.replaceAll(" ", "-").toLowerCase()}@example.test`;
   await openSection(page, "admin");

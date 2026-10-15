@@ -203,8 +203,12 @@ theme case when they run one at a time, apart from the pairing request limit abo
   WebKit's report of fetches cancelled by a reload.
 - **Projects.** `desktop-light` and `desktop-dark` (Chromium, 1440×900), `phone-light` and `phone-dark` (WebKit with
   the iPhone SE descriptor at 375×667) and `pixel-dark` (Chromium, Pixel 7). The overflow sweep (320, 375, 768 and
-  1440 px on every section) and the live-resize test run in the desktop projects. Pairing journeys run in
-  `desktop-light`, `desktop-dark` and `phone-dark` because of the daemon's request limit, and the claim in
+  1440 px on every section) and the live-resize test run in the desktop projects. `navigation.spec.mjs` runs in all
+  five projects, which is where every section is loaded in both colour schemes. The functional journeys (sign-in,
+  settings, module switches, app caps and retention, the marketplace and accounts) repeat the same server round trips
+  against the one shared instance, so they run only in `desktop-light` (Chromium, desktop) and `phone-dark` (WebKit,
+  phone) through `functionalProject` in `tests/fixtures.mjs`: one project per engine and viewport. Pairing journeys
+  run in `desktop-light`, `desktop-dark` and `phone-dark` because of the daemon's request limit, and the claim in
   `desktop-light`.
 - **Serial.** `workers: 1`: the journeys share one instance.
 - **CI.** The `ui` job in `.github/workflows/ci.yml` checks out the pinned daemon, installs the locked Python and npm

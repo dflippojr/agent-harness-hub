@@ -1,11 +1,12 @@
 // HUB-02 sign-in: only a one-time link from the host opens the Hub; the session lasts across reloads in that tab and
 // ends on sign-out. No tailnet identity exists on this loopback instance.
 import { signinLink } from "../instance.mjs";
-import { expect, hubUrl, signIn, test } from "./fixtures.mjs";
+import { expect, functionalProject, hubUrl, signIn, test } from "./fixtures.mjs";
 
 const signinCard = (page) => page.getByRole("region", { name: "Sign in to the Hub" });
 
-test("signed out, an unknown link is refused and a fresh link signs in", async ({ page, errors }) => {
+test("signed out, an unknown link is refused and a fresh link signs in", async ({ page, errors }, testInfo) => {
+  functionalProject(testInfo);
   await page.goto(`${hubUrl()}/`);
   await expect(signinCard(page)).toBeVisible();
   await expect(signinCard(page)).toContainText("python -m harness_hub signin-link");
@@ -45,7 +46,8 @@ test("signed out, an unknown link is refused and a fresh link signs in", async (
   expect(errors.filter((e) => !/status of 401/.test(e))).toEqual([]);
 });
 
-test("a used link does not sign in twice", async ({ page }) => {
+test("a used link does not sign in twice", async ({ page }, testInfo) => {
+  functionalProject(testInfo);
   const once = signinLink(process.env.HUB_UI_DIR);
   await page.goto(once);
   await expect(page.getByRole("heading", { name: "Overview", level: 1 })).toBeVisible();
