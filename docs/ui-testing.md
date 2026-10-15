@@ -191,7 +191,10 @@ theme case when they run one at a time, apart from the pairing request limit abo
 - **Repository.** Public, so CI runs on GitHub-hosted runners only (`ubuntu-latest`), never self-hosted.
 - **Package.** npm, self-contained in `tools/ui-tests`: `package.json` pins `@playwright/test` exactly, with
   `package-lock.json`. Config `tools/ui-tests/playwright.config.mjs`; tests `tools/ui-tests/tests/*.spec.mjs`.
-  (`tests/*.spec.cjs` are older single-page specs on intercepted synthetic responses.)
+  `tools/ui-tests/intercepted/*.spec.cjs` are older single-page specs on intercepted synthetic responses over the real
+  static files: no instance reads or writes through them. They run as the `intercepted` project (Chromium, light) in
+  the same command, and the five instance projects skip that folder. `--project=intercepted` runs only them, though
+  `global-setup.mjs` still starts the instance, so `HUB_UI_DAEMON_SRC` must be set.
   `tools/ui-tests/verify/` and `verify.config.mjs` are the verify skill's drive step
   ([.claude/skills/verify](../.claude/skills/verify/SKILL.md)); the suite's config does not run them.
 - **Commands.**
@@ -219,7 +222,8 @@ theme case when they run one at a time, apart from the pairing request limit abo
   against the one shared instance, so they run only in `desktop-light` (Chromium, desktop) and `phone-dark` (WebKit,
   phone) through `functionalProject` in `tests/fixtures.mjs`: one project per engine and viewport. Pairing journeys
   run in `desktop-light`, `desktop-dark` and `phone-dark` because of the daemon's request limit, and the claim in
-  `desktop-light`.
+  `desktop-light`. The `intercepted` project (Chromium, 1440×900, light)
+  runs the specs in `intercepted/` and uses no instance.
 - **Serial.** `workers: 1`: the journeys share one instance.
 - **CI.** The `ui` job in `.github/workflows/ci.yml` checks out the pinned daemon, installs the locked Python and npm
   dependencies and the browsers, runs the suite, then, with `if: always()`, runs `ui_instance.py stop` for every

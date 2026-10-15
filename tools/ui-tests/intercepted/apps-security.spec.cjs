@@ -1,6 +1,6 @@
-// Run: playwright test --config=tests/playwright.config.cjs --workers=1
+// Run: npm --prefix tools/ui-tests test -- --project=intercepted
 // All network requests are intercepted; no daemon or Hub server is started.
-const { test, expect } = require("playwright/test");
+const { test, expect } = require("@playwright/test");
 const { readFile } = require("node:fs/promises");
 const path = require("node:path");
 
@@ -35,7 +35,7 @@ async function mount(page, rows, { entries = [], erasures = [], invalidDetails =
       '<link rel="stylesheet" href="/static/style.css"><main id="main"></main><script type="module">import {renderApps} from "/static/pages/apps.mjs"; renderApps(document.querySelector("main"));</script>' });
     if (!/^\/static\/[a-z/.-]+\.(mjs|css)$/.test(pathname)) throw Error("Unexpected resource: " + pathname);
     return route.fulfill({ contentType: pathname.endsWith(".css") ? "text/css" : "text/javascript", body:
-      await readFile(path.join(__dirname, "../harness_hub", pathname), "utf8") });
+      await readFile(path.join(__dirname, "../../../harness_hub", pathname), "utf8") });
   });
   await page.goto("http://hub.test/");
   await expect(page.locator("[data-app-id]")).toHaveCount(rows.length);

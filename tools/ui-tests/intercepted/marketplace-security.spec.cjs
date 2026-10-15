@@ -1,6 +1,6 @@
-// Run: playwright test --config=tests/playwright.config.cjs --workers=1 marketplace-security
+// Run: npm --prefix tools/ui-tests test -- --project=intercepted
 // Synthetic intercepted Hub responses: no daemon, Hub server or real account is used.
-const { test, expect } = require("playwright/test");
+const { test, expect } = require("@playwright/test");
 const { readFile } = require("node:fs/promises");
 const path = require("node:path");
 
@@ -49,7 +49,7 @@ async function mount(page, initial, { answer } = {}) {
       '<script type="module">import {renderMarketplace} from "/static/pages/marketplace.mjs"; renderMarketplace(document.querySelector("main"));</script>' });
     if (!/^\/static\/[a-z/.-]+\.(mjs|css)$/.test(pathname)) throw Error("Unexpected resource: " + pathname);
     return route.fulfill({ contentType: pathname.endsWith(".css") ? "text/css" : "text/javascript",
-      body: await readFile(path.join(__dirname, "../harness_hub", pathname), "utf8") });
+      body: await readFile(path.join(__dirname, "../../../harness_hub", pathname), "utf8") });
   });
   await page.goto("http://hub.test/");
   await expect(page.locator("[data-entry]")).toHaveCount((initial.entries || []).length);

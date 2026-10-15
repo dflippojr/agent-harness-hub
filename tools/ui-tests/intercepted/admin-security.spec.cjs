@@ -1,5 +1,5 @@
 // Synthetic intercepted Hub responses: no server or real account is used.
-const { test, expect } = require("playwright/test");
+const { test, expect } = require("@playwright/test");
 const { readFile } = require("node:fs/promises");
 const path = require("node:path");
 const op = (id, group, label, method = "GET", targets = [], fields = [], confirmation = "") =>
@@ -92,7 +92,7 @@ async function mount(page, { failure = false, overrides = {}, hold = () => null,
     if (pathname === "/") return route.fulfill({ contentType: "text/html", body:
       '<link rel="stylesheet" href="/static/style.css"><main id="main"></main><script type="module">import {renderAdmin} from "/static/pages/admin.mjs"; window.stopAdmin = renderAdmin(document.querySelector("main"));</script>' });
     return route.fulfill({ contentType: pathname.endsWith(".css") ? "text/css" : "text/javascript", body:
-      await readFile(path.join(__dirname, "../harness_hub", pathname), "utf8") });
+      await readFile(path.join(__dirname, "../../../harness_hub", pathname), "utf8") });
   });
   await page.goto("http://hub.test/");
   await expect(page.getByRole("heading", { name: "Synthetic member" })).toBeVisible();

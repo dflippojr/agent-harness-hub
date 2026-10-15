@@ -7,6 +7,9 @@ const desktop = { ...devices["Desktop Chrome"], viewport: { width: 1440, height:
 // WebKit, touch, user agent and device scale factor.
 const iphone = { ...devices["iPhone SE"], viewport: { width: 375, height: 667 } };
 
+// The instance projects walk ./tests; keep them off the intercepted specs wherever those live.
+const testIgnore = "**/intercepted/**";
+
 export default defineConfig({
   testDir: "./tests",
   // One shared instance whose settings, modules and pairing state the journeys change: never in parallel.
@@ -20,10 +23,13 @@ export default defineConfig({
   outputDir: "test-results",
   use: { trace: "retain-on-failure", screenshot: "only-on-failure" },
   projects: [
-    { name: "desktop-light", use: { ...desktop, colorScheme: "light" } },
-    { name: "desktop-dark", use: { ...desktop, colorScheme: "dark" } },
-    { name: "phone-light", use: { ...iphone, colorScheme: "light" } },
-    { name: "phone-dark", use: { ...iphone, colorScheme: "dark" } },
-    { name: "pixel-dark", use: { ...devices["Pixel 7"], colorScheme: "dark" } },
+    { name: "desktop-light", testIgnore, use: { ...desktop, colorScheme: "light" } },
+    { name: "desktop-dark", testIgnore, use: { ...desktop, colorScheme: "dark" } },
+    { name: "phone-light", testIgnore, use: { ...iphone, colorScheme: "light" } },
+    { name: "phone-dark", testIgnore, use: { ...iphone, colorScheme: "dark" } },
+    { name: "pixel-dark", testIgnore, use: { ...devices["Pixel 7"], colorScheme: "dark" } },
+    // Specs over the real static files with every request intercepted: no instance, no daemon. They cover client-side
+    // gating the live journeys cannot set up (redacted and withheld replies, 409 and 502, XSS, disclosure drift).
+    { name: "intercepted", testDir: "./intercepted", testMatch: "*.spec.cjs", use: { ...desktop, colorScheme: "light" } },
   ],
 });

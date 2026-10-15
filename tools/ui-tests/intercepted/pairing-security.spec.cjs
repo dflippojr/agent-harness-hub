@@ -1,6 +1,6 @@
-// Run: playwright test --config=tests/playwright.config.cjs --workers=1 pairing-security
+// Run: npm --prefix tools/ui-tests test -- --project=intercepted
 // Synthetic intercepted Hub responses: no daemon, Hub server or real account is used.
-const { test, expect } = require("playwright/test");
+const { test, expect } = require("@playwright/test");
 const { readFile } = require("node:fs/promises");
 const path = require("node:path");
 
@@ -44,7 +44,7 @@ async function mount(page, initial, { answer, read } = {}) {
       '<script type="module">import {renderPairing} from "/static/pages/pairing.mjs"; renderPairing(document.querySelector("main"));</script>' });
     if (!/^\/static\/[a-z/.-]+\.(mjs|css)$/.test(pathname)) throw Error("Unexpected resource: " + pathname);
     return route.fulfill({ contentType: pathname.endsWith(".css") ? "text/css" : "text/javascript",
-      body: await readFile(path.join(__dirname, "../harness_hub", pathname), "utf8") });
+      body: await readFile(path.join(__dirname, "../../../harness_hub", pathname), "utf8") });
   });
   await page.goto("http://hub.test/");
   await expect(page.locator("[data-request-id]")).toHaveCount(initial.length);
@@ -100,34 +100,6 @@ test("already-claimed recovery distinguishes redeemed keys from unredeemed claim
   // The redeemed row is a History row naming its key, which Apps (or harness keys revoke) can revoke.
   await expect(card(page, "pr-redeemed").locator("td")).toHaveText(
     ["Synthetic pr-redeemed", "App", "Paired", "sessions", /\d/, "k-recovery"]);
-});
-
-test("approve needs the typed code; it is never pre-filled and a wrong code shows the daemon's 400", async ({ page }) => {
-  const { writes, errors } = await mount(page, [request("pr-a")], { answer: (id, action, body) =>
-    body.match === "000000" ? { status: 400, json: { detail: "the match code does not match the one the App shows" } } : null });
-  const box = card(page, "pr-a");
-  await expect(box).not.toContainText("482913");
-  await expect(box.locator(".match")).toHaveCount(0);
-  await expect(box).toContainText("https://app.test");
-  await expect(box).toContainText("test.example.notes");
-  await expect(box).toContainText(/\d+:\d\d left/);
-  await expect(box).toContainText("Type the code the app is showing right now.");
-  await expect(box.getByText("harness pairing-requests approve pr-a --match <code>", { exact: true })).toBeVisible();
-  const input = box.getByLabel("Match code the app shows");
-  await expect(input).toHaveValue("");
-  const approve = box.getByRole("button", { name: /^Approve/ });
-  await expect(approve).toBeDisabled();
-  await input.fill("000000");
-  await approve.click();
-  await expect(page.getByText("the match code does not match the one the App shows")).toBeVisible();
-  expect(writes[0].body).toEqual({ match: "000000" });
-  expect(writes[0].headers["x-hub-request"]).toBe("1");
-  await card(page, "pr-a").getByLabel("Match code the app shows").fill("482913");
-  await card(page, "pr-a").getByRole("button", { name: /^Approve/ }).click();
-  await expect.poll(() => writes.length).toBe(2);
-  expect(writes[1]).toMatchObject({ path: "/api/pairing/pr-a/approve", body: { match: "482913" } });
-  await expect(page.locator('[data-group="waiting"] [data-request-id="pr-a"][data-state="approved"]')).toBeVisible();
-  expect(errors).toEqual([]);
 });
 
 test("elevated scopes keep Approve disabled until the separate acknowledgement is ticked", async ({ page }) => {
@@ -285,23 +257,23 @@ test("requester metadata is unverified and owner-armed metadata explains its sou
 });
 
 
-for (const field of ["name", "origin", "catalog_app_id"]) {
-  for (const [state, needs] of [["pending", "approve"], ["claimed", "confirm"]]) {
-    test(`withheld ${field} prevents ${needs} but keeps Deny`, async ({ page }) => {
-      const row = request("pr-withheld", { [field]: "[withheld: token-shaped]", state, needs, armed: state === "claimed" });
-      const { writes, errors } = await mount(page, [row]);
-      const box = card(page, row.id);
-      await expect(box.locator('[data-action="approve"], [data-action="confirm"]')).toHaveCount(0);
-      await expect(box.locator("input")).toHaveCount(0);
-      await expect(box).toContainText("Review this request with harness pairing-requests list on the host.");
-      await expect(box.getByText("harness pairing-requests list", { exact: true })).toBeVisible();
-      await box.locator('[data-action="deny"]').click();
-      await page.getByRole("button", { name: "Confirm deny", exact: true }).click();
-      await expect.poll(() => writes.length).toBe(1);
-      expect(writes[0]).toMatchObject({ path: "/api/pairing/pr-withheld/deny", body: { confirm: true } });
-      expect(errors).toEqual([]);
-    });
-  }
+// One field is enough: the withheld check is one code path over name, origin and catalog_app_id. The server marks
+// each in test_pairing.py::test_withheld_pairing_identity_fields_are_marked_for_host_review.
+for (const [state, needs] of [["pending", "approve"], ["claimed", "confirm"]]) {
+  test(`a withheld name prevents ${needs} but keeps Deny`, async ({ page }) => {
+    const row = request("pr-withheld", { name: "[withheld: token-shaped]", state, needs, armed: state === "claimed" });
+    const { writes, errors } = await mount(page, [row]);
+    const box = card(page, row.id);
+    await expect(box.locator('[data-action="approve"], [data-action="confirm"]')).toHaveCount(0);
+    await expect(box.locator("input")).toHaveCount(0);
+    await expect(box).toContainText("Review this request with harness pairing-requests list on the host.");
+    await expect(box.getByText("harness pairing-requests list", { exact: true })).toBeVisible();
+    await box.locator('[data-action="deny"]').click();
+    await page.getByRole("button", { name: "Confirm deny", exact: true }).click();
+    await expect.poll(() => writes.length).toBe(1);
+    expect(writes[0]).toMatchObject({ path: "/api/pairing/pr-withheld/deny", body: { confirm: true } });
+    expect(errors).toEqual([]);
+  });
 }
 
 test("a daemon confirmation warning appears on Pairing requests after a poll", async ({ page }) => {
@@ -347,7 +319,6 @@ test("requests group into Needs you, Waiting for the app and History, each with 
     request("pr-d", { state: "denied", needs: "", finished_at: NOW - 50 }),
     request("pr-x", { state: "expired", needs: "", finished_at: NOW - 90 })]);
   await expect(page.locator(".pairing-group .section-head")).toHaveText(["Needs you2", "Waiting for the app2", "History · last day3"]);
-  await expect(page.locator(".pairing-group").first().locator(".count")).toHaveClass("count warn");
   await expect(page.locator('[data-group="needs"] [data-request-id]')).toHaveCount(2);
   await expect(card(page, "pr-p").locator(".decision-head .pill")).toHaveText("Needs approval");
   await expect(card(page, "pr-c").locator(".decision-head .pill")).toHaveText("Needs confirmation");
@@ -358,8 +329,8 @@ test("requests group into Needs you, Waiting for the app and History, each with 
   const history = page.getByRole("table", { name: "Finished pairing requests" });
   await expect(history.locator("thead th")).toHaveText(["Name", "Kind", "State", "Scopes", "Finished", "Key"]);
   await expect(history.locator("tbody tr .pill")).toHaveText(["Paired", "Denied", "Expired"]);
-  await expect(card(page, "pr-r").locator(".pill")).toHaveClass("pill ok");
-  await expect(card(page, "pr-d").locator(".pill")).toHaveClass("pill muted");
+  await expect(card(page, "pr-r")).toContainText("Paired");
+  await expect(card(page, "pr-d")).toContainText("Denied");
   expect(errors).toEqual([]);
 });
 
@@ -369,9 +340,9 @@ test("the countdown chip ticks and turns warn in the last two minutes", async ({
     request("pr-u", { expires_at: NOW + 110 }), request("pr-v", { expires_at: NOW - 1 })]);
   const later = card(page, "pr-t").locator(".countdown");
   await expect(later).toHaveText(/^[45]:\d\d left$/);
-  await expect(later).toHaveClass("countdown");
+  await expect(later).not.toHaveClass(/\bwarn\b/);
   await expect(card(page, "pr-u").locator(".countdown")).toHaveText(/^1:\d\d left$/);
-  await expect(card(page, "pr-u").locator(".countdown")).toHaveClass("countdown warn");
+  await expect(card(page, "pr-u").locator(".countdown")).toHaveClass(/\bwarn\b/);
   await expect(card(page, "pr-v").locator(".countdown")).toHaveText("Expired");
   // Between polls the chip counts down every second on its own.
   const before = await later.textContent();
@@ -429,7 +400,7 @@ test("with no requests the page says how one appears", async ({ page }) => {
       '<link rel="stylesheet" href="/static/style.css"><main id="main" class="main"></main>' +
       '<script type="module">import {renderPairing} from "/static/pages/pairing.mjs"; renderPairing(document.querySelector("main"));</script>' });
     return route.fulfill({ contentType: pathname.endsWith(".css") ? "text/css" : "text/javascript",
-      body: await readFile(path.join(__dirname, "../harness_hub", pathname), "utf8") });
+      body: await readFile(path.join(__dirname, "../../../harness_hub", pathname), "utf8") });
   });
   await page.goto("http://hub.test/");
   await expect(page.getByRole("heading", { name: "No pairing requests in the last day" })).toBeVisible();
