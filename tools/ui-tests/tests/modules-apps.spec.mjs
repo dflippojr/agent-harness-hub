@@ -1,7 +1,8 @@
 // HUB-05 module switches and HUB-06 app management against the real daemon's inventory and key store.
-import { expect, openSection, test } from "./fixtures.mjs";
+import { expect, functionalProject, openSection, test } from "./fixtures.mjs";
 
-test("a module switch saves, survives a reload and switches back", async ({ signedIn: page, errors }) => {
+test("a module switch saves, survives a reload and switches back", async ({ signedIn: page, errors }, testInfo) => {
+  functionalProject(testInfo);
   await openSection(page, "modules");
   const search = page.locator("tr[data-module=search]");
   const toggle = search.getByRole("switch", { name: "search", exact: true });
@@ -24,7 +25,8 @@ test("a module switch saves, survives a reload and switches back", async ({ sign
   expect(errors).toEqual([]);
 });
 
-test("app session caps and retention save after confirmation and persist", async ({ signedIn: page, errors }) => {
+test("app session caps and retention save after confirmation and persist", async ({ signedIn: page, errors }, testInfo) => {
+  functionalProject(testInfo);
   await openSection(page, "apps");
   const row = page.locator("tr[data-app-id]").filter({ hasText: "Synthetic App" });
   await expect(row).toContainText("App-supplied name");
