@@ -1,5 +1,12 @@
 """Owner Settings flows, concurrency, explicit writes, and response secrecy."""
+import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+
 from harness_hub import server
+from harness_hub.daemon import DaemonClient
 
 from .conftest import HUB_HOST, assert_no_secrets
 
@@ -159,3 +166,40 @@ def test_a_health_error_is_the_daemon_answering_not_silence(claimed, fake_daemon
     assert claimed.get("/api/overview").json()["answered"] is False
     fake_daemon.down = False
     assert claimed.get("/api/settings/health").json()["answered"] is True
+
+
+@pytest.mark.parametrize("source", ["overview", "settings/health"])
+def test_health_read_before_restart_cannot_end_it(claimed, monkeypatch, source):
+    monkeypatch.setattr(server, "RESTART_GRACE_SECONDS", 0)
+    health_read, parked, release = threading.Event(), threading.Event(), threading.Event()
+    health, pairing = DaemonClient.health, DaemonClient.pairing
+
+    async def delayed_health(self):
+        reply = await health(self)
+        health_read.set()
+        if source == "settings/health":
+            parked.set()
+            assert await asyncio.to_thread(release.wait, 5)
+        return reply
+
+    async def delayed_pairing(self, *args, **kwargs):
+        assert await asyncio.to_thread(health_read.wait, 5)
+        parked.set()
+        assert await asyncio.to_thread(release.wait, 5)
+        return await pairing(self, *args, **kwargs)
+
+    monkeypatch.setattr(DaemonClient, "health", delayed_health)
+    monkeypatch.setattr(DaemonClient, "pairing", delayed_pairing)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(claimed.get, "/api/" + source)
+        try:
+            assert parked.wait(5)
+            accepted = write(claimed, "POST", "restart", {"revision": 3, "confirm": True})
+            assert accepted.status_code == 202
+        finally:
+            release.set()
+        stale = pending.result(timeout=5).json()
+    assert stale["restarting"] is True
+    assert claimed.get("/api/settings/health").json()["restarting"] is True
+    assert claimed.get("/api/settings/health").json()["restarting"] is True
+    assert claimed.get("/api/settings/health").json()["restarting"] is False
