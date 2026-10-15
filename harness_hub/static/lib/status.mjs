@@ -1,6 +1,7 @@
 // What the shell shows about the daemon (the rail's status chip, the Pairing badge and the banner under each page
 // head), worked out from answers the pages already read: Overview's last answer, the Pairing list, the Settings
-// revision, the Settings health poll, and any error the Hub marks with whether the daemon answered. For each piece of
+// revision, the Settings health poll, an accepted restart, and errors the Hub marks with whether the daemon answered.
+// For each piece of
 // state the newest evidence wins, by when its request started. It is held in memory only and makes no calls of its own.
 // "Not answering" means the Hub could not reach the daemon; a daemon that answers with an error is answering.
 
@@ -17,7 +18,7 @@ let silent = null; // whether the latest evidence says the daemon is not answeri
 let unhealthy = false; // whether the latest evidence is the daemon answering /health with an error (a 503 mid-restart)
 let ownerError = ""; // Overview's owner API failure behind a healthy /health, until an owner API read answers
 let restarting = false; // whether a restart the Hub started is still under way
-let restartSeen = 0; // when the newest request that found a Hub restart under way started, in whatever order it came
+let restartSeen = 0; // start order of the newest request that found or accepted a Hub restart
 let at = {}; // per piece of state, when the request behind its current value started
 let reads = 0; // request counter for callers that pass no start order (tests)
 const listeners = new Set();
@@ -50,11 +51,11 @@ export function noteRead(path, status, data, started = ++reads) {
     // the daemon, true on an error the daemon answered with (whatever its status, 503 included). Any other refusal
     // (signed out, unclaimed, a bad request) says nothing about the daemon.
     const reached = data && typeof data === "object" ? data.reachable : undefined;
-    if (typeof reached === "boolean") answered(reached, true, started);
+    if (typeof reached === "boolean") answered(reached, started);
   } else if (path === "overview" && body) {
     if (newer("overview", started)) overview = body;
     if (body.reachable && newer("lastGood", started)) lastGood = body;
-    answered(answeredHealth(body), body.reachable, started);
+    answered(answeredHealth(body), started, body.reachable);
     // Owner API evidence has its own order: a health poll says nothing about the owner API, so it cannot hide this.
     if (newer("owner", started)) ownerError = body.reachable ? body.error || "" : "";
     restart(body.restarting === true, started);
@@ -64,18 +65,18 @@ export function noteRead(path, status, data, started = ++reads) {
     // Settings polls health around a restart; the Hub answers 200 even when the daemon does not. A healthy /health
     // says nothing about the owner API, so it leaves an owner API failure standing.
     if (typeof body.reachable === "boolean") {
-      answered(answeredHealth(body), body.reachable, started);
+      answered(answeredHealth(body), started, body.reachable);
       restart(body.restarting === true, started);
       if (body.reachable) health(body.health, body.restarting === true, started);
     }
   } else if (INVENTORY.has(path) && body) {
-    if (typeof body.reachable === "boolean") answered(body.reachable, true, started);
+    if (typeof body.reachable === "boolean") answered(body.reachable, started);
     // Only an inventory the daemon served ("ready") shows its owner API answering; an HTTP error from it does not.
     // Spend has no state: its inventory read is served when it carries no error.
     const served = path === "spend" ? body.error === "" : body.state === "ready";
     if (served && newer("owner", started)) ownerError = "";
   } else if (ok && daemonAnswered(path)) {
-    answered(true, true, started);
+    answered(true, started);
     if (newer("owner", started)) ownerError = "";
   }
   if (body && path === "pairing" && Array.isArray(body.requests) && newer("attention", started)) {
@@ -94,12 +95,11 @@ function answeredHealth(body) {
   return typeof body.answered === "boolean" ? body.answered : body.reachable === true;
 }
 
-// Whether the daemon answered (the Hub reached it) and, if it did, whether its answer was healthy, as of a reply to a
-// request that started at `started`. Either way the newest evidence about reaching the daemon wins.
-function answered(reached, healthy, started) {
-  if (!newer("reach", started)) return;
-  silent = !reached;
-  unhealthy = reached && !healthy;
+// Reachability and /health have separate request orders. An owner API answer proves the daemon is answering,
+// but only Overview and the health poll can replace health evidence, even if their reply comes later.
+function answered(reached, started, healthy) {
+  if (newer("reach", started)) silent = !reached;
+  if (typeof healthy === "boolean" && newer("health", started)) unhealthy = reached && !healthy;
 }
 
 // Whether a restart the Hub started is under way, as of a reply to a request that started at `started`.
@@ -133,14 +133,14 @@ function recoveryKey(recovery) {
 // applied; a recovery the read did not report, so the daemon restarted since and threw the pending revision out
 // (lkg_restore or overlay_quarantined), whatever lower revision it now runs; or, with no Hub restart under way any more,
 // the end of one that began after the read (the Hub ends one only on confirmed health at its target or a recovery), which
-// also settles a read that needed a restart with no pending revision.
+// settles a read that needed a restart with no pending revision; a known newer pending revision still needs applying.
 function settle() {
   if (!config || !config.restart_required || !confirmed || confirmed.started < (at.config || 0)) return;
   const saved = config.pending_revision;
   const applied = typeof saved === "number" && confirmed.revision >= saved;
   const recovered = confirmed.recovery !== "" && confirmed.recovery !== recoveryKey(config.recovery);
   const restarted = confirmed.idle && restartSeen > (at.config || 0) && confirmed.started > restartSeen;
-  if (applied || recovered || restarted) {
+  if (applied || recovered || (restarted && typeof saved !== "number")) {
     config = { ...config, restart_required: false, pending_revision: null };
     at.config = confirmed.started;
   }
@@ -149,6 +149,14 @@ function settle() {
 export function subscribe(listener) {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+// An accepted restart is evidence even if the owner navigates away before the first health poll. Its request
+// order shares the reads' counter so a late acceptance cannot replace a newer completed health observation.
+export function noteRestart(started) {
+  reads = Math.max(reads, started);
+  restart(true, started);
+  for (const listener of listeners) listener();
 }
 
 // Forget everything (tests).
