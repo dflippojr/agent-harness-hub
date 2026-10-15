@@ -112,7 +112,9 @@ export function renderModules(main) {
     const shown = inventory && { ...inventory, fetched_at: inventory.stale ? inventory.fetched_at : null };
     // busy is part of it: a draw made while a refresh runs has its switches disabled, and the next draw replaces it.
     const key = JSON.stringify([shown, config?.revision, installed.map(({ spec, value, pending, writable }) =>
-      [spec?.key, spec?.apply, spec?.guidance, spec?.label, value, pending, writable]), busy]);
+      [spec?.key, spec?.apply, spec?.guidance, spec?.label, value, pending, writable]), busy,
+    // Which blocked state, if any, stands in for the table: Hub down and not claimed draw differently.
+    blocked(readError) ? [readError.status, readError.body?.claimed] : null]);
     if (key === drawn) return;
     drawn = key;
     revision.textContent = config ? "Settings revision " + config.revision : "";

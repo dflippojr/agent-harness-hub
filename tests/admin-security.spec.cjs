@@ -472,3 +472,18 @@ for (const scheme of ["light", "dark"]) {
     expect(errors).toEqual([]);
   });
 }
+
+test("a write's notice stays with the member it acted on, not whichever member is open next", async ({ page }) => {
+  const { errors } = await mount(page, { overrides: { accounts: [member, guest] } });
+  await pane(page).getByRole("button", { name: "Disable", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm update member", exact: true }).click();
+  await expect(pane(page).locator("p.notice[role=status]")).toHaveText("Daemon accepted update member.");
+  await page.getByRole("button", { name: "Open Synthetic guest" }).click();
+  await expect(page.getByRole("heading", { name: "Synthetic guest" })).toBeVisible();
+  // The guest's card holds no notice; it went back under the area control.
+  await expect(pane(page).locator("p.notice")).toHaveCount(0);
+  await expect(page.locator("main > p.notice[role=status]")).toHaveText("Daemon accepted update member.");
+  await page.getByRole("button", { name: "Open Synthetic member" }).click();
+  await expect(pane(page).locator("p.notice[role=status]")).toHaveText("Daemon accepted update member.");
+  expect(errors).toEqual([]);
+});

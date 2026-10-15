@@ -231,7 +231,7 @@ export function renderMarketplace(main) {
     const submit = verbButton("Confirm", name, () => {
       if (submit.disabled) return;
       const match = input.value.trim();
-      perform(entry.catalog_app_id, async () => {
+      void perform(entry.catalog_app_id, async () => {
         await api(`pairing/${slot.id}/confirm`, { method: "POST", body: { match } });
         drafts.delete(slot.id);
         message(`Confirmed ${name}. The app now fetches its own token from the daemon.`);
@@ -289,7 +289,7 @@ export function renderMarketplace(main) {
         consent_digest: entry.consent_digest };
       if (origin) body.origin = origin;
       if (ack) body.acknowledge_elevated = true;
-      perform(id, async () => {
+      void perform(id, async () => {
         const armed = await api("marketplace/arm", { method: "POST", body });
         handoff(id, armed, origin);
       }, true);

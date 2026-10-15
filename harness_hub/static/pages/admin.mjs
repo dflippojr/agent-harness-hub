@@ -80,7 +80,8 @@ export function renderAdmin(main) {
   // Accounts: the member list, the open member and its detail read, and what the detail pane is doing.
   let members = null, membersError = "", memberId = null, detail = null, accountsRead = 0, memberRead = 0;
   let membersFailure = null; // the error behind membersError, so a read that could not run shows as its state
-  let inPane = false; // whether the notice is about a write on the open member, so it shows in that member's card
+  // The member a write on Accounts acted on ("add" for the Add member form), so its notice shows in that card only.
+  let actedOn = null;
   let paneMode = null; // "add" or "edit"
   let asking = null; // { place, op, targets, body, rows, back }: a question asked inside the card that was acted on
   let linkCode = null; // { id, code, expires_at }: the Google link code just created, shown once
@@ -102,16 +103,22 @@ export function renderAdmin(main) {
   const cli = (op, id) => op.cli.replace("<user_id>", id);
   function eraseOutput() { clear(output); }
   function eraseCode() { clearTimeout(codeTimer); linkCode = null; }
-  // pane marks a write on Accounts: its notice shows in the open member's card (decision 5 of #65); maintenance keeps
-  // the notice under the area control.
-  function message(text, bad = false, pane = false) {
+  // target names the member a write on Accounts acted on, or "add": its notice shows in that card while it is open
+  // (decision 5 of #65). Maintenance, and a member whose card is closed, keep the notice under the area control.
+  function message(text, bad = false, target = null) {
     notice.textContent = text;
     notice.className = bad ? "notice bad" : "notice";
-    inPane = pane;
+    actedOn = target;
     placeAccountsNotice();
   }
+  function actedCard() {
+    if (active !== "accounts" || actedOn === null) return null;
+    if (actedOn === "add") return paneMode === "add" ? accountsView.querySelector(".admin-member") : null;
+    if (paneMode === "add") return null;
+    return [...accountsView.querySelectorAll("[data-member-id]")].find(el => el.dataset.memberId === actedOn) ?? null;
+  }
   function placeAccountsNotice() {
-    placeNotice(notice, inPane && active === "accounts" ? accountsView.querySelector(".admin-member") : null, accountsView);
+    placeNotice(notice, actedCard(), accountsView);
   }
   function setBusy(value) {
     busy = value;
@@ -122,7 +129,7 @@ export function renderAdmin(main) {
     active = group;
     preview = null; reviewedProposal = null; eraseOutput(); eraseCode();
     for (const control of navigation.children) control.setAttribute("aria-pressed", String(control.dataset.group === group));
-    inPane = false;
+    actedOn = null;
     placeAccountsNotice(); // back under the area control before the members' cards are cleared away
     accountsView.hidden = group !== "accounts";
     workspace.hidden = group === "accounts";
@@ -369,13 +376,13 @@ export function renderAdmin(main) {
       if (!input.reportValidity()) return;
       const raw = input.value.trim(), label = LABELS[spec.name] || readable(spec.name);
       if (raw === input.dataset.initial.trim()) continue;
-      if (raw === "") { message(`${label} cannot be empty.`, true, true); return; }
+      if (raw === "") { message(`${label} cannot be empty.`, true, row.user_id); return; }
       const value = spec.type === "integer" ? Number(raw) : raw;
       if (value === row[spec.name]) continue;
       body[spec.name] = value;
       changes.push([label, `${shown(spec.name, row[spec.name])} → ${shown(spec.name, value)}`]);
     }
-    if (!changes.length) { message("Nothing to save: every field matches the daemon's value.", false, true); return; }
+    if (!changes.length) { message("Nothing to save: every field matches the daemon's value.", false, row.user_id); return; }
     ask("member", op, { user_id: row.user_id }, body, [["Member", `${memberName(row)} (${row.user_id})`], ...changes], "edit-save");
   }
   function ask(place, op, targets, body, rows, back) {
@@ -399,7 +406,8 @@ export function renderAdmin(main) {
   // A write on Accounts: the daemon's answer goes in the page notice, then the list and the open member are read again.
   async function run(op, targets, body) {
     if (busy || stopped) return;
-    asking = null; drawAccounts(); setBusy(true); message("Applying " + lower(op.label) + "…", false, true);
+    let target = op.id === "account_add" ? "add" : targets.user_id ?? null;
+    asking = null; drawAccounts(); setBusy(true); message("Applying " + lower(op.label) + "…", false, target);
     const query = new URLSearchParams(targets);
     let refused = false;
     try {
@@ -408,13 +416,14 @@ export function renderAdmin(main) {
       if (op.id === "google_invite") showCode(targets.user_id, reply);
       // A cancelled or unlinked code can no longer be redeemed, so it is no longer shown for sharing.
       if ((op.id === "google_cancel" || op.id === "google_unlink") && linkCode?.id === targets.user_id) eraseCode();
-      if (op.id === "account_add" && validTarget(reply?.user_id)) { memberId = reply.user_id; detail = null; }
+      if (op.id === "account_add") target = validTarget(reply?.user_id) ? reply.user_id : null;
+      if (op.id === "account_add" && target) { memberId = target; detail = null; }
       if (op.id === "account_add" || op.id === "account_save") { paneMode = null; drafts = new Map(); }
-      message("Daemon accepted " + lower(op.label) + ".", false, true);
+      message("Daemon accepted " + lower(op.label) + ".", false, target);
     } catch (error) {
       if (stopped) return;
       refused = true;
-      message(error.message + " Inspect current state before repeating a write.", true, true);
+      message(error.message + " Inspect current state before repeating a write.", true, target);
     }
     await loadAccounts();
     if (stopped) return;

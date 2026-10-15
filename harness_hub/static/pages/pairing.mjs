@@ -218,7 +218,7 @@ export function renderPairing(main) {
       if (submit.disabled) return;
       const body = { match: input.value.trim() };
       if (elevated) body.acknowledge_elevated = true;
-      perform(row.id, async () => {
+      void perform(row.id, async () => {
         await api(`pairing/${row.id}/${operation}`, { method: "POST", body });
         drafts.delete(row.id);
         message(`${operation === "approve" ? "Approved" : "Confirmed"} ${name}. The app now fetches its own token.`);
