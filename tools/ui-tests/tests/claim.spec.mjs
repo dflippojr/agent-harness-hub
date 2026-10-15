@@ -29,6 +29,9 @@ test.describe("claim", () => {
     await expect(steps.locator("[aria-current=step]")).toHaveText("2Check the code on the daemon host");
     const text = await card.innerText();
     const [, id, match] = /harness hub approve (\S+) --match (\d{6})/.exec(text);
+    // This host-only step stays visible with Show host commands off.
+    await expect(page.getByRole("switch", { name: "Show host commands" })).not.toBeChecked();
+    await expect(card.getByText(`harness hub approve ${id} --match ${match}`, { exact: true })).toBeVisible();
     // The match code is six boxed digits, read out one by one, beside a live countdown and a quiet Stop waiting.
     await expect(card.getByRole("img", { name: `Match code ${match.split("").join(" ")}` })).toBeVisible();
     const left = card.locator(".claim-clock");
