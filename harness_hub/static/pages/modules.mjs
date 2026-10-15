@@ -77,8 +77,9 @@ export function renderModules(main) {
     }
     schema = results[1].status === "fulfilled" ? results[1].value : null;
     config = results[2].status === "fulfilled" ? results[2].value : null;
-    showNotice(schema && config || blocked(readError) ? "" : "Switches unavailable: " +
-      results.slice(1).filter((r) => r.status === "rejected").map((r) => r.reason.message).join("; "));
+    // Each refusal is a sentence; the same one from both settings reads is said once.
+    showNotice(schema && config || blocked(readError) ? "" : "Switches unavailable: " + [...new Set(results.slice(1)
+      .filter((r) => r.status === "rejected").map((r) => r.reason.message))].join(" "));
     if (inventory) error = sentence(inventory.error);
     inventoryError.textContent = error;
     inventoryError.hidden = !error;

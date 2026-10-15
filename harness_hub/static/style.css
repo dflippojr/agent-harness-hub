@@ -953,6 +953,8 @@ body.signed-out .topbar { display: none; }
 .apps-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 28px; }
 .apps-layout.has-detail .apps-keys { display: none; }
 .card.apps-table { padding: 0; overflow: hidden; border-radius: 14px; }
+/* No apps paired yet, under a table that lists only this Hub's own key. */
+.card.apps-table + .card.empty { margin-top: 12px; }
 .apps-table .table td { overflow-wrap: normal; }
 .apps-table .table td.nowrap { white-space: nowrap; }
 .apps-table tbody tr[data-app-id] { cursor: pointer; }

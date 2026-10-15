@@ -36,7 +36,8 @@ export function sentences(message) {
 
 function refusal(error) {
   const { title, detail } = sentences(error.message);
-  const more = error.message === INVALID_LINK ? `${detail} Make a new one below.` : detail;
+  // The server's refusal of an unknown link arrives as a sentence (api.mjs); the page's own check sends it raw.
+  const more = sentence(error.message) === sentence(INVALID_LINK) ? `${detail} Make a new one below.` : detail;
   return banner("bad", title, more, null, { lead: "alert" });
 }
 

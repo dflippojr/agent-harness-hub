@@ -121,8 +121,10 @@ export function renderPairing(main) {
       waiting.length ? group("waiting", sectionHead("Waiting for the app", waiting.length), waiting.map(waitingRow)) : null,
       done.length ? group("history", sectionHead("History · last day", done.length), history(done)) : null,
       rows.length ? null : empty());
-    placeNotice(notice, acted && [...groups.querySelectorAll("section[data-request-id]")]
-      .find((card) => card.dataset.requestId === acted), problem);
+    // In a decision card the notice joins the decision half, by the buttons it answers.
+    const card = acted && [...groups.querySelectorAll("section[data-request-id]")]
+      .find((el) => el.dataset.requestId === acted);
+    placeNotice(notice, card ? card.querySelector(".decision-act") || card : null, problem);
     if (focused) focus(focused[0], focused[1], focused[2]);
     tickExpiries(groups, now());
   }

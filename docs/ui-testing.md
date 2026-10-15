@@ -163,14 +163,21 @@ theme case when they run one at a time, apart from the pairing request limit abo
   (`role=switch`, remembered per browser) and **Sign out**; on a phone, open the drawer to reach them. With the
   switch off, each action's CLI equivalent sits behind its own **Host command** button (`aria-expanded`); on, every
   command shows and the buttons go away. The banner slot
-  (`#banner-slot`) sits under each page head and shows one daemon message from what the pages already read. Content has a maximum width of
+  (`#banner-slot`) sits under each page head and shows one daemon message from what the pages already read; the
+  daemon-not-answering banner's **Retry now** draws the open page again. Content has a maximum width of
   about 1036 px, so at 2560 px the lines stay readable.
 - **Live resize (menu and partly filled form).** On Settings, type a new Maximum turns without saving. Shrink
   1440 → 1280 → 1024 → 768 → 414 → 375 and open the Sections drawer, then grow back to 1440. The typed value
   stays, the rail replaces the drawer with nothing covering the page, the rail links work, there is no horizontal
   overflow and no console error.
 - **Confirmations** are in-page `role=alert` sections (Roll back, Restart, retention, revoke, deny, withdraw, account
-  updates) with a Confirm and a Cancel button, not dialogs.
+  updates) with a Confirm and a Cancel button, not dialogs. A write's outcome, refused or not, shows inside the card
+  that was acted on (the request, the open App or member, the Marketplace entry, the Modules table), or under the
+  page head once that card is gone; a refusal is scrolled into view and focused.
+- **States.** On an unclaimed Hub each page shows **Claim this Hub first** with **Go to Overview**; when the browser
+  cannot reach the Hub itself, a page shows **The Hub server is not answering** with **Retry** (never "Failed to
+  fetch"). Empty lists say what will appear and link to the fix (Open Marketplace, Add member). Error copy is
+  sentences.
 - **Touch, drag and PWA.** No gestures: every action is a tap. There is no manifest or service worker, so install and
   offline checks are not applicable.
 - **Needs a real device.** Safe-area insets (the page sets `viewport-fit=cover` and pads the drawer with
