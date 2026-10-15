@@ -124,10 +124,14 @@ function drawStatus() {
   }
 }
 
-// A banner's link, or its Retry now button, which draws the open page again so it repeats its own reads.
+// A banner's link, or its Retry now button, which has the open page repeat its own reads: in place when the page offers
+// a retry (Settings, so unsaved edits stay), else by drawing it again.
 function bannerAction(action) {
   if (!action) return null;
-  if (action.retry) return h("button", { type: "button", class: "btn", onclick: () => route() }, action.label);
+  if (action.retry) {
+    return h("button", { type: "button", class: "btn", onclick: () => (stopPage?.retry ? stopPage.retry() : route()) },
+      action.label);
+  }
   return h("a", { class: "btn", href: action.href }, action.label);
 }
 

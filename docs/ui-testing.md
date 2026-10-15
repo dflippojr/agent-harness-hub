@@ -166,7 +166,8 @@ theme case when they run one at a time, apart from the pairing request limit abo
   switch off, each action's CLI equivalent sits behind its own **Host command** button (`aria-expanded`); on, every
   command shows and the buttons go away. The banner slot
   (`#banner-slot`) sits under each page head and shows one daemon message from what the pages already read; the
-  daemon-not-answering banner's **Retry now** draws the open page again. Content has a maximum width of
+  daemon-not-answering banner's **Retry now** has the open page read again (Settings reads in place and keeps
+  unsaved edits; other pages are drawn again). Content has a maximum width of
   about 1036 px, so at 2560 px the lines stay readable.
 - **Live resize (bottom bar and partly filled form).** On Settings, type a new Maximum turns without saving. Shrink
   1440 → 1280 → 1024 → 768 → 414 → 375 and open the **More** sheet, then grow back to 1440. The typed value

@@ -596,5 +596,8 @@ export function renderSettings(main) {
     if (!stopped) poll.schedule(restarting ? POLL_MS : 5000, { whileHidden: restarting });
   }
   void load(); void pollHealth();
-  return () => { stopped = true; poll.stop(); };
+  const stop = () => { stopped = true; poll.stop(); };
+  // The banner's Retry now reads again in place, so an unsaved edit survives it.
+  stop.retry = () => load(true);
+  return stop;
 }

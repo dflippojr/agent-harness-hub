@@ -19,7 +19,8 @@ const replies = {
 const memory = { installed: true, enabled: true, profile: "Synthetic profile", profile_max_chars: 4000,
   last_commit: {}, refresh_error: "" };
 
-async function mount(page, hash, { signedIn = true, memoryReply = memory, hubDown = false } = {}) {
+async function mount(page, hash, { signedIn = true, memoryReply = memory, hubDown = false, extraReplies = {} } = {}) {
+  const answers = { ...replies, ...extraReplies };
   const posts = [], errors = [], missing = [];
   page.on("pageerror", error => errors.push(error.message));
   page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
@@ -36,7 +37,7 @@ async function mount(page, hash, { signedIn = true, memoryReply = memory, hubDow
       if (resource === "session") return route.fulfill({ json: { signed_in: signedIn,
         signin_command: "python -m harness_hub signin-link" } });
       if (resource === "settings/memory") return route.fulfill({ json: memoryReply });
-      if (resource in replies) return route.fulfill({ json: replies[resource] });
+      if (resource in answers) return route.fulfill({ json: answers[resource] });
       missing.push(resource);
       return route.fulfill({ status: 503, json: { detail: "Synthetic: not part of this test." } });
     }
@@ -153,6 +154,28 @@ test("a daemon that stops answering raises the banner under the page head, and R
     await expect.poll(() => reads).toBeGreaterThan(before);
     expect(errors.filter(error => !error.includes("503"))).toEqual([]);
   });
+
+test("Retry now on Settings reads again in place and keeps an unsaved edit", async ({ page }) => {
+  const turnsSpec = { key: "sessions.max_turns", label: "Maximum turns", type: "int", minimum: 1, maximum: 500,
+    category: "Sessions", apply: "live", default: 80, writable: true };
+  const { errors } = await mount(page, "#/settings", { extraReplies: {
+    "settings/schema": { settings: [turnsSpec] },
+    "settings/config": { ...replies["settings/config"], settings: [{ key: turnsSpec.key, effective: 80, source: "file" }] } } });
+  const turns = page.getByRole("spinbutton", { name: "Maximum turns" });
+  await expect(turns).toHaveValue("80");
+  await turns.fill("87");
+  // The daemon stops answering; the 5 s health poll raises the banner.
+  const silent = route => route.fulfill({ status: 503, json: { detail: "The daemon did not answer.", reachable: false } });
+  await page.route(/\/api\/settings\//, silent);
+  const slot = page.locator("#banner-slot");
+  await expect(slot.getByRole("alert")).toContainText("The daemon is not answering.", { timeout: 10000 });
+  // It answers again before Retry now: the reads repeat, and the typed value stays.
+  await page.unroute(/\/api\/settings\//, silent);
+  await slot.getByRole("button", { name: "Retry now" }).click();
+  await expect(slot.getByRole("alert")).toHaveCount(0);
+  await expect(turns).toHaveValue("87");
+  expect(errors.filter(error => !error.includes("503"))).toEqual([]);
+});
 
 test("Settings drops the Hub-down state when Retry reaches the Hub but the daemon still does not answer",
   async ({ page }) => {
