@@ -22,6 +22,7 @@ const LABELS = { login: "Exact Tailscale login", display_name: "Display name", s
 const GOOGLE = [["google_invite", "Create link code"], ["google_cancel", "Cancel link code"],
   ["google_revoke", "Revoke sessions"], ["google_unlink", "Unlink"]];
 // Questions whose confirming button is outlined red: they erase or end something.
+const INVITE_SECONDS = 900; // the daemon's Google link code lifetime, assumed only when no reply gave the Hub's time
 const DESTRUCTIVE = new Set(["github_reset", "google_unlink", "google_revoke"]);
 const UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
 const targetLabel = name => ({ user_id: "Member id", pid: "Proposal id", slug: "Skill or folder slug", credential_id: "Assignment id",
@@ -55,12 +56,14 @@ function enabledPill(row) {
 function sessions(row) { return `${figure(row.running)} running · ${figure(row.queued)} queued`; }
 function caps(row) { return `${figure(row.max_running)} running · ${figure(row.max_queued)} queued`; }
 function disk(row) { return `${size(row.disk_used_bytes)} of ${size(row.disk_quota_bytes)}`; }
-function googleFact(row) {
+// `now` is the Hub server's clock in epoch seconds, or null before a reply has carried it (#132).
+function googleFact(row, now) {
   const google = row.google || {};
   const count = google.active_web_sessions;
   const parts = [google.linked === true ? "Linked" + (google.email ? ` as ${google.email}` : "") : "Not linked",
     typeof count === "number" ? `${figure(count)} web ${count === 1 ? "session" : "sessions"}` : null];
-  if (typeof google.invitation_expires_at === "number" && google.invitation_expires_at * 1000 > Date.now()) {
+  // With no server time yet, an invitation the daemon reports is shown; the member's detail read brings the time.
+  if (typeof google.invitation_expires_at === "number" && (now === null || google.invitation_expires_at > now)) {
     parts.push(`link code open until ${stamp(google.invitation_expires_at)}`);
   }
   return parts.filter(Boolean).join(" · ");
@@ -85,6 +88,10 @@ export function renderAdmin(main) {
   let paneMode = null; // "add" or "edit"
   let asking = null; // { place, op, targets, body, rows, back }: a question asked inside the card that was acted on
   let linkCode = null; // { id, code, expires_at }: the Google link code just created, shown once
+  // The Hub server's clock minus the browser's, in seconds, from the latest reply that carried `now`. Expiry times are
+  // the daemon's epoch seconds, so they are compared with the server's clock: a browser whose clock is off by minutes
+  // would otherwise erase a fresh link code at once or keep showing an expired one (#132).
+  let clockOffset = null, factTimer;
   // The fields the owner has typed in, by form and name. A redraw puts the same element back, so typing survives a read.
   let drafts = new Map();
   const notice = h("p", { class: "notice", role: "status", "aria-live": "polite", "data-field": "notice" });
@@ -103,6 +110,8 @@ export function renderAdmin(main) {
   const cli = (op, id) => op.cli.replace("<user_id>", id);
   function eraseOutput() { clear(output); }
   function eraseCode() { clearTimeout(codeTimer); linkCode = null; }
+  function serverNow() { return clockOffset === null ? null : Date.now() / 1000 + clockOffset; }
+  function noteNow(reply) { if (typeof reply?.now === "number" && Number.isFinite(reply.now)) clockOffset = reply.now - Date.now() / 1000; }
   // target names the member a write on Accounts acted on, or "add": its notice shows in that card while it is open
   // (decision 5 of #65). Maintenance, and a member whose card is closed, keep the notice under the area control.
   function message(text, bad = false, target = null) {
@@ -165,7 +174,9 @@ export function renderAdmin(main) {
     try {
       const data = await api("manage/account?" + new URLSearchParams({ user_id: id }));
       if (stopped || turn !== memberRead || memberId !== id) return;
-      detail = { id, data: data && typeof data === "object" ? data : {} };
+      noteNow(data);
+      const { now: _now, ...fields } = data && typeof data === "object" ? data : {};
+      detail = { id, data: fields };
     } catch (error) {
       if (stopped || turn !== memberRead || memberId !== id) return;
       detail = { id, error: error.message };
@@ -215,6 +226,12 @@ export function renderAdmin(main) {
     placeAccountsNotice();
     if (busy) for (const control of accountsView.querySelectorAll("button, input")) control.disabled = true;
     if (focused) focusField(focused, caret);
+    // Draw again when the open member's link code closes, so "link code open until" does not outlive it.
+    clearTimeout(factTimer);
+    const until = paneMode === "add" ? null : current()?.google?.invitation_expires_at, now = serverNow();
+    if (typeof until === "number" && now !== null && until > now) {
+      factTimer = setTimeout(drawAccounts, Math.min(3600000, (until - now) * 1000 + 50));
+    }
   }
   function memberTable() {
     return h("div", { class: "card admin-table" }, table("Members",
@@ -263,7 +280,7 @@ export function renderAdmin(main) {
         "The member's detail could not be read; this shows the list's values. " + detail.error) : null,
       facts([["Created", stamp(row.created_at)],
         ["Last activity", typeof row.last_activity_at === "number" ? stamp(row.last_activity_at) : "None yet"],
-        ["Sessions", sessions(row)], ["Caps", caps(row)], ["Disk", disk(row)], ["Google", googleFact(row)],
+        ["Sessions", sessions(row)], ["Caps", caps(row)], ["Disk", disk(row)], ["Google", googleFact(row, serverNow())],
         row.google?.linked === true ? ["Last Google sign-in", typeof row.google.last_sign_in_at === "number" ?
           stamp(row.google.last_sign_in_at) : "Never"] : null].filter(Boolean)),
       save ? [paneMode === "edit" ? editForm(row, save) : h("div", { class: "admin-actions" },
@@ -296,7 +313,10 @@ export function renderAdmin(main) {
     eraseCode();
     if (typeof reply?.code !== "string" || !reply.code) return;
     linkCode = { id, code: reply.code, expires_at: reply.expires_at };
-    const left = typeof reply.expires_at === "number" ? reply.expires_at * 1000 - Date.now() : 0;
+    noteNow(reply);
+    // The code's lifetime is the daemon's expiry less the Hub's time in the same reply; the browser's clock is not used.
+    const now = typeof reply.now === "number" ? reply.now : serverNow() ?? reply.expires_at - INVITE_SECONDS;
+    const left = typeof reply.expires_at === "number" ? (reply.expires_at - now) * 1000 : 0;
     codeTimer = setTimeout(() => { linkCode = null; drawAccounts(); }, Math.max(0, Math.min(3600000, left)));
   }
 
@@ -622,5 +642,5 @@ export function renderAdmin(main) {
     } catch (error) { if (!stopped) message(error.message, true); }
   }
   start();
-  return () => { stopped = true; eraseCode(); eraseOutput(); clear(accountsView); };
+  return () => { stopped = true; clearTimeout(factTimer); eraseCode(); eraseOutput(); clear(accountsView); };
 }

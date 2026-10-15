@@ -266,6 +266,35 @@ test("a link code stays shown when the reread after creating it fails", async ({
   expect(errors).toEqual([]);
 });
 
+// The Hub's clock is SERVER_NOW; the browser's runs 20 minutes fast or slow. Expiry is the daemon's epoch seconds (#132).
+const SERVER_NOW = 1760400000;
+for (const skewMinutes of [20, -20]) {
+  test(`a link code lives its real lifetime with the browser clock ${skewMinutes} min off`, async ({ page }) => {
+    await page.clock.install({ time: (SERVER_NOW + skewMinutes * 60) * 1000 });
+    const { errors } = await mount(page, { overrides: { google_invite: { code: "ahg-synthetic-once", expires_at: SERVER_NOW + 900, now: SERVER_NOW } } });
+    await pane(page).getByRole("button", { name: "Create link code" }).click();
+    await expect(page.locator("[data-link-code]")).toHaveText("ahg-synthetic-once");
+    await page.clock.runFor(890_000);
+    await expect(page.locator("[data-link-code]")).toHaveCount(1);
+    await page.clock.runFor(20_000);
+    await expect(page.locator("[data-link-code]")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test(`"link code open until" follows the Hub's clock with the browser clock ${skewMinutes} min off`, async ({ page }) => {
+    await page.clock.install({ time: (SERVER_NOW + skewMinutes * 60) * 1000 });
+    const open = { ...member, google: { ...member.google, invitation_expires_at: SERVER_NOW + 900 } };
+    const { errors } = await mount(page, { overrides: { accounts: [open], account: { ...open, now: SERVER_NOW } } });
+    await expect(pane(page)).toContainText("link code open until");
+    await page.clock.runFor(890_000);
+    await expect(pane(page)).toContainText("link code open until");
+    await page.clock.runFor(20_000);
+    await expect(pane(page)).not.toContainText("link code open until");
+    await expect(pane(page)).toContainText("Not linked");
+    expect(errors).toEqual([]);
+  });
+}
+
 test("a failed detail read keeps the list's values and says so in the pane", async ({ page }) => {
   const { errors } = await mount(page, { overrides: { account: new Error("Daemon did not answer.") } });
   await expect(pane(page).getByRole("alert")).toContainText("Daemon did not answer.");

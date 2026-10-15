@@ -359,7 +359,9 @@ def test_google_link_code_with_a_token_shaped_substring_is_shown_whole(claimed, 
     fake_daemon.invitation_code = code
     reply = call(claimed, "google_invite", {}, targets={"user_id": created["user_id"]})
     assert reply.status_code == 201, reply.text
-    assert reply.json() == {"code": code, "expires_at": 4102444800}
+    shown = reply.json()
+    assert isinstance(shown.pop("now"), float)  # the Hub's clock, for the page's countdown (#132)
+    assert shown == {"code": code, "expires_at": 4102444800}
     assert fake_daemon.hub_token not in reply.text
 
 

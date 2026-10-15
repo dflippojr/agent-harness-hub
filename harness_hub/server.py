@@ -1023,6 +1023,9 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 shown = administration_view(operation, reply.body, tuple(store.secrets()))
             except ValueError:
                 return _error(502, "The daemon returned invalid administration data. Refresh before repeating a write.")
+            if operation in ("google_invite", "account"):
+                # The page times the link code and its "open until" against this clock, not the browser's (#132).
+                shown["now"] = time.time()
             return JSONResponse(shown, status_code=reply.status)
         except DaemonUnreachable:
             return _unreachable("The daemon did not answer. Read its current state before repeating a write.")
