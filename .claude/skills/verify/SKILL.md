@@ -70,6 +70,7 @@ Sign-in and readiness follow docs/ui-testing.md "Seed and sign-in" and the Journ
 | `spend` | `#/spend` | open, sort by App | the Synthetic App row, Cost then App as the sorted column, the backend table, no sideways scroll |
 | `modules` | `#/modules` | open | heading "Installed" (with its count) |
 | `pairing` | `#/pairing` | open | heading "History · last day" (with its count) |
+| `admin` | `#/admin` | open; Edit member on the seeded member, then Cancel (no write) | the members table shows the seeded member Enabled with its disk in GiB, the detail pane heading "Synthetic member" with the danger zone, the footnote's host commands, no sideways scroll |
 | `settings` | `#/settings` | Maximum turns +1, Validate, Save, reload; Roll back → Confirm rollback, reload (HUB-04's save and rollback) | "Saved.", the new value after reload, then "Rolled back to revision" and the original value after reload |
 
 Every test also asserts no page or console errors (the suite's known exceptions apply). To cover something the map
