@@ -10,7 +10,8 @@ import "./overview-polling.test.mjs";
 import "./page-polling.test.mjs";
 import "./spend-page.test.mjs";
 import "./shell-status.test.mjs";
-import { api } from "../harness_hub/static/lib/api.mjs";
+import { api, HUB_DOWN } from "../harness_hub/static/lib/api.mjs";
+import { daemonBanner, resetStatus } from "../harness_hub/static/lib/status.mjs";
 import { moduleStatus, statusWords, switchFor } from "../harness_hub/static/pages/modules.mjs";
 import { signinFromHash } from "../harness_hub/static/pages/signin.mjs";
 
@@ -81,4 +82,24 @@ test("origin binding survives reloads, accompanies API calls and ends at sign-ou
   assert.equal(storage.has("hub.session"), false);
   await api("session");
   assert.equal(calls[4].headers["X-Hub-Session"], undefined);
+});
+
+test("a refusal reads as a sentence, and a Hub that does not answer is never \"Failed to fetch\"", async () => {
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "fetch");
+  globalThis.sessionStorage = { getItem: () => null };
+  resetStatus();
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({ detail: "the match code does not match" }), { status: 400 });
+    await assert.rejects(api("pairing/r1/approve", { method: "POST", body: {} }),
+      { status: 400, message: "The match code does not match." });
+    globalThis.fetch = async () => new Response("", { status: 502 });
+    await assert.rejects(api("pairing"), { status: 502, message: "The Hub answered HTTP 502." });
+    globalThis.fetch = async () => { throw new TypeError("Failed to fetch"); };
+    await assert.rejects(api("pairing"), { status: 0, message: HUB_DOWN });
+    // The Hub not answering says nothing about the daemon: no banner.
+    assert.equal(daemonBanner(), null);
+  } finally {
+    Object.defineProperty(globalThis, "fetch", saved);
+    resetStatus();
+  }
 });

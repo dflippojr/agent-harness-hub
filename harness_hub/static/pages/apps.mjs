@@ -5,7 +5,8 @@
 // goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { clear, command, dangerZone, h, icon, pill, reveal, sectionHead, table, when } from "../lib/dom.mjs";
+import { blocked, blockedState, clear, command, dangerZone, emptyState, h, icon, pill, placeNotice, reveal, sectionHead,
+  sentence, table, when } from "../lib/dom.mjs";
 import { poller } from "../lib/poll.mjs";
 
 const POLL_MS = 30000;
@@ -66,9 +67,11 @@ export function renderApps(main) {
   // its raw text and validity (an unfinished "1e" stays invalid instead of reading as blank).
   let draftInputs = new Map();
   let detailReadVersion = 0; // the newest caps and retention read; an older reply that lands later is dropped
+  let acted = null; // the key the last notice is about: its detail holds the notice while it is open
+  let readError = null; // why the last inventory read failed, or null once one succeeds
   const poll = poller(() => load());
   const updated = h("span", { class: "muted refreshed" });
-  const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true });
+  const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true, "data-field": "notice" });
   const problem = h("p", { class: "notice bad", role: "alert", hidden: true });
   const view = h("div", { class: "apps-view" });
   // Refresh shows the daemon as it is now: it reads the open App's caps and retention again and drops typed fields, so
@@ -83,7 +86,9 @@ export function renderApps(main) {
   function button(text, action, extra = {}) {
     return h("button", { type: "button", class: "btn", onclick: action, ...extra }, text);
   }
+  // Every write and its outcome belong to the open App, so the notice shows in its detail (decision 5 of #65).
   function message(value, bad = false) {
+    acted = selected;
     notice.textContent = value;
     notice.className = bad ? "notice bad" : "notice";
     notice.hidden = !value;
@@ -117,8 +122,10 @@ export function renderApps(main) {
     const results = await Promise.allSettled([api("apps"), api("apps/erasures")]);
     if (stopped) return;
     inventory = results[0].status === "fulfilled" ? results[0].value : null;
+    readError = results[0].status === "rejected" ? results[0].reason : null;
     erasures = results[1].status === "fulfilled" ? { rows: results[1].value } : { error: results[1].reason.message };
-    showProblem(results[0].status === "rejected" ? results[0].reason.message : inventory?.error || "");
+    // A read that could not run at all shows as its state in place of the keys.
+    showProblem(readError ? blocked(readError) ? "" : readError.message : sentence(inventory?.error));
     if (results[0].status === "fulfilled") updated.textContent = `Updated ${new Date().toLocaleTimeString()} · every ${POLL_MS / 1000} s`;
     refresh.disabled = busy;
     draw(force);
@@ -192,16 +199,24 @@ export function renderApps(main) {
       h("div", { class: row ? "apps-layout has-detail" : "apps-layout" },
         h("section", { class: "apps-keys", "aria-labelledby": "apps-keys-head" },
           sectionHead("Paired apps and keys", rows.length, { id: "apps-keys-head" }),
-          rows.length ? keys(rows) : !inventory ? h("p", { class: "muted" }, "No paired app snapshot is available.") :
-            h("section", { class: "card empty" }, icon("apps"), h("h3", {}, "No keys in the inventory"),
-              h("p", {}, "Apps appear here once they pair. Start from Marketplace or the app's own setup screen."),
-              h("a", { class: "btn", href: "#/marketplace" }, "Open Marketplace"))),
+          rows.length ? keys(rows) : !inventory ? blockedState(readError, "Apps", () => load(true)) ??
+            h("p", { class: "muted" }, "No paired app snapshot is available.") :
+            emptyState("apps", "No keys in the inventory", "Apps appear here once they pair. Start from Marketplace or " +
+              "the app's own setup screen.", marketplaceLink(), { level: 3 }),
+          // Keys, but none an app or device paired with: say so, and where paired apps come from.
+          rows.length && !rows.some(hasAppData) ? emptyState("apps", "No apps paired yet",
+            (rows.every(isHub) ? "Only this Hub's own key is listed. " : "") + "Paired apps show here with what they " +
+            "have used; start one from Marketplace or the app's own setup screen.", marketplaceLink(), { level: 3 }) : null),
         row ? pane(row, rows) : null),
       catalog(rows),
       h("div", { class: "apps-erasures" }, erasures?.error ? h("p", { class: "notice bad", role: "alert" },
         "Erasure deadlines could not be read. " + erasures.error) : null, orphans.length ? waiting(orphans) : null));
+    placeNotice(notice, acted && acted === selected ? view.querySelector(".apps-detail") : null, problem);
     if (focused) focusField(focused[0], focused[1]);
     if (read) void readDetail(row.id);
+  }
+  function marketplaceLink() {
+    return h("a", { class: "btn", href: "#/marketplace" }, "Open Marketplace");
   }
   function focusField(field, caret) {
     const target = view.querySelector(`[data-field="${field}"]`);

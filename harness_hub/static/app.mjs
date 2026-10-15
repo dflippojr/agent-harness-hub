@@ -2,7 +2,7 @@
 // the banner slot under each page head, and the hash router.
 
 import { api } from "./lib/api.mjs";
-import { banner, clear, h, icon } from "./lib/dom.mjs";
+import { banner, clear, emptyState, h, hubDownState, icon } from "./lib/dom.mjs";
 import { daemonBanner, daemonChip, pairingCount, subscribe } from "./lib/status.mjs";
 import { renderOverview } from "./pages/overview.mjs";
 import { renderSettings } from "./pages/settings.mjs";
@@ -98,9 +98,15 @@ function drawStatus() {
   const bannerKey = shown ? JSON.stringify(shown) : "";
   if (bannerKey !== shownBanner) {
     shownBanner = bannerKey;
-    clear(slot, shown ? banner(shown.tone, shown.title, shown.detail,
-      shown.action ? h("a", { class: "btn", href: shown.action.href }, shown.action.label) : null) : null);
+    clear(slot, shown ? banner(shown.tone, shown.title, shown.detail, bannerAction(shown.action)) : null);
   }
+}
+
+// A banner's link, or its Retry now button, which draws the open page again so it repeats its own reads.
+function bannerAction(action) {
+  if (!action) return null;
+  if (action.retry) return h("button", { type: "button", class: "btn", onclick: () => route() }, action.label);
+  return h("a", { class: "btn", href: action.href }, action.label);
 }
 
 // The slot sits under the page head that every page draws first; the sign-in page has none.
@@ -180,7 +186,10 @@ async function boot() {
   try {
     state = await signedIn();
   } catch (error) {
-    clear(main, h("section", { class: "card bad" }, h("h2", {}, "The Hub server did not answer"), h("p", {}, error.message)));
+    // Nothing is known yet, not even whether the owner is signed in: the state that says so, with a retry.
+    const retry = () => location.reload();
+    clear(main, error.status === 0 ? hubDownState(retry) : emptyState("alert", "The Hub could not start this page",
+      error.message, h("button", { type: "button", class: "btn", onclick: retry }, "Retry")));
     return;
   }
   if (!state.signedIn) {

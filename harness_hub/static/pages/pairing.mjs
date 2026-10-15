@@ -4,7 +4,7 @@
 // and this page never sees one. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { clear, command, emphasis, h, icon, pill, reveal, sectionHead, table } from "../lib/dom.mjs";
+import { blocked, blockedState, clear, command, emphasis, h, icon, pill, placeNotice, reveal, sectionHead, table } from "../lib/dom.mjs";
 import { expiry, matchField, pairingRecovery, tickExpiries } from "../lib/pairing.mjs";
 import { poller } from "../lib/poll.mjs";
 
@@ -50,10 +50,12 @@ function caveat(row) {
 export function renderPairing(main) {
   let stopped = false, busy = false, ticker, data = null, offset = 0, signature = "";
   let confirming = null; // the request whose Deny or Withdraw is asking for confirmation, inside its own card
+  let acted = null; // the request the last decision acted on: its card holds the notice while it is on the page
+  let readError = null; // why the last read failed, or null once one succeeds
   const drafts = new Map();
   const poll = poller(() => load());
   const updated = h("span", { class: "muted refreshed" });
-  const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true });
+  const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true, "data-field": "notice" });
   const problem = h("p", { class: "notice bad", role: "alert", hidden: true });
   const groups = h("div", { class: "pairing-groups" });
   const refresh = h("button", { type: "button", class: "btn ghost refresh", onclick: () => load(true) },
@@ -89,11 +91,14 @@ export function renderPairing(main) {
       if (stopped) return;
       data = result;
       offset = typeof result.now === "number" ? result.now - Date.now() / 1000 : 0;
+      readError = null;
       showProblem(result.confirmation_warning || "");
       updated.textContent = `Updated ${new Date().toLocaleTimeString()} · every ${POLL_MS / 1000} s`;
     } catch (error) {
       if (stopped) return;
-      showProblem(error.message + (data ? " Showing the last list." : ""));
+      readError = error;
+      // With no list yet, a read that could not run at all is shown as its state in place of the list.
+      showProblem(!data && blocked(error) ? "" : error.message + (data ? " Showing the last list." : ""));
     }
     draw(force);
     poll.schedule(POLL_MS);
@@ -116,6 +121,8 @@ export function renderPairing(main) {
       waiting.length ? group("waiting", sectionHead("Waiting for the app", waiting.length), waiting.map(waitingRow)) : null,
       done.length ? group("history", sectionHead("History · last day", done.length), history(done)) : null,
       rows.length ? null : empty());
+    placeNotice(notice, acted && [...groups.querySelectorAll("section[data-request-id]")]
+      .find((card) => card.dataset.requestId === acted), problem);
     if (focused) focus(focused[0], focused[1], focused[2]);
     tickExpiries(groups, now());
   }
@@ -130,7 +137,10 @@ export function renderPairing(main) {
     return h("section", { class: "pairing-group", "data-group": name }, head, content);
   }
   function empty() {
-    if (!data) return h("p", { class: "muted" }, "The pairing list is not available.");
+    if (!data) {
+      return blockedState(readError, "Pairing requests", () => load(true)) ??
+        h("p", { class: "muted" }, "The pairing list is not available.");
+    }
     return h("section", { class: "card empty" }, icon("pairing"), h("h2", {}, "No pairing requests in the last day"),
       h("p", {}, "Apps start pairing from their own setup screen, or you arm a slot from Marketplace. " +
         "New requests appear here within 5 seconds."),
@@ -206,7 +216,7 @@ export function renderPairing(main) {
       if (submit.disabled) return;
       const body = { match: input.value.trim() };
       if (elevated) body.acknowledge_elevated = true;
-      perform(async () => {
+      perform(row.id, async () => {
         await api(`pairing/${row.id}/${operation}`, { method: "POST", body });
         drafts.delete(row.id);
         message(`${operation === "approve" ? "Approved" : "Confirmed"} ${name}. The app now fetches its own token.`);
@@ -271,7 +281,7 @@ export function renderPairing(main) {
       draw(true);
       focus(row.id, "deny");
     }, { "data-field": "cancel" });
-    const ok = button(`Confirm ${verb.toLowerCase()}`, () => perform(async () => {
+    const ok = button(`Confirm ${verb.toLowerCase()}`, () => perform(row.id, async () => {
       await api(`pairing/${row.id}/deny`, { method: "POST", body: { confirm: true } });
       message(`${verb === "Deny" ? "Denied" : "Withdrew"} ${name}.`);
     }), { class: "btn destructive", "data-field": "confirm-deny" });
@@ -282,9 +292,11 @@ export function renderPairing(main) {
       h("div", { class: "decision-buttons" }, cancel, ok),
       command(`harness pairing-requests deny ${row.id}`, { parity: true }));
   }
-  async function perform(action) {
+  // A decision on request `id`: its outcome shows in that request's card, or under the page head once the card is gone.
+  async function perform(id, action) {
     if (busy || stopped) return;
     busy = true;
+    acted = id;
     poll.cancel();
     for (const control of groups.querySelectorAll("button,input")) control.disabled = true;
     confirming = null;

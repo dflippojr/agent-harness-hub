@@ -172,3 +172,34 @@ test("one Host commands button reveals an action's several commands; key keeps a
   assert.equal(dom.command("harness arm --origin https://a.test", { parity: true, key: "arm test.example" }).className,
     "host-command open");
 });
+
+test("error copy reads as a sentence; a first word that is a name keeps its case", () => {
+  assert.equal(dom.sentence("the match code does not match"), "The match code does not match.");
+  assert.equal(dom.sentence("Already a sentence."), "Already a sentence.");
+  assert.equal(dom.sentence("hub.entries: invalid JSON"), "hub.entries: invalid JSON.");
+  assert.equal(dom.sentence("  "), "");
+  assert.equal(dom.sentence(null), "");
+});
+
+test("a read that could not run shows Claim this Hub first or the Hub server state; others are left to the page", () => {
+  const unclaimed = dom.blockedState({ status: 409, body: { claimed: false } }, "Pairing requests", () => {});
+  assert.equal(find(unclaimed, "h2").textContent, "Claim this Hub first");
+  assert.match(unclaimed.textContent, /^Claim this Hub firstPairing requests need the Hub's key/);
+  assert.equal(find(unclaimed, "a").attrs.get("href"), "#/overview");
+  let retried = 0;
+  const down = dom.blockedState({ status: 0, body: {} }, "Apps", () => { retried += 1; });
+  assert.equal(find(down, "h2").textContent, "The Hub server is not answering");
+  find(down, "button").listeners.get("click")();
+  assert.equal(retried, 1);
+  assert.equal(dom.blockedState({ status: 409, body: { detail: "That request changed state" } }, "Apps"), null);
+  assert.equal(dom.blockedState({ status: 503, body: { reachable: false } }, "Apps"), null);
+  assert.equal(dom.blockedState(null, "Apps"), null);
+});
+
+test("an empty state says what appears and offers the step that fixes it", () => {
+  const link = dom.h("a", { href: "#/marketplace" }, "Open Marketplace");
+  const state = dom.emptyState("apps", "No apps paired yet", "Paired apps show here.", link, { level: 3 });
+  assert.equal(state.className, "card empty");
+  assert.equal(find(state, "h3").textContent, "No apps paired yet");
+  assert.ok(state.children.includes(link));
+});

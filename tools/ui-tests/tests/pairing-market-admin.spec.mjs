@@ -30,7 +30,7 @@ test("approve a request with the app's code; a wrong code is refused", async ({ 
 
   await request_.getByLabel("Match code the app shows").fill(asked.match_code === "000000" ? "111111" : "000000");
   await request_.getByRole("button", { name: `Approve ${name}` }).click();
-  await expect(notice(page)).toHaveText("the match code does not match the one the App shows");
+  await expect(notice(page)).toHaveText("The match code does not match the one the App shows.");
 
   await request_.getByLabel("Match code the app shows").fill(asked.match_code);
   await request_.getByRole("button", { name: `Approve ${name}` }).click();

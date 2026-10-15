@@ -19,13 +19,14 @@ const replies = {
 const memory = { installed: true, enabled: true, profile: "Synthetic profile", profile_max_chars: 4000,
   last_commit: {}, refresh_error: "" };
 
-async function mount(page, hash, { signedIn = true, memoryReply = memory } = {}) {
+async function mount(page, hash, { signedIn = true, memoryReply = memory, hubDown = false } = {}) {
   const posts = [], errors = [], missing = [];
   page.on("pageerror", error => errors.push(error.message));
   page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
   await page.route("http://hub.test/**", async route => {
     const request = route.request(), pathname = new URL(request.url()).pathname;
     if (pathname.startsWith("/api/")) {
+      if (hubDown) return route.abort("connectionrefused");
       const resource = pathname.slice(5);
       if (resource === "session" && request.method() === "POST") {
         posts.push(request.postDataJSON());
@@ -126,3 +127,33 @@ test.describe("phone drawer", () => {
     await expect(menu).toHaveAttribute("aria-expanded", "true");
   });
 });
+
+test("a daemon that stops answering raises the banner under the page head, and Retry now reads the page again",
+  async ({ page }) => {
+    const { errors } = await mount(page, "#/modules");
+    await expect(page.locator("tr[data-module=hub]")).toContainText("Running");
+    // Every read now finds the daemon silent: the Hub's own 503, marked reachable false.
+    let reads = 0;
+    await page.route(/\/api\/(modules|settings\/)/, route => {
+      reads += 1;
+      return route.fulfill({ status: 503, json: { detail: "The daemon did not answer.", reachable: false } });
+    });
+    await page.getByRole("button", { name: "Refresh modules" }).click();
+    const slot = page.locator("#banner-slot");
+    await expect(slot.getByRole("alert")).toContainText("The daemon is not answering.");
+    // The slot sits right under the page head.
+    expect(await page.evaluate(() => document.querySelector("#main > .page-head").nextElementSibling.id)).toBe("banner-slot");
+    const before = reads;
+    await slot.getByRole("button", { name: "Retry now" }).click();
+    await expect.poll(() => reads).toBeGreaterThan(before);
+    expect(errors.filter(error => !error.includes("503"))).toEqual([]);
+  });
+
+test("a Hub server that does not answer at start shows its state and a Retry, never \"Failed to fetch\"",
+  async ({ page }) => {
+    const { errors } = await mount(page, "#/overview", { hubDown: true });
+    await expect(page.getByRole("heading", { name: "The Hub server is not answering" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+    await expect(page.locator("main")).not.toContainText("Failed to fetch");
+    expect(errors.filter(error => !error.includes("ERR_CONNECTION_REFUSED"))).toEqual([]);
+  });

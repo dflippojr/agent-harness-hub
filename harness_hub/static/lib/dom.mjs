@@ -91,6 +91,62 @@ export function reveal(el) {
   el.focus({ preventScroll: true });
 }
 
+// Error copy as a sentence: a capital first letter and closing punctuation, so a daemon's "match code does not
+// match" reads like the Hub's own messages and a page can add its next sentence after it. A first word that is a name
+// rather than a plain word (a setting key such as hub.entries, an id) keeps its case.
+export function sentence(text) {
+  const value = String(text ?? "").trim();
+  if (!value) return "";
+  const capital = /^[a-z][a-z'-]*(?=[\s,;]|$)/.test(value) ? value[0].toUpperCase() + value.slice(1) : value;
+  return /[.!?:)"']$/.test(capital) ? capital : `${capital}.`;
+}
+
+// Where a page's notice for its last write shows (decision 5 of #65): inside the card that was acted on while that
+// card is on the page, else in its own place just before `home`. Pages call it after each redraw, which rebuilds the
+// cards. Moving a node drops its focus, so a notice that reveal() focused gets it back; a card rebuilt around it
+// detaches it first, so pages also give it a data-field and restore focus to it as to any other control.
+export function placeNotice(notice, card, home) {
+  const focused = globalThis.document?.activeElement === notice;
+  if (card) {
+    if (notice.parentNode === card) return;
+    card.append(notice);
+  } else {
+    if (!home || notice.nextSibling === home) return;
+    home.before(notice);
+  }
+  if (focused) notice.focus({ preventScroll: true });
+}
+
+// An empty or blocked state: what will appear here and how it gets there, with the step that fixes it.
+export function emptyState(iconName, title, text, action, { level = 2 } = {}) {
+  return h("section", { class: "card empty" }, icon(iconName), h(`h${level}`, {}, title), h("p", {}, text), action);
+}
+
+// The state for a read that could not run at all: the Hub has not claimed the daemon (its 409 says claimed: false),
+// or the Hub server itself did not answer (status 0). `what` names what the page shows ("Pairing requests"); retry
+// runs the page's read again. Any other failure returns null and the page shows the error's own sentence.
+export function blockedState(error, what, retry) {
+  if (!blocked(error)) return null;
+  if (error.body?.claimed === false) {
+    return emptyState("hub", "Claim this Hub first", `${what} need the Hub's key from the daemon. Start the claim on ` +
+      "Overview; it takes one command on the daemon host.", h("a", { class: "btn primary", href: "#/overview" },
+      "Go to Overview"));
+  }
+  return hubDownState(retry);
+}
+
+// Whether a failed read could not run at all, so the page shows blockedState in place of what it reads.
+export function blocked(error) {
+  return error?.body?.claimed === false || error?.status === 0;
+}
+
+// The browser could not reach the Hub's own server (api.mjs's status 0); retry runs the read again.
+export function hubDownState(retry) {
+  return emptyState("alert", "The Hub server is not answering", "This page could not reach the Hub itself. Check " +
+    "that it is still running on the daemon host, then retry.",
+  h("button", { type: "button", class: "btn", onclick: retry }, "Retry"));
+}
+
 // Status labels from the Stables set, with the pill tone each one takes. A label not listed here gets a plain pill.
 export const STATUS_TONES = Object.freeze({
   "Needs approval": "warn",

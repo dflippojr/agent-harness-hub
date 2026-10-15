@@ -295,6 +295,10 @@ body.menu-open::after {
 .notice.bad { background: var(--bad-bg); color: var(--bad); }
 /* An empty notice (no message yet) takes no space: only a real message shows its box. */
 .notice:empty { display: none; }
+/* A write's outcome inside the card that was acted on (decision 5 of #65); cards drawn edge to edge inset it. */
+.card > .notice[data-field="notice"], .apps-detail > .notice[data-field="notice"] { margin: 12px 0 0; }
+.card.decision > .notice[data-field="notice"], .card.market-entry > .notice[data-field="notice"],
+.card.modules-table > .notice[data-field="notice"] { margin: 0 22px 18px; }
 
 .command {
   display: flex;

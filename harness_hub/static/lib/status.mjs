@@ -196,7 +196,8 @@ function clockTime(seconds) {
 
 // The one banner for the slot under the page head, highest priority first: the daemon not answering, an Owner API
 // too old, a restart (under way or needed), then an Owner API version that is unknown or too old for tailnet sign-in.
-// Returns { tone, title, detail, action } or null; action is { label, href }.
+// Returns { tone, title, detail, action } or null; action is { label, href } for a link, or { label, retry: true } for
+// a button that draws the open page again.
 export function daemonBanner() {
   const url = overview && overview.hub ? overview.hub.daemon_url : "";
   if (silent) {
@@ -206,6 +207,8 @@ export function daemonBanner() {
       detail: lastGood && typeof lastGood.fetched_at === "number"
         ? `The Hub last reached it at ${clockTime(lastGood.fetched_at)}. Repeat a change only once it answers.`
         : "Repeat a change only once it answers.",
+      // Retry reads the open page again, the same reads it makes on its own; the shell makes no call of its own.
+      action: { label: "Retry now", retry: true },
     };
   }
   if (unhealthy && !restarting) {

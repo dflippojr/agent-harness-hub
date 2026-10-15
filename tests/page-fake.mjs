@@ -16,6 +16,7 @@ export class Element {
     this.text = "";
   }
   append(...children) { this.children.push(...children); }
+  before() {} // the fake keeps no parents, so a node moved back beside another stays where it was
   replaceChildren() { this.children = []; this.text = ""; }
   setAttribute(name, value) { this.attrs.set(name, value); }
   addEventListener(name, fn) { this.listeners.set(name, fn); }

@@ -7,7 +7,8 @@
 // string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { clear, command, dangerZone, h, icon, pill, reveal, sectionHead, table, when } from "../lib/dom.mjs";
+import { blocked, blockedState, clear, command, dangerZone, emptyState, h, icon, pill, placeNotice, reveal, sectionHead, table,
+  when } from "../lib/dom.mjs";
 
 const GROUPS = [["accounts", "Accounts"], ["credentials", "Provider assignments"], ["skills", "Skills"],
   ["maintenance", "Maintenance"], ["runners", "Runners and projects"], ["audit", "Audit"]];
@@ -78,12 +79,14 @@ export function renderAdmin(main) {
   let stopped = false, busy = false, catalogue = [], active = "accounts", selected, codeTimer, preview = null, reviewedProposal = null;
   // Accounts: the member list, the open member and its detail read, and what the detail pane is doing.
   let members = null, membersError = "", memberId = null, detail = null, accountsRead = 0, memberRead = 0;
+  let membersFailure = null; // the error behind membersError, so a read that could not run shows as its state
+  let inPane = false; // whether the notice is about a write on the open member, so it shows in that member's card
   let paneMode = null; // "add" or "edit"
   let asking = null; // { place, op, targets, body, rows, back }: a question asked inside the card that was acted on
   let linkCode = null; // { id, code, expires_at }: the Google link code just created, shown once
   // The fields the owner has typed in, by form and name. A redraw puts the same element back, so typing survives a read.
   let drafts = new Map();
-  const notice = h("p", { class: "notice", role: "status", "aria-live": "polite" });
+  const notice = h("p", { class: "notice", role: "status", "aria-live": "polite", "data-field": "notice" });
   const navigation = h("div", { class: "segmented", role: "group", "aria-label": "Area" });
   const accountsView = h("div", { class: "admin-accounts" });
   const workspace = h("section", { class: "card admin-workspace", hidden: true });
@@ -99,7 +102,17 @@ export function renderAdmin(main) {
   const cli = (op, id) => op.cli.replace("<user_id>", id);
   function eraseOutput() { clear(output); }
   function eraseCode() { clearTimeout(codeTimer); linkCode = null; }
-  function message(text, bad = false) { notice.textContent = text; notice.className = bad ? "notice bad" : "notice"; }
+  // pane marks a write on Accounts: its notice shows in the open member's card (decision 5 of #65); maintenance keeps
+  // the notice under the area control.
+  function message(text, bad = false, pane = false) {
+    notice.textContent = text;
+    notice.className = bad ? "notice bad" : "notice";
+    inPane = pane;
+    placeAccountsNotice();
+  }
+  function placeAccountsNotice() {
+    placeNotice(notice, inPane && active === "accounts" ? accountsView.querySelector(".admin-member") : null, accountsView);
+  }
   function setBusy(value) {
     busy = value;
     for (const control of main.querySelectorAll("button, input, select, textarea")) control.disabled = value;
@@ -109,6 +122,8 @@ export function renderAdmin(main) {
     active = group;
     preview = null; reviewedProposal = null; eraseOutput(); eraseCode();
     for (const control of navigation.children) control.setAttribute("aria-pressed", String(control.dataset.group === group));
+    inPane = false;
+    placeAccountsNotice(); // back under the area control before the members' cards are cleared away
     accountsView.hidden = group !== "accounts";
     workspace.hidden = group === "accounts";
     if (group === "accounts") {
@@ -124,9 +139,11 @@ export function renderAdmin(main) {
   async function loadAccounts() {
     const turn = ++accountsRead;
     let rows = null, failure = "";
-    try { rows = await api("manage/accounts"); } catch (error) { failure = error.message; }
+    let failed = null;
+    try { rows = await api("manage/accounts"); } catch (error) { failed = error; failure = error.message; }
     if (stopped || turn !== accountsRead) return;
     membersError = failure;
+    membersFailure = failed;
     // A failed read keeps the last good list and the open member, so what a write just returned (a link code) stays.
     if (!failure) {
       members = Array.isArray(rows) ? rows : [];
@@ -176,15 +193,19 @@ export function renderAdmin(main) {
     clear(accountsView, h("div", { class: pane ? "admin-accounts-layout has-detail" : "admin-accounts-layout" },
       h("section", { class: "admin-members", "aria-labelledby": "admin-members-head" },
         sectionHead("Members", members ? members.length : null, { id: "admin-members-head" }),
-        membersError ? h("p", { class: "notice bad", role: "alert" }, (members ? "Members could not be read again; " +
-          "this is the last list read. " : "Members could not be read. ") + membersError) : null,
-        !members ? (membersError ? null : h("p", { class: "muted" }, "Reading members…")) : members.length ? memberTable() :
-            h("section", { class: "card empty" }, icon("admin"), h("h3", {}, "No members yet"),
-              h("p", {}, "Add a household member by their exact Tailscale login.")),
+        membersError && (members || !blocked(membersFailure)) ? h("p", { class: "notice bad", role: "alert" },
+          (members ? "Members could not be read again; this is the last list read. " : "Members could not be read. ") +
+          membersError) : null,
+        !members ? (membersError ? blockedState(membersFailure, "Members", () => chooseGroup("accounts")) :
+          h("p", { class: "muted" }, "Reading members…")) : members.length ? memberTable() :
+          emptyState("admin", "No members yet", "Members use the harness through their own apps. They never sign in " +
+            "to the Hub. Add one by their exact Tailscale login.", opFor("account_add") ? button("Add member", () => addMember(),
+            { class: "btn primary", "data-field": "empty-add" }) : null, { level: 3 }),
         h("div", { class: "admin-actions" }, opFor("account_audit") ?
           button("Household audit", () => execute(opFor("account_audit"), {}, {}), { class: "btn ghost", "data-field": "account-audit" }) : null),
         opFor("accounts") ? command(opFor("accounts").cli, { parity: true }) : null),
       pane));
+    placeAccountsNotice();
     if (busy) for (const control of accountsView.querySelectorAll("button, input")) control.disabled = true;
     if (focused) focusField(focused, caret);
   }
@@ -348,13 +369,13 @@ export function renderAdmin(main) {
       if (!input.reportValidity()) return;
       const raw = input.value.trim(), label = LABELS[spec.name] || readable(spec.name);
       if (raw === input.dataset.initial.trim()) continue;
-      if (raw === "") { message(`${label} cannot be empty.`, true); return; }
+      if (raw === "") { message(`${label} cannot be empty.`, true, true); return; }
       const value = spec.type === "integer" ? Number(raw) : raw;
       if (value === row[spec.name]) continue;
       body[spec.name] = value;
       changes.push([label, `${shown(spec.name, row[spec.name])} → ${shown(spec.name, value)}`]);
     }
-    if (!changes.length) { message("Nothing to save: every field matches the daemon's value."); return; }
+    if (!changes.length) { message("Nothing to save: every field matches the daemon's value.", false, true); return; }
     ask("member", op, { user_id: row.user_id }, body, [["Member", `${memberName(row)} (${row.user_id})`], ...changes], "edit-save");
   }
   function ask(place, op, targets, body, rows, back) {
@@ -378,7 +399,7 @@ export function renderAdmin(main) {
   // A write on Accounts: the daemon's answer goes in the page notice, then the list and the open member are read again.
   async function run(op, targets, body) {
     if (busy || stopped) return;
-    asking = null; drawAccounts(); setBusy(true); message("Applying " + lower(op.label) + "…");
+    asking = null; drawAccounts(); setBusy(true); message("Applying " + lower(op.label) + "…", false, true);
     const query = new URLSearchParams(targets);
     let refused = false;
     try {
@@ -389,11 +410,11 @@ export function renderAdmin(main) {
       if ((op.id === "google_cancel" || op.id === "google_unlink") && linkCode?.id === targets.user_id) eraseCode();
       if (op.id === "account_add" && validTarget(reply?.user_id)) { memberId = reply.user_id; detail = null; }
       if (op.id === "account_add" || op.id === "account_save") { paneMode = null; drafts = new Map(); }
-      message("Daemon accepted " + lower(op.label) + ".");
+      message("Daemon accepted " + lower(op.label) + ".", false, true);
     } catch (error) {
       if (stopped) return;
       refused = true;
-      message(error.message + " Inspect current state before repeating a write.", true);
+      message(error.message + " Inspect current state before repeating a write.", true, true);
     }
     await loadAccounts();
     if (stopped) return;

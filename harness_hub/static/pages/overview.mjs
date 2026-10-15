@@ -2,7 +2,7 @@
 // settings), the capabilities summary and the details behind them. Until the claim completes, its card leads the page.
 
 import { api, ApiError } from "../lib/api.mjs";
-import { clear, command, countdown, h, icon, pill, sectionHead } from "../lib/dom.mjs";
+import { clear, command, countdown, h, hubDownState, icon, pill, sectionHead } from "../lib/dom.mjs";
 import { poller } from "../lib/poll.mjs";
 
 const REFRESH_MS = 30000;
@@ -49,7 +49,8 @@ export function renderOverview(main) {
       delay = whileHidden ? CLAIM_POLL_MS : REFRESH_MS;
     } catch (error) {
       if (stopped || reloadRequested) return;
-      clear(body, h("section", { class: "card bad", role: "alert" }, h("h2", {}, "Could not load the overview"), h("p", {}, error.message)));
+      clear(body, error.status === 0 ? hubDownState(() => load()) :
+        h("section", { class: "card bad", role: "alert" }, h("h2", {}, "Could not load the overview"), h("p", {}, error.message)));
       status.textContent = "";
     } finally {
       loading = false;

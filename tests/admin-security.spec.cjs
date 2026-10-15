@@ -102,7 +102,8 @@ const form = page => page.locator(".admin-form");
 const select = (page, id) => page.getByLabel("Choose action", { exact: true }).selectOption(id);
 const pane = page => page.locator(".admin-member");
 const asked = page => page.getByRole("alert", { name: "Confirm action" });
-const notice = page => page.locator("main > p.notice");
+// The page notice: under the area control, or in the open member's card after a write on it.
+const notice = page => page.locator("main p.notice[role=status]");
 
 test("disable and cleanup require explicit confirmation; cancel sends nothing", async ({ page }) => {
   const { writes, errors } = await mount(page, { failure: true });
