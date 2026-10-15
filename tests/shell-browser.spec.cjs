@@ -155,7 +155,7 @@ test("a daemon that stops answering raises the banner under the page head, and R
     expect(errors.filter(error => !error.includes("503"))).toEqual([]);
   });
 
-test("Retry now on Settings reads again in place and keeps an unsaved edit", async ({ page }) => {
+test("Retry now on Settings reads again in place and keeps unsaved edits", async ({ page }) => {
   const turnsSpec = { key: "sessions.max_turns", label: "Maximum turns", type: "int", minimum: 1, maximum: 500,
     category: "Sessions", apply: "live", default: 80, writable: true };
   const { errors } = await mount(page, "#/settings", { extraReplies: {
@@ -164,6 +164,11 @@ test("Retry now on Settings reads again in place and keeps an unsaved edit", asy
   const turns = page.getByRole("spinbutton", { name: "Maximum turns" });
   await expect(turns).toHaveValue("80");
   await turns.fill("87");
+  // An edit in a control's editor too.
+  await page.getByRole("button", { name: "Memory agent profile" }).click();
+  const profile = page.getByLabel("Agent profile", { exact: true });
+  await expect(profile).toHaveValue("Synthetic profile");
+  await profile.fill("Edited profile");
   // The daemon stops answering; the 5 s health poll raises the banner.
   const silent = route => route.fulfill({ status: 503, json: { detail: "The daemon did not answer.", reachable: false } });
   await page.route(/\/api\/settings\//, silent);
@@ -173,6 +178,8 @@ test("Retry now on Settings reads again in place and keeps an unsaved edit", asy
   await page.unroute(/\/api\/settings\//, silent);
   await slot.getByRole("button", { name: "Retry now" }).click();
   await expect(slot.getByRole("alert")).toHaveCount(0);
+  await expect(profile).toHaveValue("Edited profile");
+  await page.getByRole("button", { name: "Sessions" }).click();
   await expect(turns).toHaveValue("87");
   expect(errors.filter(error => !error.includes("503"))).toEqual([]);
 });

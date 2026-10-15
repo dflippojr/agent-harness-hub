@@ -144,7 +144,7 @@ export function renderSettings(main) {
       if (stopped) return;
       [schema, config] = rows;
       drawRegistry(keepDrafts);
-      await loadControls();
+      await loadControls(keepDrafts);
       lock(restarting);
     } catch (error) {
       if (stopped) return;
@@ -545,17 +545,24 @@ export function renderSettings(main) {
         }, report))), command("harness notify test", { parity: true })) },
     ];
   }
-  async function loadControls() {
-    await Promise.all(controls.map(async ({ card, body, report }) => {
+  // Keeping drafts, a control that already drew stays as it is, with any edit in it; only one that failed is read again.
+  async function loadControls(keepDrafts = false) {
+    await Promise.all(controls.map(async (group) => {
+      const { card, body, report } = group;
+      if (keepDrafts && group.drawn) return;
+      group.drawn = false;
       report("");
       clear(body, card.read ? command(card.cli, { parity: true }) : null);
       if (!card.read) {
         card.draw(null, body, report);
+        group.drawn = true;
         return;
       }
       try {
         const data = await api("settings/" + card.read);
-        if (!stopped) card.draw(data, body, report);
+        if (stopped) return;
+        card.draw(data, body, report);
+        group.drawn = true;
       } catch (error) { if (!stopped) body.append(h("p", { class: "notice bad", role: "alert" }, error.message)); }
     }));
   }
@@ -597,7 +604,7 @@ export function renderSettings(main) {
   }
   void load(); void pollHealth();
   const stop = () => { stopped = true; poll.stop(); };
-  // The banner's Retry now reads again in place, so an unsaved edit survives it.
+  // The banner's Retry now reads again in place, so an unsaved edit survives it, in a setting or a control.
   stop.retry = () => load(true);
   return stop;
 }
