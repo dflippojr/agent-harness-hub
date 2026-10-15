@@ -5,7 +5,7 @@
 
 import { api } from "../lib/api.mjs";
 import { clear, command, emphasis, h, icon, pill, reveal, sectionHead, table } from "../lib/dom.mjs";
-import { expiry, pairingRecovery, tickExpiries } from "../lib/pairing.mjs";
+import { expiry, matchField, pairingRecovery, tickExpiries } from "../lib/pairing.mjs";
 import { poller } from "../lib/poll.mjs";
 
 const NEEDS_YOU = ["pending", "claimed"];
@@ -198,11 +198,8 @@ export function renderPairing(main) {
     const draft = drafts.get(row.id) || { match: "", ack: false };
     drafts.set(row.id, draft);
     const elevated = operation === "approve" && row.elevated.length > 0;
-    const help = `match-help-${row.id}`;
-    // Never pre-filled from the listing: the owner types what the app's own screen shows.
-    const input = h("input", { type: "text", class: "match-input", id: `match-${row.id}`, inputmode: "numeric",
-      autocomplete: "off", spellcheck: "false", maxlength: "32", "data-field": "match", "aria-describedby": help });
-    input.value = draft.match;
+    const field = matchField(row.id, draft.match, "deny");
+    const input = field.input;
     const ack = elevated ? h("input", { type: "checkbox", "data-field": "ack" }) : null;
     if (ack) ack.checked = draft.ack;
     const submit = verbButton(operation === "approve" ? "Approve" : "Confirm", name, () => {
@@ -225,9 +222,7 @@ export function renderPairing(main) {
     update();
     const scopes = row.elevated.length === 1 ? "scope" : "scopes";
     const cli = `harness pairing-requests ${operation} ${row.id} --match <code>` + (elevated ? " --acknowledge-elevated" : "");
-    return [h("label", { class: "label", for: input.id }, "Match code the app shows"), input,
-      h("p", { class: "hint", id: help }, "Type the code the app is showing right now. If the app shows no code or an " +
-        "error, deny."),
+    return [field.nodes,
       ack ? h("label", { class: "decision-ack" }, ack,
         h("span", {}, `I understand the elevated ${scopes} (${row.elevated.join(", ")}) and still want to approve.`)) : null,
       h("div", { class: "decision-buttons" }, deny, submit),
