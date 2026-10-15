@@ -144,8 +144,10 @@ class StateStore:
     """`hub-state.json`: `{key, claim, outcome}`.
 
     - `key`: `{token, key_id, daemon_url, claimed_at}` once a claim is redeemed.
-    - `claim`: `{request_id, verifier, match_code, expires_at, started_at, daemon_url}` while a claim waits.
-    - `outcome`: `{state, at}` for the last claim that ended without a key (refused, expired, denied, released).
+    - `claim`: `{request_id, verifier, match_code, expires_at, started_at, daemon_url}` while a claim waits, plus
+      `redeem_unanswered: true` once a redeem may have reached the daemon without its reply arriving.
+    - `outcome`: `{state, at}` for the last claim that ended without a key (refused, expired, denied, released,
+      rate_limited, failed, lost).
     """
 
     def __init__(self, state_dir: Path):

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import time
 
 import pytest
 
-from harness_hub.state import STATE_FILE
+from harness_hub.claim import ClaimManager
+from harness_hub.daemon import DaemonUnreachable, Reply
+from harness_hub.state import STATE_FILE, StateStore
 
 from .conftest import assert_no_secrets
 
@@ -119,6 +123,59 @@ def test_a_key_that_is_not_a_hub_key_is_discarded(hub, fake_daemon):
     assert_no_secrets(hub.bodies, *fake_daemon.minted)
 
 
+def test_a_lost_redeem_reply_ends_lost_with_the_release_command(hub, fake_daemon):
+    # The daemon commits the key, but its reply times out; the retry is told the request was already redeemed.
+    fake_daemon.lose_redeem_replies = 1
+    hub.sign_in()
+    fake_daemon.approve(hub.post("/api/claim").json()["request_id"])
+    claim = hub.wait_for("lost")
+    assert claim["message"] == ("The daemon issued this Hub's key, but the reply never arrived. On the daemon host "
+                                "run harness hub release --confirm, then start a new claim here.")
+    assert claim["release_command"] == "harness hub release --confirm"
+    assert hub.get("/api/overview").json()["claim"]["state"] == "lost"
+    assert len(fake_daemon.minted) == 1 and fake_daemon.hub is not None
+    # The outcome is shown before it is saved; wait for the save rather than race it on the file.
+    store = hub.client.app.fastapi.state.store
+    deadline = time.monotonic() + 5
+    while store.get("outcome") is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert store.get("outcome")["state"] == "lost"
+    assert "key" not in state_file(hub) and state_file(hub)["outcome"]["state"] == "lost"
+    # A new claim is refused until the owner releases the daemon's record of the lost key.
+    assert hub.post("/api/claim").json()["claim"]["state"] == "refused"
+    fake_daemon.release()
+    rid = hub.post("/api/claim").json()["request_id"]
+    fake_daemon.approve(rid)
+    assert hub.wait_for("claimed")["key_id"] == fake_daemon.hub["key_id"]
+    assert_no_secrets(hub.bodies, *fake_daemon.minted)
+
+
+@pytest.mark.parametrize("unreachable", [False, True])
+def test_already_redeemed_without_an_unanswered_attempt_fails(hub, fake_daemon, unreachable):
+    # A connection that never opened cannot have redeemed anything, so it is no evidence of a lost key.
+    hub.sign_in()
+    rid = hub.post("/api/claim").json()["request_id"]
+    if unreachable:
+        fake_daemon.down = True
+        redeems = lambda: sum(url.endswith("/token") for url in fake_daemon.sent)  # noqa: E731
+        refused = redeems()
+        deadline = time.monotonic() + 5
+        while redeems() < refused + 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert redeems() >= refused + 2 and hub.get("/api/claim").json()["state"] == "pending"
+    fake_daemon.requests[rid]["state"] = "redeemed"
+    fake_daemon.down = False
+    assert "did not complete" in hub.wait_for("failed")["message"]
+
+
+def test_only_the_redeem_waits_longer_for_the_daemon(claimed, fake_daemon):
+    claimed.get("/api/overview")
+    redeem = next(path for path in fake_daemon.timeouts if path.endswith("/token"))
+    assert fake_daemon.timeouts[redeem] == {"connect": 5.0, "read": 60.0, "write": 60.0, "pool": 60.0}
+    others = {path: t for path, t in fake_daemon.timeouts.items() if path != redeem}
+    assert others and all(t == {"connect": 5.0, "read": 10.0, "write": 10.0, "pool": 10.0} for t in others.values())
+
+
 def test_release_on_the_host_drops_the_key(hub, fake_daemon):
     hub.sign_in()
     fake_daemon.approve(hub.post("/api/claim").json()["request_id"])
@@ -159,3 +216,33 @@ def test_state_is_owner_only(hub, fake_daemon):
     hub.post("/api/claim")
     assert (hub.state_dir / STATE_FILE).stat().st_mode & 0o077 == 0
     assert hub.state_dir.stat().st_mode & 0o077 == 0
+
+
+class _Redeems:
+    """A daemon stand-in for one redeem each: the given replies or exceptions, in order."""
+
+    base_url = "https://daemon.test"
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+
+    async def redeem_hub_claim(self, *_):
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+@pytest.mark.parametrize("sent, expected", [(True, "lost"), (False, "failed")])
+def test_an_unanswered_redeem_is_remembered_across_a_restart(tmp_path, sent, expected):
+    # The Hub stops after the reply was lost and before its retry; the restarted Hub reads the saved claim.
+    store = StateStore(tmp_path)
+    store.update(claim={"request_id": "pr-lost", "verifier": "synthetic-verifier", "match_code": "123456",
+                        "started_at": 0, "expires_at": time.time() + 600, "daemon_url": _Redeems.base_url})
+    before = ClaimManager(store, _Redeems(DaemonUnreachable("ReadTimeout", sent=sent)))
+    assert asyncio.run(before.poll_once()) is False
+    assert StateStore(tmp_path).get("claim").get("redeem_unanswered") is (True if sent else None)
+    after = ClaimManager(StateStore(tmp_path),
+                         _Redeems(Reply(400, {"detail": "this pairing request was already redeemed"})))
+    assert asyncio.run(after.poll_once()) is True
+    assert after.state() == expected and StateStore(tmp_path).get("outcome")["state"] == expected

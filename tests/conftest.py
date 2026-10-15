@@ -50,6 +50,8 @@ class FakeDaemon:
         self.redeem_role = "hub"
         self.down = False
         self.sent: list[str] = []  # every URL the Hub asked for, so tests can prove what it never fetched
+        self.timeouts: dict[str, dict] = {}  # the last client timeout per path
+        self.lose_redeem_replies = 0  # redeems whose 201 is committed here but never reaches the Hub
         self.allowed_logins: object = ["owner@example.test"]  # None: a daemon before Owner API 1.26
         self.owner_api = "1.26"  # the discovery root's api_version
         self.app = self._build()
@@ -186,9 +188,14 @@ class FakeDaemon:
 
             async def handle_async_request(self, request):
                 fake.sent.append(str(request.url))
+                fake.timeouts[request.url.path] = request.extensions.get("timeout", {})
                 if fake.down:
                     raise httpx.ConnectError("refused", request=request)
-                return await self.inner.handle_async_request(request)
+                response = await self.inner.handle_async_request(request)
+                if request.url.path.endswith("/token") and response.status_code == 201 and fake.lose_redeem_replies:
+                    fake.lose_redeem_replies -= 1
+                    raise httpx.ReadTimeout("synthetic slow reply", request=request)
+                return response
 
         return Transport()
 

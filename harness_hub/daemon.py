@@ -16,6 +16,10 @@ import httpx
 ADMIN = "/api/admin/v1"
 CLAIM_REQUESTS = "/api/v1/pair/requests"
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+# The redeem mints the Hub key and the daemon answers it only once: wait long enough that a slow reply is not lost.
+REDEEM_TIMEOUT = httpx.Timeout(60.0, connect=5.0)
+# Failures raised before the request could reach the daemon; any other failure may follow a request it processed.
+NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.UnsupportedProtocol)
 
 # Closed operation table: browser input never supplies a daemon URL or arbitrary route.
 SETTINGS_ROUTES = {
@@ -105,7 +109,14 @@ ADMIN_ROUTES = {
 
 
 class DaemonUnreachable(Exception):
-    """The daemon did not answer (stopped, restarting, or the URL is wrong)."""
+    """The daemon did not answer (stopped, restarting, or the URL is wrong).
+
+    `sent` is False only when the request certainly never reached the daemon (it could not connect).
+    """
+
+    def __init__(self, message: str, *, sent: bool = True):
+        super().__init__(message)
+        self.sent = sent
 
 
 @dataclass
@@ -153,7 +164,7 @@ class DaemonClient:
             response = await self._client.request(
                 method, path, json=json, headers=headers, params=params, timeout=timeout)
         except httpx.HTTPError as exc:
-            raise DaemonUnreachable(type(exc).__name__) from None
+            raise DaemonUnreachable(type(exc).__name__, sent=not isinstance(exc, NOT_SENT)) from None
         try:
             body = response.json()
         except ValueError:
@@ -194,7 +205,8 @@ class DaemonClient:
 
     async def redeem_hub_claim(self, request_id: str, verifier: str) -> Reply:
         """Redeem this Hub's own claim. The caller (`claim.py`) checks that the key it gets has role `hub`."""
-        return await self._call("POST", f"{CLAIM_REQUESTS}/{request_id}/token", json={"code_verifier": verifier})
+        return await self._call("POST", f"{CLAIM_REQUESTS}/{request_id}/token", json={"code_verifier": verifier},
+                                timeout=REDEEM_TIMEOUT)
 
     async def admin(self, token: str, path: str = "") -> Reply:
         """A read on the owner API with the Hub key."""

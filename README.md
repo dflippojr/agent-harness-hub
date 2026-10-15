@@ -167,6 +167,11 @@ When the daemon already has a Hub, the claim is refused (409) and the Hub shows 
 `harness hub release --confirm`. An expired or denied claim shows that, with a button to start a new one. If the Hub
 is released later, the Hub notices that its key no longer works, forgets it and offers a new claim.
 
+The daemon issues the Hub key once. If a redemption reply never arrives (it timed out or the connection dropped after
+the request was sent) and the retry hears that the request was already redeemed, the daemon holds a key the Hub never
+received. Overview then shows **Key lost** with the host command `harness hub release --confirm`; release, then start
+a new claim.
+
 Stopping a waiting claim is ordered with redemption: if an in-flight redemption succeeds, the Hub keeps its key
 and reports **Claimed**. If stopping returns **Unclaimed**, that request cannot later change the Hub's claim state.
 
@@ -180,9 +185,9 @@ and reads continue serving the last saved snapshot while a disk write is blocked
 Denied are retained in memory and retried locally too; they never cause another redemption.
 
 Claim actions wait at most 15 seconds for the claim lock, then return a retryable HTTP 503 with the current state.
-Starting a new claim also has a 15-second total network deadline. Redemption uses the daemon client's 5-second
-connect and 10-second per-phase timeouts, without a total cancellation deadline: a trickling response can last
-longer, and cancelling it can lose the one-time key. Stop waiting leaves that operation intact if its wait expires.
+Starting a new claim also has a 15-second total network deadline. Redemption uses a 5-second connect timeout and a
+60-second per-phase timeout (other daemon calls keep 10 seconds), without a total cancellation deadline: a trickling
+response can last longer, and cancelling it can lose the one-time key. Stop waiting leaves that operation intact if its wait expires.
 Shutdown waits up to 15 seconds; a shielded cleanup task continues draining redemption, attempts a final save,
 and only then closes the daemon client. Cancelling shutdown does not cancel that task. Cleanup requires the
 process and event loop to remain running; a forced exit cannot guarantee delivery of a daemon's minted key.

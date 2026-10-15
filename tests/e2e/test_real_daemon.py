@@ -22,6 +22,7 @@ import threading
 import time
 import uuid
 from contextlib import ExitStack
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
@@ -541,6 +542,69 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
             if second:
                 cleanup.callback(second.stop)
             cleanup.callback(first.stop)
+
+
+class SlowTokenProxy(ThreadingHTTPServer):
+    """Forwards every request to the daemon, but holds a committed 201 `/token` reply for `hold` seconds."""
+
+    daemon_threads = True
+
+    def __init__(self, upstream: str, hold: float):
+        self.upstream, self.hold = upstream, hold
+        self.minted = 0
+        super().__init__(("127.0.0.1", 0), _ProxyHandler)
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.server_address[1]}"
+
+
+class _ProxyHandler(BaseHTTPRequestHandler):
+    server: SlowTokenProxy
+
+    def log_message(self, *_):
+        pass
+
+    def _forward(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        headers = {k: v for k, v in self.headers.items() if k.lower() not in ("host", "content-length", "connection")}
+        reply = httpx.request(self.command, self.server.upstream + self.path, content=body, headers=headers,
+                              timeout=30, trust_env=False)
+        if self.path.endswith("/token") and reply.status_code == 201:
+            self.server.minted += 1
+            time.sleep(self.server.hold)  # the key is committed on the daemon; the reply is late
+        self.send_response(reply.status_code)
+        for name, value in reply.headers.items():
+            if name.lower() not in ("content-length", "transfer-encoding", "connection", "content-encoding"):
+                self.send_header(name, value)
+        self.send_header("Content-Length", str(len(reply.content)))
+        self.end_headers()
+        self.wfile.write(reply.content)
+
+    do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = _forward
+
+
+def test_a_slow_token_reply_is_still_stored_as_the_hub_key(daemon, tmp_path):
+    # Runs after the main flow, which ends with the daemon released. 11 s is past the other calls' 10 s read timeout.
+    proxy = SlowTokenProxy(daemon["url"], hold=11.0)
+    threading.Thread(target=proxy.serve_forever, daemon=True).start()
+    state = tmp_path / "hub-slow"
+    claim_file = state / "claim.json"
+    hub = Hub(dict(daemon, url=proxy.url), state, claim_file=claim_file)
+    try:
+        hub.sign_in()
+        published = wait(lambda: json.loads(claim_file.read_text(encoding="utf-8")), 30, "the claim file")
+        host_cli(daemon, "hub", "approve", published["id"], "--match", published["match_code"])
+        wait(lambda: hub.claim_state()["state"] in ("claimed", "lost", "failed"), 90, "the slow redeem")
+        assert hub.claim_state()["state"] == "claimed"
+        assert proxy.minted == 1 and hub.token().startswith("ho-")
+        assert_no_secrets(hub.bodies, hub.token())
+    finally:
+        with ExitStack() as cleanup:
+            cleanup.callback(proxy.server_close)
+            cleanup.callback(proxy.shutdown)
+            cleanup.callback(hub.stop)
+            cleanup.callback(host_cli, daemon, "hub", "release", "--confirm")
 
 
 def test_all_scope_disclosures_and_elevated_tiers_match_pinned_daemon():

@@ -191,3 +191,21 @@ test("a Hub server that does not answer at start shows its state and a Retry, ne
     await expect(page.locator("main")).not.toContainText("Failed to fetch");
     expect(errors.filter(error => !error.includes("ERR_CONNECTION_REFUSED"))).toEqual([]);
   });
+
+test("a claim whose key reply was lost shows the release command beside Start a new claim", async ({ page }) => {
+  const claim = { state: "lost", release_command: "harness hub release --confirm",
+    message: "The daemon issued this Hub's key, but the reply never arrived. On the daemon host run "
+      + "harness hub release --confirm, then start a new claim here." };
+  const { errors } = await mount(page, "#/overview", { extraReplies: { overview: {
+    reachable: true, restarting: false, error: "", fetched_at: Date.now() / 1000,
+    hub: { version: "0.0.0", daemon_url: "http://127.0.0.1:8085" },
+    daemon: {}, health: { ok: true }, capabilities: {}, ownership: null, claim } } });
+  const card = page.getByRole("region", { name: "Claim this daemon" });
+  await expect(card).toContainText("Key lost");
+  await expect(card.getByRole("alert")).toHaveText(claim.message);
+  await expect(card).toContainText("First, on the daemon host run");
+  await expect(card.getByText("harness hub release --confirm", { exact: true })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Copy: harness hub release --confirm" })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Start a new claim" })).toBeEnabled();
+  expect(errors.filter(error => !error.includes("503"))).toEqual([]);
+});
