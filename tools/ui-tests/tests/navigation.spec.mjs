@@ -127,7 +127,7 @@ test("live resize keeps a partly filled form and a working bottom bar", async ({
   const more = page.getByRole("button", { name: "More" });
   for (const width of [1280, 1024, 768, 414, 375]) await page.setViewportSize({ width, height: 900 });
   await expect(more).toBeVisible();
-  await expect(page.locator("main > .page-head").getByRole("status")).toBeVisible();
+  await expect(page.locator("main > .page-head > #daemon-chip")).toBeVisible();
   await more.click();
   await expect(more).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByRole("link", { name: "Modules" })).toBeVisible();
