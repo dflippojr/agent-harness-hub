@@ -5,7 +5,7 @@
 // goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { blocked, blockedState, clear, command, dangerZone, emptyState, h, icon, pill, placeNotice, reveal, sectionHead,
+import { blocked, blockedKey, blockedState, clear, command, dangerZone, emptyState, h, icon, pill, placeNotice, reveal, sectionHead,
   sentence, table, when } from "../lib/dom.mjs";
 import { poller } from "../lib/poll.mjs";
 
@@ -179,7 +179,7 @@ export function renderApps(main) {
     return rows.sort((a, b) => rank(a) - rank(b));
   }
   function draw(force = true) {
-    const next = JSON.stringify([inventory, erasures]);
+    const next = JSON.stringify([inventory, erasures, blockedKey(readError)]);
     if (!force && next === signature) return;
     signature = next;
     // Keep the owner's focus (and caret) across a redraw.

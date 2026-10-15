@@ -4,7 +4,7 @@
 // and this page never sees one. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { blocked, blockedState, clear, command, emphasis, h, icon, pill, placeNotice, reveal, sectionHead, table } from "../lib/dom.mjs";
+import { blocked, blockedKey, blockedState, clear, command, emphasis, h, icon, pill, placeNotice, reveal, sectionHead, table } from "../lib/dom.mjs";
 import { expiry, matchField, pairingRecovery, tickExpiries } from "../lib/pairing.mjs";
 import { poller } from "../lib/poll.mjs";
 
@@ -104,7 +104,7 @@ export function renderPairing(main) {
     poll.schedule(POLL_MS);
   }
   function draw(force) {
-    const next = JSON.stringify(data?.requests ?? null);
+    const next = JSON.stringify([data?.requests ?? null, blockedKey(readError)]);
     if (!force && next === signature) return;
     signature = next;
     // Keep the owner's typing and focus across a poll that changed the list.

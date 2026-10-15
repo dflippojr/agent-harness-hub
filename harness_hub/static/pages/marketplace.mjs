@@ -5,7 +5,7 @@
 // image shown is an inline one the server already checked. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { banner, blocked, blockedState, clear, command, emphasis, h, icon, pill, placeNotice, sectionHead, sentence, when }
+import { banner, blocked, blockedKey, blockedState, clear, command, emphasis, h, icon, pill, placeNotice, sectionHead, sentence, when }
   from "../lib/dom.mjs";
 import { expiry, matchField, pairingRecovery, tickExpiries } from "../lib/pairing.mjs";
 import { poller } from "../lib/poll.mjs";
@@ -97,7 +97,7 @@ export function renderMarketplace(main) {
     problem.hidden = !lines.length;
   }
   function draw(force) {
-    const next = JSON.stringify([data?.entries ?? null, data?.withheld ?? 0]);
+    const next = JSON.stringify([data?.entries ?? null, data?.withheld ?? 0, blockedKey(readError)]);
     if (!force && next === signature) return;
     signature = next;
     const entries = data?.entries || [];

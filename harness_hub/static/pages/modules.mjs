@@ -5,7 +5,7 @@
 // text node.
 
 import { api } from "../lib/api.mjs";
-import { blocked, blockedState, clear, command, h, icon, pill, placeNotice, sectionHead, sentence, table, toggle, when }
+import { blocked, blockedKey, blockedState, clear, command, h, icon, pill, placeNotice, sectionHead, sentence, table, toggle, when }
   from "../lib/dom.mjs";
 import { poller } from "../lib/poll.mjs";
 
@@ -114,7 +114,7 @@ export function renderModules(main) {
     const key = JSON.stringify([shown, config?.revision, installed.map(({ spec, value, pending, writable }) =>
       [spec?.key, spec?.apply, spec?.guidance, spec?.label, value, pending, writable]), busy,
     // Which blocked state, if any, stands in for the table: Hub down and not claimed draw differently.
-    blocked(readError) ? [readError.status, readError.body?.claimed] : null]);
+    blockedKey(readError)]);
     if (key === drawn) return;
     drawn = key;
     revision.textContent = config ? "Settings revision " + config.revision : "";

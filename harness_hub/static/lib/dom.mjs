@@ -140,6 +140,13 @@ export function blocked(error) {
   return error?.body?.claimed === false || error?.status === 0;
 }
 
+// Which blocked state a failed read stands for ("unclaimed", "hub-down" or ""), for a page's redraw key: a poll that
+// turns one into the other must redraw, even when nothing it read has changed.
+export function blockedKey(error) {
+  if (!blocked(error)) return "";
+  return error.body?.claimed === false ? "unclaimed" : "hub-down";
+}
+
 // The browser could not reach the Hub's own server (api.mjs's status 0); retry runs the read again.
 export function hubDownState(retry) {
   return emptyState("alert", "The Hub server is not answering", "This page could not reach the Hub itself. Check " +
