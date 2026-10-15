@@ -125,12 +125,15 @@ export function renderAdmin(main) {
     let rows = null, failure = "";
     try { rows = await api("manage/accounts"); } catch (error) { failure = error.message; }
     if (stopped || turn !== accountsRead) return;
-    members = failure ? null : Array.isArray(rows) ? rows : [];
     membersError = failure;
-    if (!members?.some(row => row.user_id === memberId)) memberId = members?.find(row => validTarget(row.user_id))?.user_id ?? null;
-    detail = null; memberRead++; // a detail read started before this list is dropped; the open member is read again
+    // A failed read keeps the last good list and the open member, so what a write just returned (a link code) stays.
+    if (!failure) {
+      members = Array.isArray(rows) ? rows : [];
+      if (!members.some(row => row.user_id === memberId)) memberId = members.find(row => validTarget(row.user_id))?.user_id ?? null;
+      detail = null; memberRead++; // a detail read started before this list is dropped; the open member is read again
+    }
     drawAccounts();
-    if (memberId && active === "accounts") void loadMember(memberId);
+    if (!failure && memberId && active === "accounts") void loadMember(memberId);
   }
   async function loadMember(id) {
     const turn = ++memberRead;
@@ -172,8 +175,9 @@ export function renderAdmin(main) {
     clear(accountsView, h("div", { class: pane ? "admin-accounts-layout has-detail" : "admin-accounts-layout" },
       h("section", { class: "admin-members", "aria-labelledby": "admin-members-head" },
         sectionHead("Members", members ? members.length : null, { id: "admin-members-head" }),
-        membersError ? h("p", { class: "notice bad", role: "alert" }, "Members could not be read. " + membersError) :
-          !members ? h("p", { class: "muted" }, "Reading members…") : members.length ? memberTable() :
+        membersError ? h("p", { class: "notice bad", role: "alert" }, (members ? "Members could not be read again; " +
+          "this is the last list read. " : "Members could not be read. ") + membersError) : null,
+        !members ? (membersError ? null : h("p", { class: "muted" }, "Reading members…")) : members.length ? memberTable() :
             h("section", { class: "card empty" }, icon("admin"), h("h3", {}, "No members yet"),
               h("p", {}, "Add a household member by their exact Tailscale login.")),
         h("div", { class: "admin-actions" }, opFor("account_audit") ?

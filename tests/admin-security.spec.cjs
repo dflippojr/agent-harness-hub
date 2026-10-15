@@ -52,7 +52,8 @@ const proposal = { id: "p-synthetic", title: "Synthetic proposal", content_hash:
 
 // Accounts follow tests/admin_fake.py: a member read answers for the member asked for, and a saved change stays.
 // hold(id, method), when given, may return a promise the reply waits for (a slow daemon).
-async function mount(page, { failure = false, overrides = {}, hold = () => null } = {}) {
+// refuse(id, method), when given, may return a message the reply refuses with (a daemon that stops answering).
+async function mount(page, { failure = false, overrides = {}, hold = () => null, refuse = () => null } = {}) {
   const writes = [], reads = [], errors = [];
   const people = structuredClone(Array.isArray(overrides.accounts) ? overrides.accounts : [member]);
   page.on("pageerror", error => errors.push(error.message));
@@ -66,6 +67,8 @@ async function mount(page, { failure = false, overrides = {}, hold = () => null 
         { label: "Owner keys", reason: "Hub key cannot mint owner keys", cli: "harness keys create" }] } });
       if (failure && id === "cleanup") return route.fulfill({ status: 503, json: { detail: "Daemon unavailable; inspect state." } });
       await hold(id, request.method());
+      const refusal = refuse(id, request.method());
+      if (refusal) return route.fulfill({ status: 502, json: { detail: refusal } });
       if (overrides[id] instanceof Error) return route.fulfill({ status: 502, json: { detail: overrides[id].message } });
       const person = people.find(row => row.user_id === url.searchParams.get("user_id"));
       if (id === "accounts") return route.fulfill({ json: people });
@@ -73,6 +76,11 @@ async function mount(page, { failure = false, overrides = {}, hold = () => null 
         if (!person) return route.fulfill({ status: 404, json: { detail: "no household account matches that id" } });
         if (id === "account_save") { const { confirm, ...changes } = request.postDataJSON(); Object.assign(person, changes); }
         return route.fulfill({ json: person });
+      }
+      if (id === "account_add" && !overrides[id]) {
+        const added = { ...member, ...request.postDataJSON(), user_id: "u-created" };
+        people.push(added);
+        return route.fulfill({ status: 201, json: added });
       }
       const replies = { credentials: [],
         skills: { enabled: true, proposals: [proposal], installed: [] }, proposal, skill_install: {}, maintenance: { free_gb: 10 },
@@ -203,7 +211,7 @@ test("a confirmed write takes its question away at once and holds the controls u
 });
 
 test("Add member is the primary action and sends only what was typed", async ({ page }) => {
-  const { writes, errors } = await mount(page, { overrides: { account_add: { ...member, user_id: "u-created" } } });
+  const { writes, errors } = await mount(page);
   await page.getByRole("button", { name: "Maintenance", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("Current daemon state.");
   await page.locator("header").getByRole("button", { name: "Add member" }).click();
@@ -216,6 +224,9 @@ test("Add member is the primary action and sends only what was typed", async ({ 
   await expect.poll(() => writes.length).toBe(1);
   expect(writes[0]).toEqual({ id: "account_add", method: "POST", target: {}, body: { login: "new@example.test", display_name: "New member" } });
   await expect(notice(page)).toHaveText("Daemon accepted add member.");
+  await expect(page.getByRole("heading", { name: "New member", level: 2 })).toBeVisible();
+  await expect(pane(page)).toHaveAttribute("data-member-id", "u-created");
+  await expect(page.getByRole("table", { name: "Members" }).locator("tr.selected")).toContainText("new@example.test");
   expect(errors).toEqual([]);
 });
 
@@ -229,6 +240,19 @@ test("erasing the GitHub credential asks inside the danger zone", async ({ page 
   await zone.getByRole("button", { name: "Confirm erase GitHub credential" }).click();
   await expect.poll(() => writes.length).toBe(1);
   expect(writes[0]).toEqual({ id: "github_reset", method: "POST", target: { user_id: "u-synthetic" }, body: { confirm: true } });
+  expect(errors).toEqual([]);
+});
+
+test("a link code stays shown when the reread after creating it fails", async ({ page }) => {
+  let wrote = false;
+  const { errors } = await mount(page, { refuse: (id, method) => {
+    if (method !== "GET") wrote = true;
+    return wrote && id === "accounts" ? "Daemon did not answer." : null;
+  } });
+  await pane(page).getByRole("button", { name: "Create link code" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "last list read" })).toContainText("Daemon did not answer.");
+  await expect(page.locator("[data-link-code]")).toHaveText("ahg-synthetic-once");
+  await expect(page.getByRole("table", { name: "Members" })).toContainText("Synthetic member");
   expect(errors).toEqual([]);
 });
 
