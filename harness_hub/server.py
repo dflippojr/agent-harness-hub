@@ -123,6 +123,15 @@ def _error(status: int, detail: str, **extra: Any) -> JSONResponse:
     return JSONResponse({"detail": detail, **extra}, status_code=status)
 
 
+def _json_body(data: bytes | bytearray) -> Any:
+    """A request body parsed as JSON. Raises ValueError for any body that does not parse, deeply nested arrays included
+    (json raises RecursionError for those, which a route's `except ValueError` would miss and answer with a 500)."""
+    try:
+        return json.loads(data)
+    except RecursionError as error:
+        raise ValueError("JSON body is nested too deeply") from error
+
+
 # An error says whether the daemon answered, so the shell's status tells "the Hub could not reach the daemon" (a 503 of
 # the Hub's own, reachable false) from "the daemon answered with an error" (forwarded, any status, reachable true).
 def _unreachable(detail: str, **extra: Any) -> JSONResponse:
@@ -305,7 +314,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return _error(413, "sign-in body is too large")
             data.extend(chunk)
         try:
-            body = json.loads(data)
+            body = _json_body(data)
         except ValueError:
             body = None
         if isinstance(body, dict) and body.get("method") == "tailnet":
@@ -316,7 +325,13 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         else:
             code = body.get("code") if isinstance(body, dict) else None
             was_throttled = sessions.throttled()
-            credentials = sessions.redeem_code(code, request.cookies.get(settings.cookie_name))
+            try:
+                # Off the event loop: the code file's cross-process lock can be held by a stalled signin-link (#134).
+                credentials = await asyncio.to_thread(sessions.redeem_code, code,
+                                                      request.cookies.get(settings.cookie_name))
+            except OSError as exc:  # SigninBusy included; the code is not spent
+                log.warning("sign-in could not update the sign-in codes: %s", exc)
+                return _error(503, "sign-in is busy; try again in a moment")
             if credentials is None:
                 if was_throttled:
                     return _error(429, "too many sign-in attempts; wait a minute")
@@ -683,7 +698,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return _error(413, "Set-up body is too large")
             data.extend(chunk)
         try:
-            body = json.loads(data or b"{}")
+            body = _json_body(data or b"{}")
         except ValueError:
             return _error(400, "Set-up body must be JSON")
         if not isinstance(body, dict) or set(body) - {"catalog_app_id", "scopes", "origin", "acknowledge_elevated",
@@ -809,7 +824,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     return _error(413, "Apps body is too large")
                 data.extend(chunk)
             try:
-                body = json.loads(data or b"{}")
+                body = _json_body(data or b"{}")
             except ValueError:
                 return _error(400, "Apps body must be JSON")
             fields = {"revoke": {"confirm"}, "limits_save": {"max_running", "max_queued"},
@@ -890,7 +905,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     return _error(413, "Pairing body is too large")
                 data.extend(chunk)
             try:
-                body = json.loads(data or b"{}")
+                body = _json_body(data or b"{}")
             except ValueError:
                 return _error(400, "Pairing body must be JSON")
             fields = {"approve": {"match", "acknowledge_elevated"}, "confirm": {"match"}, "deny": {"confirm"}}
@@ -1000,7 +1015,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     if len(data) + len(chunk) > 65536:
                         return _error(413, "Administration body is too large")
                     data.extend(chunk)
-                body = validate_fields(operation, json.loads(data or b"{}"))
+                body = validate_fields(operation, _json_body(data or b"{}"))
         except (ValueError, OverflowError):
             return _error(400, "Invalid administration fields; check required values and confirmation")
         try:
@@ -1023,6 +1038,9 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 shown = administration_view(operation, reply.body, tuple(store.secrets()))
             except ValueError:
                 return _error(502, "The daemon returned invalid administration data. Refresh before repeating a write.")
+            if operation in ("google_invite", "account"):
+                # The page times the link code and its "open until" against this clock, not the browser's (#132).
+                shown["now"] = time.time()
             return JSONResponse(shown, status_code=reply.status)
         except DaemonUnreachable:
             return _unreachable("The daemon did not answer. Read its current state before repeating a write.")
@@ -1068,7 +1086,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     return _error(413, "Settings body is too large")
                 data.extend(chunk)
             try:
-                body = json.loads(data or b"{}")
+                body = _json_body(data or b"{}")
             except ValueError:
                 return _error(400, "Settings body must be JSON")
             fields = {"validate": {"revision", "changes"}, "save": {"revision", "changes"},

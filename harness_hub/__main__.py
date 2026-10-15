@@ -22,7 +22,7 @@ from .config import (
     normalize_daemon_url,
     normalize_public_url,
 )
-from .state import SERVER_FILE, read_json
+from .state import SERVER_FILE, SigninBusy, read_json
 
 
 def serve_parser() -> argparse.ArgumentParser:
@@ -66,7 +66,11 @@ def signin_link(argv: list[str]) -> int:
         url = normalize_public_url(url)
     except ValueError as exc:
         parser.error(str(exc))
-    code = create_signin_code(args.state_dir)
+    try:
+        code = create_signin_code(args.state_dir)
+    except SigninBusy:
+        print("signin-link: another process is updating the sign-in codes; try again in a moment", file=sys.stderr)
+        return 1
     print(f"{url.rstrip('/')}/#signin={code}")
     return 0
 

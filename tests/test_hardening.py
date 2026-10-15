@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
 import os
 import re
 import socket
@@ -11,18 +13,22 @@ import ssl
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
 
-from harness_hub import auth
+from harness_hub import auth, state
+from harness_hub.__main__ import signin_link
 from harness_hub.auth import Sessions, create_signin_code
 from harness_hub.config import Settings, normalize_daemon_url, normalize_public_url
 from harness_hub.daemon import DaemonClient
-from harness_hub.server import MAX_SIGNIN_BODY, create_app
+from harness_hub.server import MAX_SIGNIN_BODY, _json_body, create_app
 from harness_hub.state import StateStore, prepare_dir, write_private
+
+from .conftest import HUB_HOST
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.20", "lan.example", ""])  # noqa: S104
@@ -368,6 +374,96 @@ auth.create_signin_code(Path(sys.argv[1]))
         if proc.poll() is None:
             proc.kill()
         proc.communicate(timeout=10)
+
+
+LOCK_HOLDER = """
+import sys
+from pathlib import Path
+from harness_hub.state import signin_lock
+with signin_lock(Path(sys.argv[1])):
+    print("held", flush=True)
+    sys.stdin.readline()
+"""
+
+
+@contextlib.contextmanager
+def held_signin_lock(state_dir):
+    """Another process (a stalled signin-link) holds the sign-in lock until the block ends."""
+    proc = subprocess.Popen([sys.executable, "-c", LOCK_HOLDER, str(state_dir)], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert proc.stdout.readline().strip() == "held"
+        yield
+        proc.stdin.write("release\n")
+        proc.stdin.flush()
+        _, errors = proc.communicate(timeout=10)
+        assert proc.returncode == 0, errors
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate(timeout=10)
+
+
+def test_a_stalled_lock_holder_makes_redeem_busy_without_spending_the_code_or_counting_a_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(state, "SIGNIN_LOCK_SECONDS", 0.5)
+    code = create_signin_code(tmp_path)
+    sessions = Sessions(tmp_path)
+    with held_signin_lock(tmp_path):
+        started = time.monotonic()
+        with pytest.raises(state.SigninBusy):
+            sessions.redeem_code(code)
+        assert 0.4 < time.monotonic() - started < 3
+        assert sessions._failures == []
+        with pytest.raises(state.SigninBusy):
+            create_signin_code(tmp_path)  # signin-link gives up too, rather than waiting forever
+    assert sessions.redeem_code(code) is not None
+
+
+def test_a_sign_in_waiting_on_the_lock_does_not_stall_other_requests(hub, monkeypatch):
+    monkeypatch.setattr(state, "SIGNIN_LOCK_SECONDS", 2.0)
+    hub.sign_in()
+    code = create_signin_code(hub.state_dir)
+    with held_signin_lock(hub.state_dir), ThreadPoolExecutor(max_workers=1) as pool:
+        started = time.monotonic()
+        signing_in = pool.submit(hub.post, "/api/session", json={"code": code})
+        time.sleep(0.3)  # the sign-in is now waiting on the lock
+        for path in ("/healthz", "/api/session"):
+            asked = time.monotonic()
+            response = hub.get(path)
+            assert response.status_code == 200 and time.monotonic() - asked < 1, path
+        assert hub.get("/api/session").json()["signed_in"] is True
+        busy = signing_in.result(timeout=10)
+        assert busy.status_code == 503 and "try again" in busy.json()["detail"]
+        assert time.monotonic() - started < 4
+    assert hub.post("/api/session", json={"code": code}).status_code == 204  # the code was not spent
+
+
+def test_cli_reports_a_busy_sign_in_lock(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(state, "SIGNIN_LOCK_SECONDS", 0.2)
+    with held_signin_lock(tmp_path):
+        assert signin_link(["--state-dir", str(tmp_path)]) == 1
+    assert "try again" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("path", "size", "detail"), [
+    ("/api/manage/google_invite?user_id=u-synthetic", 50_000, "Invalid administration fields"),
+    ("/api/settings/validate", 50_000, "Settings body must be JSON"),
+    ("/api/marketplace/arm", 4_000, "Set-up body must be JSON"),
+])
+def test_deeply_nested_json_bodies_are_refused_with_400(claimed, fake_daemon, caplog, path, size, detail):
+    sent = len(fake_daemon.sent)
+    response = claimed.post(path, content="[" * size,
+                            headers={"Origin": f"http://{HUB_HOST}", "Content-Type": "application/json"})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"].startswith(detail)
+    assert fake_daemon.sent[sent:] == []
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+
+
+def test_json_body_refuses_deep_nesting_as_a_value_error():
+    with pytest.raises(ValueError, match="nested"):
+        _json_body(b"[" * 50_000)
+    assert _json_body(b"[[1]]") == [[1]]
 
 
 def _windows_sid(value):
