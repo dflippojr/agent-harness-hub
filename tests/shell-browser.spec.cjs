@@ -26,7 +26,8 @@ async function mount(page, hash, { signedIn = true, memoryReply = memory, hubDow
   await page.route("http://hub.test/**", async route => {
     const request = route.request(), pathname = new URL(request.url()).pathname;
     if (pathname.startsWith("/api/")) {
-      if (hubDown) return route.abort("connectionrefused");
+      // true: every Hub read fails; a RegExp: only the reads whose path matches it.
+      if (hubDown === true || (hubDown instanceof RegExp && hubDown.test(pathname))) return route.abort("connectionrefused");
       const resource = pathname.slice(5);
       if (resource === "session" && request.method() === "POST") {
         posts.push(request.postDataJSON());
@@ -151,6 +152,20 @@ test("a daemon that stops answering raises the banner under the page head, and R
     await slot.getByRole("button", { name: "Retry now" }).click();
     await expect.poll(() => reads).toBeGreaterThan(before);
     expect(errors.filter(error => !error.includes("503"))).toEqual([]);
+  });
+
+test("Settings drops the Hub-down state when Retry reaches the Hub but the daemon still does not answer",
+  async ({ page }) => {
+    const { errors } = await mount(page, "#/settings", { hubDown: /^\/api\/settings\// });
+    const hubDown = page.getByRole("heading", { name: "The Hub server is not answering" });
+    await expect(hubDown).toBeVisible();
+    // The Hub answers again; the daemon behind it still does not.
+    await page.route(/\/api\/settings\//, route =>
+      route.fulfill({ status: 503, json: { detail: "The daemon did not answer.", reachable: false } }));
+    await page.getByRole("button", { name: "Retry" }).click();
+    await expect(page.locator("main")).toContainText("The daemon did not answer.");
+    await expect(hubDown).toHaveCount(0);
+    expect(errors.filter(error => !/ERR_CONNECTION_REFUSED|503/.test(error))).toEqual([]);
   });
 
 test("a Hub server that does not answer at start shows its state and a Retry, never \"Failed to fetch\"",

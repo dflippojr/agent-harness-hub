@@ -149,8 +149,9 @@ export function renderSettings(main) {
     } catch (error) {
       if (stopped) return;
       // Before any settings were read, a read that could not run at all shows as its state, with the step that fixes it.
+      // Until then the warning slot holds only that state, so any other error clears a state an earlier read left.
       const state = config ? null : blockedState(error, "Settings", () => load());
-      if (state) clear(warning, state);
+      if (!config) clear(warning, state);
       message(state ? "" : error.message, !state);
     }
   }
