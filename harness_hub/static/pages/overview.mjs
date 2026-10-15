@@ -195,6 +195,14 @@ function claimCard(data, reload, keepTime) {
         [h("p", { class: "label" }, "To replace that Hub with this one, on the daemon host run"),
           command(claim.release_command),
           h("p", { class: "hint" }, "Then start a new claim here.")]);
+    case "lost":
+      // The daemon holds a key for this Hub that never reached it: only a release on the host frees the daemon.
+      return card("bad", 0,
+        [head(pill("Key lost", "bad")), h("p", { class: "lead", role: "alert" }, claim.message),
+          startButton("Start a new claim")],
+        [h("p", { class: "label" }, "First, on the daemon host run"),
+          command(claim.release_command),
+          h("p", { class: "hint" }, "Then start a new claim here.")]);
     default: {
       const unclaimed = claim.state === "unclaimed";
       const outcome = { expired: "Expired", denied: "Denied" }[claim.state];

@@ -35,9 +35,9 @@ RELEASE_COMMAND = "harness hub release --confirm"
 # What the UI is told for each state; the server adds the commands.
 UNCLAIMED, PENDING, CLAIMED = "unclaimed", "pending", "claimed"
 PERSISTING = "persisting"
-REFUSED, EXPIRED, DENIED, RELEASED, RATE_LIMITED, FAILED = (
-    "refused", "expired", "denied", "released", "rate_limited", "failed")
-OUTCOMES = (REFUSED, EXPIRED, DENIED, RELEASED, RATE_LIMITED, FAILED)
+REFUSED, EXPIRED, DENIED, RELEASED, RATE_LIMITED, FAILED, LOST = (
+    "refused", "expired", "denied", "released", "rate_limited", "failed", "lost")
+OUTCOMES = (REFUSED, EXPIRED, DENIED, RELEASED, RATE_LIMITED, FAILED, LOST)
 
 
 class ClaimError(Exception):
@@ -72,6 +72,8 @@ class ClaimManager:
         self._poller: asyncio.Task | None = None
         self._redeemed_key: dict | None = None
         self._terminal_outcome: dict | None = None
+        # The request id whose redeem went unanswered after it may have reached the daemon (a minted key can be lost).
+        self._redeem_unanswered: str | None = None
         self._shutdown_task: asyncio.Task | None = None
         self._persist_failures = 0
         self._last_persist_log: float | None = None
@@ -119,6 +121,7 @@ class ClaimManager:
 
     async def _finish(self, state: str) -> bool:
         # A terminal reply is consumed once, even if the local write fails.
+        self._redeem_unanswered = None
         self._terminal_outcome = {"state": state, "at": self.clock()}
         return await self._persist_result()
 
@@ -286,7 +289,9 @@ class ClaimManager:
             return await self._finish(FAILED)
         try:
             reply = await self.daemon.redeem_hub_claim(claim["request_id"], claim["verifier"])
-        except DaemonUnreachable:
+        except DaemonUnreachable as exc:
+            if exc.sent:
+                self._redeem_unanswered = claim["request_id"]
             if self.clock() > claim["expires_at"] + 300:  # the approve and redeem windows have both passed
                 return await self._finish(EXPIRED)
             return False
@@ -298,6 +303,12 @@ class ClaimManager:
             return await self._store_key(reply.body, claim)
         if reply.status == 409 and reply.code == "hub_claimed":
             return await self._finish(REFUSED)
+        elif (reply.status == 400 and "already redeemed" in reply.detail
+              and self._redeem_unanswered == claim["request_id"]):
+            # The daemon minted the key for the attempt whose reply never arrived; it will not issue it again.
+            log.error("Hub claim %s: the daemon issued the Hub key but the reply was lost; release the Hub on the "
+                      "daemon host and claim again", claim["request_id"])
+            return await self._finish(LOST)
         elif reply.status == 403 and "denied" in reply.detail:
             return await self._finish(DENIED)
         elif reply.status in (400, 404) and ("expired" in reply.detail or reply.status == 404):
@@ -314,6 +325,7 @@ class ClaimManager:
             # Not a Hub key: never keep or show it.
             log.error("Hub claim %s redeemed something that is not a Hub key; discarded", claim["request_id"])
             return await self._finish(FAILED)
+        self._redeem_unanswered = None
         self._redeemed_key = {"token": token, "key_id": app["id"], "daemon_url": self.daemon.base_url,
                               "claimed_at": self.clock(), "request_id": claim["request_id"]}
         return await self._persist_result()

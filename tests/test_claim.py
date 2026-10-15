@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import pytest
 
@@ -117,6 +118,59 @@ def test_a_key_that_is_not_a_hub_key_is_discarded(hub, fake_daemon):
     assert hub.wait_for("failed")
     assert "key" not in state_file(hub)
     assert_no_secrets(hub.bodies, *fake_daemon.minted)
+
+
+def test_a_lost_redeem_reply_ends_lost_with_the_release_command(hub, fake_daemon):
+    # The daemon commits the key, but its reply times out; the retry is told the request was already redeemed.
+    fake_daemon.lose_redeem_replies = 1
+    hub.sign_in()
+    fake_daemon.approve(hub.post("/api/claim").json()["request_id"])
+    claim = hub.wait_for("lost")
+    assert claim["message"] == ("The daemon issued this Hub's key, but the reply never arrived. On the daemon host "
+                                "run harness hub release --confirm, then start a new claim here.")
+    assert claim["release_command"] == "harness hub release --confirm"
+    assert hub.get("/api/overview").json()["claim"]["state"] == "lost"
+    assert len(fake_daemon.minted) == 1 and fake_daemon.hub is not None
+    # The outcome is shown before it is saved; wait for the save rather than race it on the file.
+    store = hub.client.app.fastapi.state.store
+    deadline = time.monotonic() + 5
+    while store.get("outcome") is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert store.get("outcome")["state"] == "lost"
+    assert "key" not in state_file(hub) and state_file(hub)["outcome"]["state"] == "lost"
+    # A new claim is refused until the owner releases the daemon's record of the lost key.
+    assert hub.post("/api/claim").json()["claim"]["state"] == "refused"
+    fake_daemon.release()
+    rid = hub.post("/api/claim").json()["request_id"]
+    fake_daemon.approve(rid)
+    assert hub.wait_for("claimed")["key_id"] == fake_daemon.hub["key_id"]
+    assert_no_secrets(hub.bodies, *fake_daemon.minted)
+
+
+@pytest.mark.parametrize("unreachable", [False, True])
+def test_already_redeemed_without_an_unanswered_attempt_fails(hub, fake_daemon, unreachable):
+    # A connection that never opened cannot have redeemed anything, so it is no evidence of a lost key.
+    hub.sign_in()
+    rid = hub.post("/api/claim").json()["request_id"]
+    if unreachable:
+        fake_daemon.down = True
+        redeems = lambda: sum(url.endswith("/token") for url in fake_daemon.sent)  # noqa: E731
+        refused = redeems()
+        deadline = time.monotonic() + 5
+        while redeems() < refused + 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert redeems() >= refused + 2 and hub.get("/api/claim").json()["state"] == "pending"
+    fake_daemon.requests[rid]["state"] = "redeemed"
+    fake_daemon.down = False
+    assert "did not complete" in hub.wait_for("failed")["message"]
+
+
+def test_only_the_redeem_waits_longer_for_the_daemon(claimed, fake_daemon):
+    claimed.get("/api/overview")
+    redeem = next(path for path in fake_daemon.timeouts if path.endswith("/token"))
+    assert fake_daemon.timeouts[redeem] == {"connect": 5.0, "read": 60.0, "write": 60.0, "pool": 60.0}
+    others = {path: t for path, t in fake_daemon.timeouts.items() if path != redeem}
+    assert others and all(t == {"connect": 5.0, "read": 10.0, "write": 10.0, "pool": 10.0} for t in others.values())
 
 
 def test_release_on_the_host_drops_the_key(hub, fake_daemon):
