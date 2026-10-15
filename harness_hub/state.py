@@ -13,12 +13,15 @@ import json
 import os
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 STATE_FILE = "hub-state.json"
 SIGNIN_FILE = "signin-codes.json"
 SERVER_FILE = "server.json"
+SIGNIN_LOCK_SECONDS = 5.0  # how long a sign-in or signin-link waits for another process's code update
+_LOCK_HELD = {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, getattr(errno, "EDEADLOCK", errno.EDEADLK)}
 
 
 def prepare_dir(path: Path) -> Path:
@@ -89,9 +92,17 @@ def read_json(path: Path, default: Any) -> Any:
         return default
 
 
+class SigninBusy(TimeoutError):
+    """Another process held the sign-in lock for longer than `SIGNIN_LOCK_SECONDS`."""
+
+
 @contextlib.contextmanager
 def signin_lock(state_dir: Path):
-    """Serialize CLI/server code updates across processes, using a persistent lock inode."""
+    """Serialize CLI/server code updates across processes, using a persistent lock inode.
+
+    The wait is bounded on every platform: a holder that stalls (a suspended terminal, a slow or scanned disk) makes
+    this raise `SigninBusy` after `SIGNIN_LOCK_SECONDS` instead of blocking forever (POSIX) or failing with an
+    unexplained OSError (Windows `LK_LOCK` gives up after about ten seconds)."""
     path = prepare_dir(state_dir) / ".signin.lock"
     with path.open("a+b") as handle:
         if os.name == "nt":
@@ -102,12 +113,23 @@ def signin_lock(state_dir: Path):
             if handle.tell() == 0:
                 handle.write(b"0")
                 handle.flush()
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
         else:
             import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        deadline = time.monotonic() + SIGNIN_LOCK_SECONDS
+        while True:
+            try:
+                if os.name == "nt":
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                if error.errno not in _LOCK_HELD:
+                    raise
+                if time.monotonic() >= deadline:
+                    raise SigninBusy("another process is updating sign-in codes") from error
+                time.sleep(0.05)
         try:
             yield
         finally:

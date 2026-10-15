@@ -92,18 +92,23 @@ class Sessions:
 
     def redeem_code(self, code: str | None, joining: str | None = None) -> tuple[str, str] | None:
         """Spend a sign-in code; returns a cookie id and an origin binding, or None. With the caller's live cookie id
-        in `joining`, the binding joins that session and the same cookie id comes back."""
+        in `joining`, the binding joins that session and the same cookie id comes back.
+
+        Waiting too long for another process's code update raises `SigninBusy` (an OSError), which spends no code and
+        counts no failure. Only the file lock is held while it waits, so requests that check a session never wait."""
         now = self.clock()
-        with self._lock, signin_lock(self.path.parent):
+        given = _digest(code) if isinstance(code, str) and 20 <= len(code) <= 128 else ""
+        with signin_lock(self.path.parent):
             codes = _live_codes(self.path, now)
-            given = _digest(code) if isinstance(code, str) and 20 <= len(code) <= 128 else ""
             match = next((c for c in codes if given and hmac.compare_digest(c["hash"], given)), None)
+            if match is not None:
+                codes.remove(match)
+                write_private(self.path, json.dumps(codes) + "\n")
+        with self._lock:
             if match is None:
                 self._failures = [t for t in self._failures if t > now - 60][-FAILURES_PER_MINUTE:]
                 self._failures.append(now)
                 return None
-            codes.remove(match)
-            write_private(self.path, json.dumps(codes) + "\n")
             return self._start(now, joining)
 
     def create(self, joining: str | None = None) -> tuple[str, str]:
