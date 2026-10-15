@@ -18,13 +18,16 @@ const replies = {
 const memory = { installed: true, enabled: true, profile: "Synthetic profile", profile_max_chars: 4000,
   last_commit: {}, refresh_error: "" };
 
-async function mount(page, hash, { signedIn = true, memoryReply = memory } = {}) {
+async function mount(page, hash, { signedIn = true, memoryReply = memory, hubDown = false, extraReplies = {} } = {}) {
+  const answers = { ...replies, ...extraReplies };
   const posts = [], errors = [], missing = [];
   page.on("pageerror", error => errors.push(error.message));
   page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
   await page.route("http://hub.test/**", async route => {
     const request = route.request(), pathname = new URL(request.url()).pathname;
     if (pathname.startsWith("/api/")) {
+      // true: every Hub read fails; a RegExp: only the reads whose path matches it.
+      if (hubDown === true || (hubDown instanceof RegExp && hubDown.test(pathname))) return route.abort("connectionrefused");
       const resource = pathname.slice(5);
       if (resource === "session" && request.method() === "POST") {
         posts.push(request.postDataJSON());
@@ -33,7 +36,7 @@ async function mount(page, hash, { signedIn = true, memoryReply = memory } = {})
       if (resource === "session") return route.fulfill({ json: { signed_in: signedIn,
         signin_command: "python -m harness_hub signin-link" } });
       if (resource === "settings/memory") return route.fulfill({ json: memoryReply });
-      if (resource in replies) return route.fulfill({ json: replies[resource] });
+      if (resource in answers) return route.fulfill({ json: answers[resource] });
       missing.push(resource);
       return route.fulfill({ status: 503, json: { detail: "Synthetic: not part of this test." } });
     }
@@ -83,3 +86,108 @@ test("Settings still offers the profile editor when the module is present", asyn
   await expect(page.getByLabel("Agent profile", { exact: true })).toHaveValue("Synthetic profile");
   await expect(page.getByRole("button", { name: "Save profile" })).toBeVisible();
 });
+
+test.describe("phone More sheet", () => {
+  test.use({ viewport: { width: 375, height: 667 }, hasTouch: true, isMobile: true });
+
+  test("a tap on the backdrop closes the sheet and returns focus to More", async ({ page }) => {
+    const { errors } = await mount(page, "#/modules");
+    const more = page.getByRole("button", { name: "More" });
+    await more.tap();
+    await expect(more).toHaveAttribute("aria-expanded", "true");
+    // Above the sheet, on the dimmed page.
+    await page.touchscreen.tap(187, 60);
+    await expect(more).toHaveAttribute("aria-expanded", "false");
+    await expect(more).toBeFocused();
+    await more.tap();
+    await page.getByRole("navigation", { name: "More sections" }).getByRole("link", { name: "Settings" }).tap();
+    await expect(more).toHaveAttribute("aria-expanded", "false");
+    expect(new URL(page.url()).hash).toBe("#/settings");
+    expect(errors.filter(e => !/503/.test(e))).toEqual([]);
+  });
+
+  test("taps inside the sheet leave it open, and a tab in the bar closes it", async ({ page }) => {
+    await mount(page, "#/modules");
+    const more = page.getByRole("button", { name: "More" });
+    await more.tap();
+    // A group label: inside the sheet, but not a link or a footer control.
+    await page.locator("#nav .nav-group").first().tap();
+    await expect(more).toHaveAttribute("aria-expanded", "true");
+    await page.getByRole("navigation", { name: "Sections" }).getByRole("link", { name: "Apps" }).tap();
+    await expect(more).toHaveAttribute("aria-expanded", "false");
+    expect(new URL(page.url()).hash).toBe("#/apps");
+  });
+});
+
+test("a daemon that stops answering raises the banner under the page head, and Retry now reads the page again",
+  async ({ page }) => {
+    const { errors } = await mount(page, "#/modules");
+    await expect(page.locator("tr[data-module=hub]")).toContainText("Running");
+    // Every read now finds the daemon silent: the Hub's own 503, marked reachable false.
+    let reads = 0;
+    await page.route(/\/api\/(modules|settings\/)/, route => {
+      reads += 1;
+      return route.fulfill({ status: 503, json: { detail: "The daemon did not answer.", reachable: false } });
+    });
+    await page.getByRole("button", { name: "Refresh modules" }).click();
+    const slot = page.locator("#banner-slot");
+    await expect(slot.getByRole("alert")).toContainText("The daemon is not answering.");
+    // The slot sits right under the page head.
+    expect(await page.evaluate(() => document.querySelector("#main > .page-head").nextElementSibling.id)).toBe("banner-slot");
+    const before = reads;
+    await slot.getByRole("button", { name: "Retry now" }).click();
+    await expect.poll(() => reads).toBeGreaterThan(before);
+    expect(errors.filter(error => !error.includes("503"))).toEqual([]);
+  });
+
+test("Retry now on Settings reads again in place and keeps unsaved edits", async ({ page }) => {
+  const turnsSpec = { key: "sessions.max_turns", label: "Maximum turns", type: "int", minimum: 1, maximum: 500,
+    category: "Sessions", apply: "live", default: 80, writable: true };
+  const { errors } = await mount(page, "#/settings", { extraReplies: {
+    "settings/schema": { settings: [turnsSpec] },
+    "settings/config": { ...replies["settings/config"], settings: [{ key: turnsSpec.key, effective: 80, source: "file" }] } } });
+  const turns = page.getByRole("spinbutton", { name: "Maximum turns" });
+  await expect(turns).toHaveValue("80");
+  await turns.fill("87");
+  // An edit in a control's editor too.
+  await page.getByRole("button", { name: "Memory agent profile" }).click();
+  const profile = page.getByLabel("Agent profile", { exact: true });
+  await expect(profile).toHaveValue("Synthetic profile");
+  await profile.fill("Edited profile");
+  // The daemon stops answering; the 5 s health poll raises the banner.
+  const silent = route => route.fulfill({ status: 503, json: { detail: "The daemon did not answer.", reachable: false } });
+  await page.route(/\/api\/settings\//, silent);
+  const slot = page.locator("#banner-slot");
+  await expect(slot.getByRole("alert")).toContainText("The daemon is not answering.", { timeout: 10000 });
+  // It answers again before Retry now: the reads repeat, and the typed value stays.
+  await page.unroute(/\/api\/settings\//, silent);
+  await slot.getByRole("button", { name: "Retry now" }).click();
+  await expect(slot.getByRole("alert")).toHaveCount(0);
+  await expect(profile).toHaveValue("Edited profile");
+  await page.getByRole("button", { name: "Sessions" }).click();
+  await expect(turns).toHaveValue("87");
+  expect(errors.filter(error => !error.includes("503"))).toEqual([]);
+});
+
+test("Settings drops the Hub-down state when Retry reaches the Hub but the daemon still does not answer",
+  async ({ page }) => {
+    const { errors } = await mount(page, "#/settings", { hubDown: /^\/api\/settings\// });
+    const hubDown = page.getByRole("heading", { name: "The Hub server is not answering" });
+    await expect(hubDown).toBeVisible();
+    // The Hub answers again; the daemon behind it still does not.
+    await page.route(/\/api\/settings\//, route =>
+      route.fulfill({ status: 503, json: { detail: "The daemon did not answer.", reachable: false } }));
+    await page.getByRole("button", { name: "Retry" }).click();
+    await expect(page.locator("main")).toContainText("The daemon did not answer.");
+    await expect(hubDown).toHaveCount(0);
+    expect(errors.filter(error => !/ERR_CONNECTION_REFUSED|503/.test(error))).toEqual([]);
+  });
+
+test("a Hub server that does not answer at start shows its state and a Retry, never \"Failed to fetch\"",
+  async ({ page }) => {
+    const { errors } = await mount(page, "#/overview", { hubDown: true });
+    await expect(page.getByRole("heading", { name: "The Hub server is not answering" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+    await expect(page.locator("main")).not.toContainText("Failed to fetch");
+    expect(errors.filter(error => !error.includes("ERR_CONNECTION_REFUSED"))).toEqual([]);
+  });

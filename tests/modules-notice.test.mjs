@@ -89,3 +89,18 @@ test("a switch moved while a refresh is under way goes back and saves nothing", 
   await page.advance(30000);
   assert.equal(find(page.main, (el) => el.attrs.get("role") === "switch").attrs.has("disabled"), false);
 });
+
+test("a Retry that finds the Hub unclaimed replaces the Hub-down state with the claim link", async (t) => {
+  let hubDown = true;
+  const page = mount(t, renderModules, () => hubDown ? Promise.reject(new TypeError("Failed to fetch")) :
+    Promise.resolve(response({ detail: "Claim this Hub on Overview before reading inventory.", claimed: false }, 409)));
+  await page.advance(0);
+  assert.match(page.main.textContent, /The Hub server is not answering/);
+  assert.doesNotMatch(page.main.textContent, /Failed to fetch/);
+  hubDown = false;
+  const retry = find(page.main, (el) => el.tag === "button" && el.textContent === "Retry");
+  retry.listeners.get("click")();
+  await page.advance(0);
+  assert.match(page.main.textContent, /Claim this Hub first/);
+  assert.doesNotMatch(page.main.textContent, /The Hub server is not answering/);
+});

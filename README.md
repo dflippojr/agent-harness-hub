@@ -457,10 +457,15 @@ Run the isolated browser regressions with Playwright installed locally:
 ### Accounts and maintenance
 
 The six areas manage household accounts, name-only provider assignments, skills and proposals, maintenance,
-runners/projects/folder discovery, and read-only audit logs. Each action has its host CLI equivalent behind a
-**Host command** button.
-Choose an area to read its current state, then choose an action or a record's control. Writes are explicit;
-destructive changes show the target and edited fields in an in-page confirmation.
+runners/projects/folder discovery, and read-only audit logs. A segmented control switches between them. Each action
+has its host CLI equivalent behind a **Host command** button.
+**Accounts** loads on its own: a members table with readable values (status, sessions and caps, disk in GiB, Google
+link) and the selected member's detail pane (dates, caps, disk and Google sign-in). The pane groups the member's
+actions: **Edit member** and **Disable** or **Enable**, then the Google sign-in actions, then **Erase GitHub
+credential** in a danger zone. **Add member** is the page's primary button. Editing sends only the fields you change.
+The other areas read their current state when chosen; then choose an action or a record's control. Writes are
+explicit; changes that need it show the target and the edited fields in a confirmation inside the card that was
+acted on.
 
 Google link codes appear only in the creation response, disappear on dismissal, expiry, or navigation, and are
 never cached or stored by the Hub. Provider assignments accept opaque secret-file names; configure the files
@@ -473,7 +478,7 @@ and after list for confirmation. Token-shaped display fields are withheld indivi
 their row actions, and unaffected records stay usable.
 Audit supports exclusive row-id paging and exact filters. Folder trust opens an interactive prompt on the daemon
 host; discovery is available only where the daemon supports it. Owner-key and Mac runner pairing-code creation
-remain host CLI actions because the Hub key cannot mint owner keys.
+remain host CLI actions because the Hub key cannot mint owner keys; a footnote under the page names both commands.
 
 The checked-in administration route snapshot comes from the daemon's API/parity documentation; tests fail if
 an operation loses its catalogue entry or daemon dispatch. Tests use synthetic account and folder data only.

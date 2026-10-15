@@ -5,7 +5,8 @@
 // image shown is an inline one the server already checked. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { banner, clear, command, emphasis, h, icon, pill, sectionHead, when } from "../lib/dom.mjs";
+import { banner, blocked, blockedKey, blockedState, clear, command, emphasis, h, icon, pill, placeNotice, sectionHead, sentence, when }
+  from "../lib/dom.mjs";
 import { expiry, matchField, pairingRecovery, tickExpiries } from "../lib/pairing.mjs";
 import { poller } from "../lib/poll.mjs";
 
@@ -16,9 +17,14 @@ const SLOT_TEXT = { armed: "Armed: waiting for the app to claim it.",
   claimed: "An app claimed this slot. Redemption is waiting for confirmation.",
   approved: "Approved: waiting for the app to fetch its own token from the daemon." };
 
-function armCommand(entry, origin) {
+// The scopes whose acknowledgement the consent screen asks for: the daemon may require it for a scope the Hub rates standard.
+export function acknowledgedScopes(entry) {
+  return entry.scopes.filter((s) => entry.acknowledgement_required || s.tier === "elevated" || !s.text).map((s) => s.scope);
+}
+
+export function armCommand(entry, origin) {
   return `harness pairing-requests arm ${entry.catalog_app_id} --scopes ${entry.scopes.map((s) => s.scope).join(" ")}` +
-    (origin ? ` --origin ${origin}` : "") + (entry.elevated.length ? " --acknowledge-elevated" : "");
+    (origin ? ` --origin ${origin}` : "") + (acknowledgedScopes(entry).length ? " --acknowledge-elevated" : "");
 }
 
 const tier = (item) => item.tier === "elevated" ? pill("Elevated", "bad") : pill("Standard", "muted");
@@ -29,9 +35,11 @@ export function renderMarketplace(main) {
   // even if its entry leaves the list: the slot is armed, and the owner still needs its request id.
   let open = null;
   let confirming = null; // the slot whose Withdraw is asking for confirmation, inside its own card (decision 5 of #65)
+  let acted = null; // the entry the last action was on: its card holds the notice while it is on the page
+  let readError = null; // why the last read failed, or null once one succeeds
   const drafts = new Map();
   const poll = poller(() => load());
-  const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true });
+  const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true, "data-field": "notice" });
   const problem = h("p", { class: "notice bad", role: "alert", hidden: true });
   const count = h("div");
   const list = h("div", { class: "market-list" });
@@ -66,10 +74,15 @@ export function renderMarketplace(main) {
       const result = await api("marketplace");
       if (stopped) return;
       data = result;
+      readError = null;
       offset = typeof result.now === "number" ? result.now - Date.now() / 1000 : 0;
     } catch (error) {
       if (stopped) return;
-      failure = error.message + (data?.entries ? " Showing the last entries this page read." : "");
+      readError = error;
+      // With no entries yet, a read that could not run at all is shown as its state in place of the list.
+      if (data?.entries || !blocked(error)) {
+        failure = error.message + (data?.entries ? " Showing the last entries this page read." : "");
+      }
     }
     showProblems(failure);
     draw(force);
@@ -79,17 +92,17 @@ export function renderMarketplace(main) {
     const lines = [];
     if (failure) lines.push(failure);
     else if (data && data.state !== "ready") {
-      lines.push(data.error || "The entries could not be read.");
+      lines.push(sentence(data.error) || "The entries could not be read.");
       lines.push(data.entries ? `Showing the last good entries, read ${when(data.fetched_at)}.` :
         "There are no last good entries to show.");
     }
-    if (!failure && data?.slots_error) lines.push(data.slots_error);
+    if (!failure && data?.slots_error) lines.push(sentence(data.slots_error));
     if (data?.confirmation_warning) lines.push(data.confirmation_warning);
     problem.textContent = lines.join(" ");
     problem.hidden = !lines.length;
   }
   function draw(force) {
-    const next = JSON.stringify([data?.entries ?? null, data?.withheld ?? 0]);
+    const next = JSON.stringify([data?.entries ?? null, data?.withheld ?? 0, blockedKey(readError)]);
     if (!force && next === signature) return;
     signature = next;
     const entries = data?.entries || [];
@@ -110,6 +123,8 @@ export function renderMarketplace(main) {
         "entries were"} withheld: the daemon's answer did not match the entries contract.`));
     }
     if (!entries.length) list.append(empty());
+    placeNotice(notice, acted && [...list.querySelectorAll("[data-entry]")].find((el) => el.dataset.entry === acted),
+      problem);
     if (kept) kept.focus();
     else if (focused) focus(...focused);
     tickExpiries(list, now());
@@ -128,7 +143,10 @@ export function renderMarketplace(main) {
     if (typeof caret === "number" && target.setSelectionRange) target.setSelectionRange(caret, caret);
   }
   function empty() {
-    if (!data?.entries) return h("p", { class: "muted" }, "No entries to show.");
+    if (!data?.entries) {
+      return blockedState(readError, "Marketplace entries", () => load(true)) ??
+        h("p", { class: "muted" }, "No entries to show.");
+    }
     return h("section", { class: "card empty" }, icon("marketplace"), h("h2", {}, "No entries yet"),
       h("p", {}, "The entries file lists no apps. Create it on the daemon host with harness hub entries init."),
       command("harness hub entries init"));
@@ -207,17 +225,18 @@ export function renderMarketplace(main) {
       h("div", { class: "slot-head" }, h("h3", {}, `Slot ${slot.id}`), label ? pill(label) : null,
         typeof slot.expires_at === "number" ? expiry(slot.expires_at, now()) : null, claimed || asking ? null : withdraw),
       h("p", { class: "muted slot-text" }, `Bound to ${slot.origin || "a native app"}. ${SLOT_TEXT[slot.state] || ""}`),
-      asking ? withdrawal(slot, name) : claimed ? confirmation(slot, name, withdraw) :
+      asking ? withdrawal(entry, slot) : claimed ? confirmation(entry, slot, withdraw) :
         command(`harness pairing-requests deny ${slot.id}`, { parity: true }),
       slot.disclosures.length ? scopeDetails(slot.disclosures) : null);
   }
-  function confirmation(slot, name, withdraw) {
+  function confirmation(entry, slot, withdraw) {
+    const name = entry.name || entry.catalog_app_id;
     const field = matchField(slot.id, drafts.get(slot.id) || "", "withdraw this slot");
     const input = field.input;
     const submit = verbButton("Confirm", name, () => {
       if (submit.disabled) return;
       const match = input.value.trim();
-      perform(async () => {
+      void perform(entry.catalog_app_id, async () => {
         await api(`pairing/${slot.id}/confirm`, { method: "POST", body: { match } });
         drafts.delete(slot.id);
         message(`Confirmed ${name}. The app now fetches its own token from the daemon.`);
@@ -239,13 +258,14 @@ export function renderMarketplace(main) {
     draw(true);
     focus(["data-slot", slot.id], "confirm-withdraw");
   }
-  function withdrawal(slot, name) {
+  function withdrawal(entry, slot) {
+    const name = entry.name || entry.catalog_app_id;
     const cancel = button("Cancel", () => {
       confirming = null;
       draw(true);
       focus(["data-slot", slot.id], "withdraw");
     }, { "data-field": "cancel" });
-    const ok = button("Confirm withdraw", () => perform(async () => {
+    const ok = button("Confirm withdraw", () => perform(entry.catalog_app_id, async () => {
       await api(`pairing/${slot.id}/deny`, { method: "POST", body: { confirm: true } });
       message(`Withdrew the slot for ${name}.`);
     }), { class: "btn destructive", "data-field": "confirm-withdraw" });
@@ -265,8 +285,7 @@ export function renderMarketplace(main) {
     const origins = entry.browser_origins;
     let origin = origins.length === 1 ? origins[0] : "";
     const cli = h("div");
-    const needsAck = entry.scopes.filter((s) => entry.acknowledgement_required || s.tier === "elevated" || !s.text)
-      .map((s) => s.scope);
+    const needsAck = acknowledgedScopes(entry);
     const ack = needsAck.length ? h("input", { type: "checkbox", "data-field": "ack" }) : null;
     const approve = button("Approve", () => {
       if (approve.disabled) return;
@@ -274,7 +293,7 @@ export function renderMarketplace(main) {
         consent_digest: entry.consent_digest };
       if (origin) body.origin = origin;
       if (ack) body.acknowledge_elevated = true;
-      perform(async () => {
+      void perform(id, async () => {
         const armed = await api("marketplace/arm", { method: "POST", body });
         handoff(id, armed, origin);
       }, true);
@@ -348,9 +367,11 @@ export function renderMarketplace(main) {
     draw(true);
     focus(["data-entry", id], "setup");
   }
-  async function perform(action, keepOpen = false) {
+  // An action on entry `id`: its outcome shows in that entry's card, or under the page head once the card is gone.
+  async function perform(id, action, keepOpen = false) {
     if (busy || stopped) return;
     busy = true;
+    acted = id;
     poll.cancel();
     for (const control of list.querySelectorAll("button:not(.copy), input")) control.disabled = true;
     confirming = null;

@@ -1,6 +1,6 @@
 // HUB-07 pairing requests, HUB-08 marketplace and HUB-09 accounts and maintenance. Each test makes its own requests
 // and members with unique names, so the seeded rows stay as they are for the other projects.
-import { appAsksToPair, expect, openSection, test, unique } from "./fixtures.mjs";
+import { appAsksToPair, expect, functionalProject, openSection, test, unique } from "./fixtures.mjs";
 
 // A request's card (Needs you, Waiting for the app) is named by its heading; a History row carries its name in a cell.
 const card = (page, name) => page.locator("[data-request-id]").filter({ has: page.getByRole("heading", { name, exact: true }) });
@@ -30,7 +30,7 @@ test("approve a request with the app's code; a wrong code is refused", async ({ 
 
   await request_.getByLabel("Match code the app shows").fill(asked.match_code === "000000" ? "111111" : "000000");
   await request_.getByRole("button", { name: `Approve ${name}` }).click();
-  await expect(notice(page)).toHaveText("the match code does not match the one the App shows");
+  await expect(notice(page)).toHaveText("The match code does not match the one the App shows.");
 
   await request_.getByLabel("Match code the app shows").fill(asked.match_code);
   await request_.getByRole("button", { name: `Approve ${name}` }).click();
@@ -69,7 +69,8 @@ test("an elevated request needs the acknowledgement; deny asks first and Cancel 
   expect(errors).toEqual([]);
 });
 
-test("marketplace: consent can be cancelled; arming lists the slot until it is withdrawn", async ({ signedIn: page, errors }) => {
+test("marketplace: consent can be cancelled; arming lists the slot until it is withdrawn", async ({ signedIn: page, errors }, testInfo) => {
+  functionalProject(testInfo);
   await openSection(page, "marketplace");
   await expect(page.getByText("Being listed here grants nothing.")).toBeVisible();
   // Consent, hand-off and the withdraw question all render inside the entry's own card (Hub design 10).
@@ -99,36 +100,38 @@ test("marketplace: consent can be cancelled; arming lists the slot until it is w
 });
 
 test("accounts: add a member, then disable it after confirmation", async ({ signedIn: page, errors }, testInfo) => {
+  functionalProject(testInfo);
   const display = unique(testInfo, "Member");
   const login = `${display.replaceAll(" ", "-").toLowerCase()}@example.test`;
   await openSection(page, "admin");
   // The page's own notice, not the rail's daemon chip or the banner slot.
   const notice = page.locator("main p.notice[role=status]");
-  const form = page.locator(".admin-form");
-  const choose = page.getByLabel("Choose action", { exact: true });
-  await choose.selectOption("account_add");
-  await form.getByLabel(/Exact Tailscale login/).fill(login);
-  await form.getByLabel(/Display name/).fill(display);
-  await form.getByRole("button").click();
+  // The members table and the open member's detail pane load on their own; Add member is the page's primary button.
+  const pane = page.locator(".admin-member");
+  const row = page.getByRole("table", { name: "Members" }).locator("tbody tr").filter({ hasText: display });
+  await expect(page.getByRole("table", { name: "Members" })).toContainText("GiB");
+  await page.locator("header").getByRole("button", { name: "Add member" }).click();
+  await pane.getByLabel(/Exact Tailscale login/).fill(login);
+  await pane.getByLabel(/Display name/).fill(display);
+  await pane.getByRole("button", { name: "Add member" }).click();
   await expect(notice).toContainText("Daemon accepted add member.");
+  await expect(page.getByRole("heading", { name: display, level: 2 })).toBeVisible();
   await page.reload();
-  const member = page.locator(".admin-row").filter({ has: page.getByRole("heading", { name: display }) });
-  await expect(member).toBeVisible();
-  const userId = /u-[\w-]+/.exec(await member.innerText())?.[0];
-  expect(userId).toBeTruthy();
+  await expect(row).toContainText("Enabled");
+  await row.getByRole("button", { name: `Open ${display}` }).click();
+  await expect(page.getByRole("heading", { name: display, level: 2 })).toBeVisible();
+  const userId = await pane.getAttribute("data-member-id");
+  expect(userId).toMatch(/^u-[\w-]+$/);
 
-  await choose.selectOption("account_save");
-  await form.getByLabel("Member id").fill(userId);
-  await form.getByLabel("Member enabled").selectOption("false");
-  await form.getByRole("button").click();
+  await pane.getByRole("button", { name: "Disable", exact: true }).click();
   const confirm = page.getByRole("button", { name: "Confirm update member", exact: true });
-  await expect(page.getByRole("region", { name: "Confirm action" })).toContainText(userId);
+  await expect(pane.getByRole("alert", { name: "Confirm action" })).toContainText(userId);
   await confirm.click();
   await expect(notice).toContainText("Daemon accepted update member.");
   await page.reload();
-  await choose.selectOption("account");
-  await form.getByLabel("Member id").fill(userId);
-  await form.getByRole("button").click();
-  await expect(page.locator(".admin-output")).toContainText(/enabled\s*(false|No)/i);
+  await expect(row).toContainText("Disabled");
+  await row.getByRole("button", { name: `Open ${display}` }).click();
+  await expect(pane).toContainText(userId);
+  await expect(pane.getByRole("button", { name: "Enable", exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });

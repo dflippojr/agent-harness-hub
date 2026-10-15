@@ -146,7 +146,9 @@ def test_every_daemon_route_needs_a_claim(hub, fake_daemon):
     hub.sign_in()
     for row in ROUTES:
         if key(row) not in NO_CLAIM:
-            assert send(hub, row).status_code == 409, label(row)
+            reply = send(hub, row)
+            # claimed false is what lets each page show Claim this Hub first instead of the refusal's sentence.
+            assert (reply.status_code, reply.json().get("claimed")) == (409, False), label(row)
     assert fake_daemon.sent == []
 
 

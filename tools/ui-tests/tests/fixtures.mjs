@@ -40,6 +40,11 @@ export async function expectNoHorizontalOverflow(page) {
 
 export const isPhone = (testInfo) => testInfo.project.name.startsWith("phone") || testInfo.project.name.startsWith("pixel");
 export const scheme = (testInfo) => testInfo.project.use.colorScheme;
+// Functional journeys repeat the same server round trips against one shared instance, so they run in one project per
+// engine and viewport: desktop-light (Chromium) and phone-dark (WebKit). navigation.spec.mjs covers every scheme.
+const FUNCTIONAL_PROJECTS = ["desktop-light", "phone-dark"];
+export const functionalProject = (testInfo) => test.skip(!FUNCTIONAL_PROJECTS.includes(testInfo.project.name),
+  "a functional journey: desktop-light (Chromium) and phone-dark (WebKit) cover the engine and viewport; navigation.spec.mjs covers every scheme");
 // Unique per project and run, for entities that tests create on the shared instance.
 export const unique = (testInfo, label) => `${label} ${testInfo.project.name} ${Date.now().toString(36)}`;
 

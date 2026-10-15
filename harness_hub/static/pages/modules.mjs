@@ -5,12 +5,13 @@
 // text node.
 
 import { api } from "../lib/api.mjs";
-import { clear, command, h, icon, pill, sectionHead, table, toggle, when } from "../lib/dom.mjs";
+import { blocked, blockedKey, blockedState, clear, command, h, icon, pill, placeNotice, sectionHead, sentence, table, toggle, when }
+  from "../lib/dom.mjs";
 import { poller } from "../lib/poll.mjs";
 
 // When a saved switch takes effect, as a pill (the same words as Settings).
 const APPLY = { live: ["Live", "ok"], daemon_restart: ["Restart", "warn"] };
-const sentence = (text) => text ? text[0].toUpperCase() + text.slice(1) : "";
+const capital = (text) => text ? text[0].toUpperCase() + text.slice(1) : "";
 
 // Registry relationships handle module names that differ from setting names.
 export function switchFor(name, schema) {
@@ -23,7 +24,7 @@ export function switchFor(name, schema) {
 export function moduleStatus(row) {
   if (row.state === "present") return row.status?.state === "error" ? ["Error", "bad"] : ["Running", "ok"];
   if (row.state === "switched_off") return ["Off", "muted"];
-  return [sentence(String(row.state ?? "unknown").replaceAll("_", " ")), undefined];
+  return [capital(String(row.state ?? "unknown").replaceAll("_", " ")), undefined];
 }
 
 // Scalar status fields in plain words: "online_count: 0" reads "Online count 0", true and false read Yes and No.
@@ -31,15 +32,16 @@ export function statusWords(status) {
   return Object.entries(status || {}).filter(([key]) => !(key === "state" && status.state === "error"))
     .map(([key, value]) => {
       const shown = value === true ? "Yes" : value === false ? "No" : value === null || value === "" ? "none" : String(value);
-      return `${sentence(key.replaceAll("_", " ").replaceAll(".", " "))} ${shown}`;
+      return `${capital(key.replaceAll("_", " ").replaceAll(".", " "))} ${shown}`;
     }).join(" · ");
 }
 
 export function renderModules(main) {
   let stopped = false, busy = false, inventory, schema, config, drawn = "", outcome = null;
+  let readError = null; // why the last inventory read failed, or null once one succeeds
   const poll = poller(() => load());
   const revision = h("span", { class: "muted modules-revision" });
-  const notice = h("p", { class: "notice", "aria-live": "polite" });
+  const notice = h("p", { class: "notice", "aria-live": "polite", "data-field": "notice" });
   const inventoryError = h("p", { class: "notice bad", role: "alert", hidden: true });
   const commands = h("div");
   const body = h("div");
@@ -66,16 +68,19 @@ export function renderModules(main) {
     const results = await Promise.allSettled([api("modules"), api("settings/schema"), api("settings/config")]);
     if (stopped) return;
     let error = "";
+    readError = results[0].status === "rejected" ? results[0].reason : null;
     if (results[0].status === "fulfilled") inventory = results[0].value;
     else {
       inventory = null;
-      error = results[0].reason.message;
+      // A read that could not run at all shows as its state in place of the table, and says it for the switches too.
+      error = blocked(readError) ? "" : readError.message;
     }
     schema = results[1].status === "fulfilled" ? results[1].value : null;
     config = results[2].status === "fulfilled" ? results[2].value : null;
-    showNotice(schema && config ? "" : "Switches unavailable: " +
-      results.slice(1).filter((r) => r.status === "rejected").map((r) => r.reason.message).join("; "));
-    if (inventory) error = inventory.error || "";
+    // Each refusal is a sentence; the same one from both settings reads is said once.
+    showNotice(schema && config || blocked(readError) ? "" : "Switches unavailable: " + [...new Set(results.slice(1)
+      .filter((r) => r.status === "rejected").map((r) => r.reason.message))].join(" "));
+    if (inventory) error = sentence(inventory.error);
     inventoryError.textContent = error;
     inventoryError.hidden = !error;
     busy = false;
@@ -107,7 +112,9 @@ export function renderModules(main) {
     const shown = inventory && { ...inventory, fetched_at: inventory.stale ? inventory.fetched_at : null };
     // busy is part of it: a draw made while a refresh runs has its switches disabled, and the next draw replaces it.
     const key = JSON.stringify([shown, config?.revision, installed.map(({ spec, value, pending, writable }) =>
-      [spec?.key, spec?.apply, spec?.guidance, spec?.label, value, pending, writable]), busy]);
+      [spec?.key, spec?.apply, spec?.guidance, spec?.label, value, pending, writable]), busy,
+    // Which blocked state, if any, stands in for the table: Hub down and not claimed draw differently.
+    blockedKey(readError)]);
     if (key === drawn) return;
     drawn = key;
     revision.textContent = config ? "Settings revision " + config.revision : "";
@@ -123,8 +130,11 @@ export function renderModules(main) {
       installed.length ? [sectionHead("Installed", installed.length, { id: "modules-installed" }),
         h("div", { class: "card modules-table" }, table("Installed modules",
           ["Module", "Status", "Switch", "Applies", "Details"], installed.map(tableRow)))] : null,
-      !all.length && inventory?.state !== "absent" ? h("p", { class: "muted" }, "No inventory snapshot is available.") : null,
+      !all.length && inventory?.state !== "absent" ? blockedState(readError, "Modules", () => load()) ??
+        h("p", { class: "muted" }, "No inventory snapshot is available.") : null,
       absent.length ? notInstalled(absent) : null);
+    // A save's outcome shows inside the table whose switch was moved (decision 5 of #65).
+    placeNotice(notice, outcome ? body.querySelector(".modules-table") : null, inventoryError);
   }
   function tableRow({ row, spec, value, pending, writable }) {
     const [label, tone] = moduleStatus(row);

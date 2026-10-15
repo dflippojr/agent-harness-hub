@@ -1,10 +1,15 @@
 // Calls to this Hub's own server. The browser talks only to the Hub; the Hub alone talks to the daemon.
 
+import { sentence } from "./dom.mjs";
 import { noteRead } from "./status.mjs";
 
+// The Hub's own server did not answer: the browser's bare "Failed to fetch", worded as a page shows it.
+export const HUB_DOWN = "The Hub server is not answering. Check that it is still running on the daemon host, then retry.";
+
+// A refused or failed call. Its message is always a sentence; status 0 means the Hub server itself did not answer.
 export class ApiError extends Error {
   constructor(status, body) {
-    super((body && body.detail) || `HTTP ${status}`);
+    super(sentence((body && body.detail) || (status ? `The Hub answered HTTP ${status}` : HUB_DOWN)));
     this.status = status;
     this.body = body || {};
   }
@@ -19,14 +24,20 @@ export async function api(path, { method = "GET", body } = {}) {
   if (binding) headers["X-Hub-Session"] = binding;
   if (method !== "GET") headers["X-Hub-Request"] = "1";
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const response = await fetch(`/api/${path}`, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-    credentials: "same-origin",
-    cache: "no-store",
-  });
-  const text = await response.text();
+  let response, text;
+  try {
+    response = await fetch(`/api/${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    text = await response.text();
+  } catch {
+    // No answer from the Hub at all. This says nothing about the daemon, so the shell's status is left alone.
+    throw new ApiError(0, null);
+  }
   let data = null;
   try {
     data = text ? JSON.parse(text) : null;

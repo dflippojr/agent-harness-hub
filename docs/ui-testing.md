@@ -136,7 +136,7 @@ device and the Windows `tailscaled` service, so it is not applicable here.
 
 | ID | Path / ready signal | Seed | Actions | Expected outcome, and after reload | Audit expectation |
 | --- | --- | --- | --- | --- | --- |
-| HUB-01 navigation | each `#/<section>`; ready: the section's `h1` plus its data (Overview: heading "Daemon"; Settings: spinbutton "Maximum turns"; Modules: "Installed" (with its count); Apps: "Paired apps and keys"; Pairing: "History · last day" (with its count); Marketplace: "Set up financial-planner"; Accounts: "Synthetic member") | default | Visit each section from the nav. Below 900 px, use the **Sections** menu button, then Escape. | The nav link has `aria-current="page"`, and the title is "<Section> · Hub". The menu sets `aria-expanded`. After reload: the same section. On Apps, **Host commands** shows `harness keys list`; **Show host commands** shows every command, hides the buttons and survives a reload. | Not applicable (read-only) |
+| HUB-01 navigation | each `#/<section>`; ready: the section's `h1` plus its data (Overview: heading "Daemon"; Settings: spinbutton "Maximum turns"; Modules: "Installed" (with its count); Apps: "Paired apps and keys"; Pairing: "History · last day" (with its count); Marketplace: "Set up financial-planner"; Accounts: "Synthetic member") | default | Visit each section from the nav. Below 900 px, use the bottom bar (Overview, Pairing, Apps) and its **More** sheet for the rest, then Escape. | The nav link (and below 900 px the bar's tab) has `aria-current="page"`, and the title is "<Section> · Hub". **More** sets `aria-expanded` and lights up for a section from its sheet. After reload: the same section. On Apps, **Host commands** shows `harness keys list`; **Show host commands** shows every command, hides the buttons and survives a reload. | Not applicable (read-only) |
 | HUB-02 sign-in | `<hub>/`; ready: region "Sign in to the Hub" | default | Open signed out. Open `#signin=` with an unknown 43-character code. Open a fresh link, reload, open a second tab, then Sign out. Reuse a used link. | Signed out: only the brand and the sign-in card with its two numbered steps and command, no nav or top bar; **The Hub runs in Docker** opens the container command. Unknown or reused code: an alert, "That sign-in link is not valid. Links work once, for ten minutes. Make a new one below." Link: Overview. After reload: still signed in. A new tab: signed out. Sign out: the sign-in card, also after reload. | Not applicable: the Hub keeps no audit; sign-in is in `hub.log` |
 | HUB-03 claim | `--unclaimed` instance, `#/overview`; ready: "This Hub has not claimed the daemon yet." | none | **Start claim**. Read the id and code from `harness hub approve <id> --match <code>`. Run `approve`. | Before: the Claim this daemon card on step 1 and the tiles under "Before you claim". Started: step 2, "Waiting for approval", the code as six boxed digits (an image named "Match code 9 8 7 …"), a countdown that ticks every second and **Stop waiting**. Then within seconds the claim card gives way to the This Hub status tile: "Claimed" and the Hub key. After reload: Claimed. | Accounts and maintenance → Audit: `hub.claim.request`, `hub.claim.approve`, `hub.claim.redeem` |
 | HUB-04 settings | `#/settings`; ready: spinbutton "Maximum turns" (the Sessions category opens first) | default | Set Maximum turns to -5 and Validate in the save bar (region "Settings changes"). Reload. Set it to current + 1, Validate, Save, reload. Roll back, then Cancel. Roll back, then **Confirm rollback**, reload. Then edit Maximum turns, open Compaction and come back, and **Discard**; filter "completion tokens", then a filter with no match and **Clear filter**; open **Notifications** from the Controls list. | -5: "must be >= 1" and nothing saved. The edit: a Changed pill and "1 unsaved change · sessions.max_turns N → N+1" in the save bar. Validate: "Validated. … sessions.max_turns: N → N+1" in the save bar. Save: "Saved. Revision r", and the save bar's buttons go. After reload: N+1. Cancel: no change. Confirm: "Rolled back to revision r'" under the page head, and after reload: N. The edit survives the category switch; Discard restores N and hides the bar. The filter leaves "Sessions 1" and Maximum completion tokens; no match shows "No settings match". Notifications shows **Send test notification**. | None in the retained audit (verified): the settings revision is the record |
@@ -144,7 +144,7 @@ device and the Windows `tailscaled` service, so it is not applicable here.
 | HUB-06 apps | `#/apps`; ready: "Paired apps and keys" | default | In the keys table, **Open Synthetic App**: its detail opens beside the list (in its place below 1200 px) with focus on its heading. Set Maximum running, **Save session caps**, reload, reopen. Set Retention days, **Save retention**, Cancel, **Save retention** again and confirm; reload, reopen. | The row reads "Never used" and "App-supplied name". A blank cap shows the daemon default as its placeholder. "Session caps saved.", and after reload the field and "Effective caps: running n". Retention asks "Change retention for Synthetic App?" inside its card; Cancel saves nothing and keeps the typed value; Confirm shows "Retention saved." and the value after reload. Revoke is not exercised: the seeded app is shared, and restoring is host-only. | Audit: `app.limits` and `app.retention` (asserted by the suite) |
 | HUB-07 pairing | `#/pairing`; ready: "History · last day" | own request per test | Create a request: its card is under "Needs you", marked "Needs approval". Type a wrong code and Approve; type the App's code and Approve; reload. Create an elevated request: Approve stays disabled until the acknowledgement is checked. Deny, Cancel, Deny, **Confirm deny**, reload. | Wrong code: "the match code does not match the one the App shows" (see #43). Right code: "Approved <name>. The app now fetches its own token.", then a row under "Waiting for the app". Deny asks inside the card ("Deny <name>?"); afterwards the request is a "Denied" row in the History table. | Audit: `pairing_request.create`, `pairing_request.approve`, `pairing_request.deny` |
 | HUB-08 marketplace | `#/marketplace`; ready: button "Set up financial-planner" | default | **Set up financial-planner**, Cancel. Set up again, check any acknowledgement, choose an origin if asked, **Approve**, Done, reload, **Withdraw slot for financial-planner**, **Confirm withdraw**, reload. | "Being listed here grants nothing." Consent, inside the financial-planner card: "Nothing is armed until you approve."; Cancel returns focus to its Set up button. Approve: "Slot armed for financial-planner" in the same card. Confirm withdraw asks inside the slot (`role=alert`). After withdraw and reload: "Set up financial-planner" again. | Not checked in pass 1 |
-| HUB-09 accounts | `#/admin`; ready: heading "Synthetic member" | default | Choose action "Add member" with a unique login and name, run. Reload. "Update member" with its id and enabled false, run, **Confirm update member**. "Member detail" for it. Open **Audit** and run "Read retained audit". | "Daemon accepted add member." The member is listed after reload. The update asks first and shows the member id; after it, detail shows the member disabled. Audit lists the retained rows. | None in the retained audit (verified): member changes add no row |
+| HUB-09 accounts | `#/admin`; ready: heading "Synthetic member" (the first member's detail pane, loaded without a run step) | default | **Add member** in the page head; fill a unique login and name in the pane, **Add member**. Reload. Open the member's row, **Disable**, **Confirm update member**. Reload and open the row again. Open **Audit** and run "Read retained audit". | The members table shows readable values (GiB, Enabled). "Daemon accepted add member." and the new member's pane opens. The member is listed after reload. Disable asks inside the pane and shows the member id; after it, the row reads Disabled and the pane offers **Enable**. Audit lists the retained rows. | None in the retained audit (verified): member changes add no row |
 
 **Independence between cases.** HUB-04 and HUB-05 put the setting back. HUB-06 overwrites the seeded app's caps
 and retention with fresh values each time. HUB-07 and HUB-09 create uniquely named rows (suffix: project and time).
@@ -156,24 +156,34 @@ theme case when they run one at a time, apart from the pairing request limit abo
 - **Theme.** The Hub has no theme switch: it follows `prefers-color-scheme`, so Playwright's `colorScheme` and
   `playwright-cli set-color-scheme` select it. Verify with
   `getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()`: `#f3f4f6` light, `#000000` dark.
-- **Breakpoints.** Below 900 px the navigation is a drawer opened by the **Sections** button (`#menu-button`,
-  `aria-expanded`) over a dimmed backdrop. From 900 px it is a fixed left rail and there is no top bar. The rail
-  groups the sections (Overview; Access: Pairing requests, Apps, Marketplace; Daemon: Settings, Modules, Accounts and
+- **Breakpoints.** There is no top bar at any width. From 900 px the navigation is a fixed left rail. It groups the
+  sections (Overview; Access: Pairing requests, Apps, Spend, Marketplace; Daemon: Settings, Modules, Accounts and
   maintenance), and its footer holds the daemon chip (`role=status`), the **Show host commands** switch
-  (`role=switch`, remembered per browser) and **Sign out**; on a phone, open the drawer to reach them. With the
+  (`role=switch`, remembered per browser) and **Sign out**. Below 900 px a bottom bar (`#tabbar`, navigation
+  "Sections") carries Overview, Pairing (with the badge) and Apps, and **More** (`aria-expanded`) opens the rest of
+  the rail as a sheet (navigation "More sections") over a dimmed backdrop, with the switch and **Sign out**; Escape,
+  a tap outside it or a link closes it. The daemon chip sits beside the page title there. With the
   switch off, each action's CLI equivalent sits behind its own **Host command** button (`aria-expanded`); on, every
   command shows and the buttons go away. The banner slot
-  (`#banner-slot`) sits under each page head and shows one daemon message from what the pages already read. Content has a maximum width of
+  (`#banner-slot`) sits under each page head and shows one daemon message from what the pages already read; the
+  daemon-not-answering banner's **Retry now** has the open page read again (Settings reads in place and keeps
+  unsaved edits; other pages are drawn again). Content has a maximum width of
   about 1036 px, so at 2560 px the lines stay readable.
-- **Live resize (menu and partly filled form).** On Settings, type a new Maximum turns without saving. Shrink
-  1440 → 1280 → 1024 → 768 → 414 → 375 and open the Sections drawer, then grow back to 1440. The typed value
-  stays, the rail replaces the drawer with nothing covering the page, the rail links work, there is no horizontal
-  overflow and no console error.
+- **Live resize (bottom bar and partly filled form).** On Settings, type a new Maximum turns without saving. Shrink
+  1440 → 1280 → 1024 → 768 → 414 → 375 and open the **More** sheet, then grow back to 1440. The typed value
+  stays, the rail replaces the bar and sheet with nothing covering the page, the daemon chip is back in the rail's
+  footer, the rail links work, there is no horizontal overflow and no console error.
 - **Confirmations** are in-page `role=alert` sections (Roll back, Restart, retention, revoke, deny, withdraw, account
-  updates) with a Confirm and a Cancel button, not dialogs.
+  updates) with a Confirm and a Cancel button, not dialogs. A write's outcome, refused or not, shows inside the card
+  that was acted on (the request, the open App or member, the Marketplace entry, the Modules table), or under the
+  page head once that card is gone; a refusal is scrolled into view and focused.
+- **States.** On an unclaimed Hub each page shows **Claim this Hub first** with **Go to Overview**; when the browser
+  cannot reach the Hub itself, a page shows **The Hub server is not answering** with **Retry** (never "Failed to
+  fetch"). Empty lists say what will appear and link to the fix (Open Marketplace, Add member). Error copy is
+  sentences.
 - **Touch, drag and PWA.** No gestures: every action is a tap. There is no manifest or service worker, so install and
   offline checks are not applicable.
-- **Needs a real device.** Safe-area insets (the page sets `viewport-fit=cover` and pads the drawer with
+- **Needs a real device.** Safe-area insets (the page sets `viewport-fit=cover` and pads the bottom bar with
   `env(safe-area-inset-bottom)`), a real on-screen keyboard, and tailnet sign-in.
 
 ## Playwright and CI
@@ -206,10 +216,14 @@ theme case when they run one at a time, apart from the pairing request limit abo
   WebKit's report of fetches cancelled by a reload.
 - **Projects.** `desktop-light` and `desktop-dark` (Chromium, 1440×900), `phone-light` and `phone-dark` (WebKit with
   the iPhone SE descriptor at 375×667) and `pixel-dark` (Chromium, Pixel 7). The overflow sweep (320, 375, 768 and
-  1440 px on every section) and the live-resize test run in the desktop projects. Pairing journeys run in
-  `desktop-light`, `desktop-dark` and `phone-dark` because of the daemon's request limit, and the claim in
-  `desktop-light`. The `intercepted` project (Chromium, 1440×900, light) runs the specs in `intercepted/` and uses no
-  instance.
+  1440 px on every section) and the live-resize test run in the desktop projects. `navigation.spec.mjs` runs in all
+  five projects, which is where every section is loaded in both colour schemes. The functional journeys (sign-in,
+  settings, module switches, app caps and retention, the marketplace and accounts) repeat the same server round trips
+  against the one shared instance, so they run only in `desktop-light` (Chromium, desktop) and `phone-dark` (WebKit,
+  phone) through `functionalProject` in `tests/fixtures.mjs`: one project per engine and viewport. Pairing journeys
+  run in `desktop-light`, `desktop-dark` and `phone-dark` because of the daemon's request limit, and the claim in
+  `desktop-light`. The `intercepted` project (Chromium, 1440×900, light)
+  runs the specs in `intercepted/` and uses no instance.
 - **Serial.** `workers: 1`: the journeys share one instance.
 - **CI.** The `ui` job in `.github/workflows/ci.yml` checks out the pinned daemon, installs the locked Python and npm
   dependencies and the browsers, runs the suite, then, with `if: always()`, runs `ui_instance.py stop` for every

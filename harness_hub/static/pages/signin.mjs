@@ -1,7 +1,7 @@
 // Sign-in: the owner proves they are on the daemon host by opening a one-time link printed there, or, through
 // `tailscale serve`, with the tailnet login the daemon lists as the owner's.
 
-import { banner, clear, command, h, icon } from "../lib/dom.mjs";
+import { banner, clear, command, h, icon, sentence } from "../lib/dom.mjs";
 
 export const INVALID_LINK = "that sign-in link is not valid; links work once, for ten minutes";
 
@@ -30,19 +30,14 @@ function tailnetSignin(login, onTailnet) {
 // The server words a refusal as "what happened; what to do", in lower case. Shown as sentences: the first part is the
 // banner's title, the rest its detail.
 export function sentences(message) {
-  const sentence = (part) => {
-    const text = part.trim();
-    if (!text) return "";
-    const capital = text[0].toUpperCase() + text.slice(1);
-    return /[.!?]$/.test(capital) ? capital : `${capital}.`;
-  };
   const [title, ...rest] = String(message).split(";");
   return { title: sentence(title), detail: sentence(rest.join(";")) };
 }
 
 function refusal(error) {
   const { title, detail } = sentences(error.message);
-  const more = error.message === INVALID_LINK ? `${detail} Make a new one below.` : detail;
+  // The server's refusal of an unknown link arrives as a sentence (api.mjs); the page's own check sends it raw.
+  const more = sentence(error.message) === sentence(INVALID_LINK) ? `${detail} Make a new one below.` : detail;
   return banner("bad", title, more, null, { lead: "alert" });
 }
 

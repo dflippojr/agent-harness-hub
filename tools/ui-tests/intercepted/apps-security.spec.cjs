@@ -13,7 +13,7 @@ const app = (id, name, extra = {}) => ({
   ...extra,
 });
 
-async function mount(page, rows, { entries = [], erasures = [], invalidDetails = false } = {}) {
+async function mount(page, rows, { entries = [], erasures = [], invalidDetails = false, revoke = { status: 204 } } = {}) {
   const writes = [], errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.route("http://hub.test/**", async route => {
@@ -28,7 +28,7 @@ async function mount(page, rows, { entries = [], erasures = [], invalidDetails =
         { json: { configured: { max_running: null, max_queued: 10 }, effective: { max_running: 2, max_queued: 10 },
           running: 1, queued: 0, parked: 1, retention_days: null } });
       if (pathname.endsWith("/retention")) return route.fulfill({ json: { id: pathname.split("/")[3], retention_days: 7 } });
-      if (pathname.endsWith("/revoke")) return route.fulfill({ status: 204 });
+      if (pathname.endsWith("/revoke")) return route.fulfill(revoke);
       throw Error("Unexpected API call: " + pathname);
     }
     if (pathname === "/") return route.fulfill({ contentType: "text/html", body:
@@ -456,5 +456,26 @@ test("a key the erasure queue lists reads as revoked even when the inventory is 
   await expect(a.getByText("harness apps restore k-a", { exact: true })).toBeVisible();
   await expect(a.getByRole("button", { name: /^Revoke/ })).toHaveCount(0);
   expect(writes).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+test("a refused revoke shows its reason as a sentence inside the open App, and focus goes to it", async ({ page }) => {
+  const { errors } = await mount(page, [app("k-ok", "Synthetic notes")],
+    { revoke: { status: 409, json: { detail: "this key changed on the daemon host" } } });
+  const detail = await open(page, "k-ok");
+  await detail.getByRole("button", { name: /^Revoke/ }).click();
+  await page.getByRole("button", { name: /^Confirm revoke/ }).click();
+  const note = detail.locator("p.notice.bad[aria-live]");
+  await expect(note).toHaveText("This key changed on the daemon host. Refresh and review the state before trying again.");
+  await expect(note).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test("with only this Hub's own key, the page says no apps are paired and where they come from", async ({ page }) => {
+  const { errors } = await mount(page, [app("k-hub", "Hub", { kind: "owner", role: "hub", this_hub: true })]);
+  const state = page.locator(".card.empty");
+  await expect(state.getByRole("heading", { name: "No apps paired yet" })).toBeVisible();
+  await expect(state).toContainText("Only this Hub's own key is listed.");
+  await expect(state.getByRole("link", { name: "Open Marketplace" })).toHaveAttribute("href", "#/marketplace");
   expect(errors).toEqual([]);
 });

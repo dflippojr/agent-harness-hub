@@ -13,7 +13,7 @@ const request = (id, extra = {}) => ({
   ...extra,
 });
 
-async function mount(page, initial, { answer } = {}) {
+async function mount(page, initial, { answer, read } = {}) {
   const writes = [], errors = [];
   let rows = initial;
   page.on("pageerror", error => errors.push(error.message));
@@ -21,6 +21,9 @@ async function mount(page, initial, { answer } = {}) {
     const req = route.request(), pathname = new URL(req.url()).pathname;
     if (pathname.startsWith("/api/")) {
       if (pathname === "/api/pairing" && req.method() === "GET") {
+        const reply = read ? read() : null;
+        if (reply === "abort") return route.abort("connectionrefused");
+        if (reply) return route.fulfill(reply);
         return route.fulfill({ json: { requests: rows, now: NOW } });
       }
       const match = /^\/api\/pairing\/([^/]+)\/(approve|confirm|deny)$/.exec(pathname);
@@ -188,6 +191,8 @@ test("409 and 404 answers refresh the list with a short note", async ({ page }) 
   await card(page, "pr-n").getByLabel("Match code the app shows").fill("482913");
   await card(page, "pr-n").getByRole("button", { name: /^Approve/ }).click();
   await expect(page.getByText(/changed state before your decision/)).toBeVisible();
+  // Its card has moved to History, so the note stands under the page head instead.
+  await expect(page.locator("main > p.notice[aria-live]")).toContainText("changed state before your decision");
   await expect(page.locator('[data-group="history"] [data-request-id="pr-n"][data-state="expired"]')).toBeVisible();
   await card(page, "pr-g").getByRole("button", { name: /^Deny/ }).click();
   await page.getByRole("button", { name: "Confirm deny", exact: true }).click();
@@ -297,7 +302,9 @@ test("a refused approve below the fold brings the message into view and focuses 
   await box.scrollIntoViewIfNeeded();
   await box.getByLabel("Match code the app shows").fill("000000");
   await box.getByRole("button", { name: /^Approve/ }).click();
-  const note = page.getByText("the match code does not match the one the App shows");
+  const note = page.getByText("The match code does not match the one the App shows.", { exact: true });
+  // Shown in the card that was acted on (decision 5 of #65), as a sentence.
+  await expect(box.locator("p.notice.bad")).toHaveText("The match code does not match the one the App shows.");
   await expect(note).toBeFocused();
   await expect(note).toBeInViewport();
   expect(await page.evaluate(() => document.activeElement !== document.body)).toBe(true);
@@ -425,5 +432,28 @@ test("a claimed slot keeps the daemon's scope text one tap away", async ({ page 
   await box.getByText("What each scope allows").click();
   await expect(text).toHaveText("This app can read every session on this harness.");
   await expect(box.locator('[data-scope="sessions:all"] .pill')).toHaveText("Elevated");
+  expect(errors).toEqual([]);
+});
+
+test("before the claim, the page says to claim this Hub first and links to Overview", async ({ page }) => {
+  const { errors } = await mount(page, [], { read: () => ({ status: 409,
+    json: { detail: "Claim this Hub on Overview before deciding pairing requests.", claimed: false } }) });
+  const state = page.locator(".card.empty");
+  await expect(state.getByRole("heading", { name: "Claim this Hub first" })).toBeVisible();
+  await expect(state.getByRole("link", { name: "Go to Overview" })).toHaveAttribute("href", "#/overview");
+  // The state says it once: no refusal sentence beside it.
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("a Hub server that does not answer is named, never \"Failed to fetch\", and Retry reads again", async ({ page }) => {
+  let down = true;
+  const { errors } = await mount(page, [], { read: () => down ? "abort" : null });
+  const state = page.locator(".card.empty");
+  await expect(state.getByRole("heading", { name: "The Hub server is not answering" })).toBeVisible();
+  await expect(page.locator("main")).not.toContainText("Failed to fetch");
+  down = false;
+  await state.getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByRole("heading", { name: "No pairing requests in the last day" })).toBeVisible();
   expect(errors).toEqual([]);
 });
