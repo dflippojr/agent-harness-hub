@@ -78,6 +78,13 @@ test("toggle is a checkbox with role=switch and reports changes", () => {
   assert.equal(seen, false);
 });
 
+test("toggle can keep its label for screen readers only", () => {
+  const row = dom.toggle("search", { hideLabel: true });
+  assert.equal(row.children[0].className, "visually-hidden");
+  assert.equal(row.children[0].textContent, "search");
+  assert.equal(dom.toggle("search").children[0].className, "switch-label");
+});
+
 test("table builds column heads and rows", () => {
   const wrap = dom.table("Apps", ["Name", "State"], [["Phone", dom.pill("Active")]]);
   assert.equal(wrap.className, "table-wrap");

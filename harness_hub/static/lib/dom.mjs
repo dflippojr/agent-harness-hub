@@ -131,11 +131,12 @@ export function banner(tone, title, detail, action, { lead } = {}) {
 }
 
 // A labelled on/off switch: a real checkbox with role=switch, so keyboards and screen readers treat it as one.
-export function toggle(label, { checked = false, disabled = false, onchange } = {}) {
+// hideLabel keeps the label for screen readers only, where a table column already says what the switch is.
+export function toggle(label, { checked = false, disabled = false, onchange, hideLabel = false } = {}) {
   const input = h("input", { type: "checkbox", role: "switch", disabled });
   input.checked = checked;
   if (onchange) input.addEventListener("change", () => onchange(input.checked));
-  return h("label", { class: "switch" }, h("span", { class: "switch-label" }, label),
+  return h("label", { class: "switch" }, h("span", { class: hideLabel ? "visually-hidden" : "switch-label" }, label),
     h("span", { class: "switch-track" }, input, h("i", { "aria-hidden": "true" })));
 }
 

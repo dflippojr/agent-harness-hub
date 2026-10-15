@@ -3,19 +3,24 @@ import { expect, openSection, test } from "./fixtures.mjs";
 
 test("a module switch saves, survives a reload and switches back", async ({ signedIn: page, errors }) => {
   await openSection(page, "modules");
-  const search = page.locator("section").filter({ has: page.getByRole("heading", { name: "search", exact: true }) });
-  await expect(search).toContainText("Switch: off");
-  await search.getByRole("button", { name: "Switch search on" }).click();
+  const search = page.locator("tr[data-module=search]");
+  const toggle = search.getByRole("switch", { name: "search", exact: true });
+  await expect(toggle).not.toBeChecked();
+  await expect(search.locator(".modules-status")).toHaveText("Off");
+  await expect(search.locator(".modules-applies")).toContainText("Restart");
+  await toggle.click();
   await expect(page.locator("main p.notice[aria-live]").first()).toContainText("Saved search.enabled=true");
-  await expect(page.getByText("Restart needed to apply saved switches.")).toBeVisible();
+  await expect(search).toContainText("On after restart");
+  const restart = page.locator(".banner").filter({ hasText: "Restart needed to apply saved settings." });
+  await expect(restart.getByRole("link", { name: "Restart in Settings" })).toBeVisible();
   await page.reload();
-  await expect(search.getByRole("button", { name: "Switch search off" })).toBeVisible();
-  await expect(search).toContainText("Switch: on");
+  await expect(toggle).toBeChecked();
+  await expect(search).toContainText("On after restart");
 
-  await search.getByRole("button", { name: "Switch search off" }).click();
+  await toggle.click();
   await expect(page.locator("main p.notice[aria-live]").first()).toContainText("Saved search.enabled=false");
   await page.reload();
-  await expect(search.getByRole("button", { name: "Switch search on" })).toBeVisible();
+  await expect(toggle).not.toBeChecked();
   expect(errors).toEqual([]);
 });
 
