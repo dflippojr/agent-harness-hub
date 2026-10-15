@@ -1,5 +1,5 @@
 // The verify skill's main path (.claude/skills/verify/SKILL.md, "Feature map"): sign in by link, open Overview, Apps,
-// Modules and Pairing requests, then one Settings edit rolled back. Each test is tagged with its feature, so
+// Modules and Pairing requests, read Accounts and maintenance, then one Settings edit rolled back. Each test is tagged with its feature, so
 // `--grep @settings` drives just that area. Screenshots go to VERIFY_EVIDENCE_DIR/screenshots.
 import path from "node:path";
 // Sign-in happens in each test body, after the `errors` fixture is listening, so startup errors count too.
@@ -39,6 +39,27 @@ test("read Spend and sort its App table @spend", async ({ page, errors }, testIn
   await expect(page.getByRole("table", { name: "Backend usage today and over the last 7 days" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
   await capture(page, testInfo, "spend");
+  expect(errors).toEqual([]);
+});
+
+test("read the members and open a member's edit form @admin", async ({ page, errors }, testInfo) => {
+  await signIn(page);
+  await openSection(page, "admin");
+  const members = page.getByRole("table", { name: "Members" });
+  const seeded = members.getByRole("row").filter({ hasText: "member@example.test" });
+  await expect(seeded).toContainText("Enabled");
+  await expect(seeded).toContainText("GiB");
+  const pane = page.locator(".admin-member");
+  await expect(pane.getByRole("heading", { name: "Synthetic member", level: 2 })).toBeVisible();
+  await expect(pane.getByRole("button", { name: "Erase GitHub credential" })).toBeVisible();
+  await expect(page.locator(".admin-footnote")).toContainText("harness keys create");
+  await expectNoHorizontalOverflow(page);
+  await capture(page, testInfo, "admin");
+  // The edit form opens in the pane and Cancel leaves without a write.
+  await pane.getByRole("button", { name: "Edit member" }).click();
+  await expect(pane.getByLabel("Display name")).toHaveValue("Synthetic member");
+  await pane.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(pane.getByRole("button", { name: "Edit member" })).toBeVisible();
   expect(errors).toEqual([]);
 });
 

@@ -132,9 +132,6 @@ body.signed-out .nav { display: none; }
 .btn.ghost { background: transparent; }
 /* A destructive action (Deny, Revoke) is outlined red, never filled, as on the Stables approval sheet. */
 .btn.danger { background: transparent; border: 1.5px solid var(--bad); color: var(--bad); }
-/* A pressed toggle (the chosen area on Accounts and maintenance) looks selected, like the current navigation link.
-   It keeps --accent: in dark mode --primary is too close to an unpressed button to read as chosen. */
-.btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .btn.icon { padding: 0; display: inline-grid; place-items: center; }
 .btn:focus-visible, .nav-link:focus-visible, a:focus-visible, summary:focus-visible {
   outline: 3px solid var(--accent);
@@ -982,13 +979,13 @@ body.signed-out .topbar { display: none; }
 .apps-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
 .apps-inline { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
 .apps-inline .apps-field { flex: 1 1 200px; }
-.apps-field label { display: block; margin-bottom: 6px; font-size: .82rem; font-weight: 650; color: var(--muted); }
-.apps-field input {
+.apps-field label, .admin-field label { display: block; margin-bottom: 6px; font-size: .82rem; font-weight: 650; color: var(--muted); }
+.apps-field input, .admin-field input {
   display: block; width: 100%; min-width: 0; min-height: var(--tap); padding: 0 12px;
   border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); font: inherit;
 }
-.apps-field input::placeholder { color: var(--muted); }
-.apps-field input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.apps-field input::placeholder, .admin-field input::placeholder { color: var(--muted); }
+.apps-field input:focus-visible, .admin-field input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .apps-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
 .danger-zone .apps-actions { margin-top: 0; }
 .apps-detail .danger-zone { margin-top: 20px; }
@@ -1068,12 +1065,91 @@ body.signed-out .topbar { display: none; }
   .modules-applies:not(:has(.pill)) { display: none; }
 }
 
-/* Owner administration reuses the shell and form tokens. */
+/* Accounts and maintenance (Hub design 11): the areas as a segmented control, then on Accounts the members table with
+   the open member's detail pane beside it from 1200px and below it under that. On a phone the table folds to name,
+   login, sessions and disk with the status pill. The chosen segment is a raised chip with an --accent outline, so it
+   reads as chosen in both themes. The other areas keep their action form and results. */
+.admin-head h1 { flex: 1; }
+.admin-head .btn { display: inline-flex; align-items: center; gap: 6px; }
+.segmented {
+  display: flex; flex-wrap: wrap; gap: 2px; width: fit-content; max-width: 100%; box-sizing: border-box;
+  margin: 4px 0 20px; padding: 3px; border-radius: 12px; background: var(--panel-2);
+}
+.segmented button {
+  min-height: var(--tap); padding: 0 12px; border: 1px solid transparent; border-radius: 9px; background: none;
+  color: var(--muted); font: inherit; font-size: .93rem; font-weight: 600; cursor: pointer;
+}
+.segmented button[aria-pressed="true"] {
+  border-color: var(--accent); background: var(--panel); color: var(--text); box-shadow: 0 1px 2px var(--shadow);
+}
+.segmented button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.segmented button:disabled { opacity: .6; cursor: progress; }
+.admin-accounts-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
+.admin-members > .section-head { margin-top: 0; }
+.admin-members > .admin-actions { margin-top: 10px; }
+.card.admin-table { padding: 0; overflow: hidden; border-radius: 14px; }
+.admin-table .table td { overflow-wrap: normal; }
+.admin-table tbody tr[data-user-id] { cursor: pointer; }
+.admin-table tbody tr[data-user-id]:hover td { background: var(--bg); }
+.admin-table tr.selected td, .admin-table tr.selected:hover td { background: var(--info-bg); }
+/* A value breaks only between its halves (running · queued); a long name or login only where it cannot fit. */
+.admin-table .table td { padding: 10px 12px; }
+.admin-table .nowrap { white-space: nowrap; }
+.member-title { display: block; font-weight: 650; overflow-wrap: break-word; }
+.member-sub { display: block; font-size: .82rem; color: var(--muted); overflow-wrap: break-word; }
+.member-meta { display: none; font-size: .82rem; color: var(--muted); overflow-wrap: anywhere; }
+/* Positioned, so the Open button's screen-reader label stays inside the table's scroll box. */
+.admin-table td.member-open { position: relative; width: 1%; padding: 4px 8px; text-align: right; white-space: nowrap; }
+.btn.open-member { padding: 0; display: inline-grid; place-items: center; color: var(--muted); }
+.card.admin-member { padding: 18px 20px; border-radius: 14px; overflow-wrap: anywhere; }
+.admin-member-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.card .admin-member-head h2 { flex: 1; margin: 0; font-size: 1.15rem; }
+.admin-member > .hint { margin: 2px 0 14px; }
+.admin-member > .notice { margin: 0 0 12px; }
+.admin-member > .facts { gap: 8px 24px; margin: 0; font-size: .9rem; }
+.admin-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.btn.small { padding: 0 12px; font-size: .87rem; }
+.card h3.admin-sub {
+  margin: 20px 0 0; font-size: .78rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted);
+}
+.admin-sub + .admin-actions { margin-top: 8px; }
+.admin-member .danger-zone { margin-top: 20px; padding: 14px 16px; }
+.admin-member .danger-zone p { font-size: .9rem; }
+.danger-zone .admin-actions { margin-top: 0; }
+.admin-confirm {
+  display: flex; flex-direction: column; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.danger-zone .admin-confirm { margin-top: 8px; padding-top: 0; border-top: 0; }
+.admin-confirm h4 { margin: 0; font-size: 1rem; color: var(--text); }
+.admin-confirm p { margin: 0; font-size: .9rem; }
+.admin-confirm .facts { margin: 0; font-size: .9rem; }
+.admin-confirm .admin-actions { margin-top: 4px; }
+.admin-link-code { margin-top: 12px; padding: 14px 16px; border-radius: var(--radius); background: var(--info-bg); }
+.admin-link-code p { margin: 0 0 8px; font-size: .9rem; }
+.admin-code { display: block; margin: 0 0 10px; font: 600 1.1rem/1.4 var(--mono); overflow-wrap: anywhere; }
+.admin-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-top: 16px; }
+.admin-member-form > .hint { margin-top: 12px; }
+.admin-footnote { max-width: 780px; margin-top: 20px; }
+.admin-footnote:empty { display: none; }
+.admin-footnote code { font-size: .78rem; }
 .admin-workspace, .admin-output, .admin-row { margin: 16px 0; overflow-wrap: anywhere; }
 .admin-text { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; font: .9rem/1.5 var(--mono); }
 .admin-row h3 { color: var(--text); margin-top: 0; }
 .admin-form { max-width: 760px; }
 .admin-form > .btn { margin-top: 16px; }
+
+@media (min-width: 1200px) {
+  .admin-accounts-layout.has-detail { grid-template-columns: minmax(0, 1fr) 400px; }
+}
+@media (max-width: 699px) {
+  .segmented { width: 100%; }
+  .segmented button { flex: 1 1 auto; }
+  .admin-table thead, .admin-table .col-wide { display: none; }
+  .admin-table .member-meta { display: block; }
+  /* At 320px a login is wider than its column: let it break anywhere rather than widen the table. */
+  .admin-table .member-title, .admin-table .member-sub, .admin-table .member-meta { overflow-wrap: anywhere; }
+}
 
 /* Pairing requests (Hub design 6): Needs you as two-half decision cards (who and what, then the decision on a grey
    half), Waiting for the app as rows, the History table, then Troubleshooting closed at the foot. Below 1200px the
