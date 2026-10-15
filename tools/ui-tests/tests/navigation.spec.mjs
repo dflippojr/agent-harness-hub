@@ -1,5 +1,6 @@
 // HUB-01 navigation and layout: every section loads and survives a reload, the theme follows the color scheme, the
-// rail is grouped with its footer, and no page scrolls sideways at 320, 375, 768 or 1440 px.
+// rail is grouped with its footer, phones get the bottom bar and its More sheet, and no page scrolls sideways at 320,
+// 375, 768 or 1440 px.
 import { SECTIONS, expect, expectNoHorizontalOverflow, hubUrl, isPhone, openSection, scheme, test } from "./fixtures.mjs";
 
 const BACKGROUND = { light: "#f3f4f6", dark: "#000000" };
@@ -18,9 +19,9 @@ test("each section loads, is marked current and survives a reload", async ({ sig
 });
 
 test("the rail groups the sections, shows the daemon chip and banner, and remembers the host-commands switch", async ({ signedIn: page, errors }, testInfo) => {
-  test.skip(isPhone(testInfo), "the rail is a drawer on phones; the phone test covers it");
+  test.skip(isPhone(testInfo), "phones have the bottom bar instead of the rail; the phone test covers it");
   const nav = page.getByRole("navigation", { name: "Sections" });
-  await expect(page.locator(".topbar")).toBeHidden();
+  await expect(page.locator("#tabbar")).toBeHidden();
   await expect(nav.getByRole("list", { name: "Access" }).getByRole("link"))
     .toHaveText([/^Pairing requests/, "Apps", "Spend", "Marketplace"]);
   await expect(nav.getByRole("list", { name: "Daemon" }).getByRole("link"))
@@ -76,47 +77,66 @@ test("no horizontal overflow at 320, 375, 768 and 1440 px", async ({ signedIn: p
   expect(errors).toEqual([]);
 });
 
-test("phone: pages fit the device width and the drawer navigates", async ({ signedIn: page, errors }, testInfo) => {
+test("phone: pages fit the device width and the bottom bar navigates", async ({ signedIn: page, errors }, testInfo) => {
   test.skip(!isPhone(testInfo), "phone projects only");
   for (const section of SECTIONS) {
     await openSection(page, section.id);
     await expectNoHorizontalOverflow(page);
   }
-  const menu = page.getByRole("button", { name: "Sections" });
+  const bar = page.getByRole("navigation", { name: "Sections" });
+  const more = bar.getByRole("button", { name: "More" });
+  const sheet = page.getByRole("navigation", { name: "More sections" });
   await page.goto(`${hubUrl()}/#/overview`);
-  await expect(menu).toHaveAttribute("aria-expanded", "false");
-  await menu.click();
-  await expect(menu).toHaveAttribute("aria-expanded", "true");
-  await page.getByRole("link", { name: "Apps" }).click();
-  await expect(menu).toHaveAttribute("aria-expanded", "false");
+  await expect(bar.getByRole("link")).toHaveText(["Overview", /^Pairing/, "Apps"]);
+  await expect(bar.getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
+  // No rail and no drawer: the daemon chip sits beside the page title, and the sheet is closed.
+  await expect(page.locator("main > .page-head").getByRole("status")).toHaveText("Daemon live · API 1.24");
+  await expect(page.locator("#nav")).toBeHidden();
+  await bar.getByRole("link", { name: "Apps" }).click();
   await expect(page.getByRole("heading", { name: "Apps", level: 1 })).toBeVisible();
-  await menu.click();
-  await expect(page.locator('#nav a[data-section="apps"]')).toHaveAttribute("aria-current", "page");
-  // The drawer is the rail: the footer's switch and Sign out are in it.
-  await expect(page.getByRole("switch", { name: "Show host commands" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
+  await expect(bar.getByRole("link", { name: "Apps" })).toHaveAttribute("aria-current", "page");
+
+  // More opens the rest of the sections as a sheet, with the footer's switch and Sign out.
+  await expect(more).toHaveAttribute("aria-expanded", "false");
+  await more.click();
+  await expect(more).toHaveAttribute("aria-expanded", "true");
+  await expect(sheet.getByRole("link"))
+    .toHaveText(["Spend", "Marketplace", "Settings", "Modules", "Accounts and maintenance"]);
+  await expect(sheet.getByRole("switch", { name: "Show host commands" })).toBeVisible();
+  await expect(sheet.getByRole("button", { name: "Sign out" })).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(menu).toHaveAttribute("aria-expanded", "false");
+  await expect(more).toHaveAttribute("aria-expanded", "false");
+  await expect(more).toBeFocused();
+  await expect(sheet).toBeHidden();
+  // A section from the sheet closes it and lights up More.
+  await more.click();
+  await sheet.getByRole("link", { name: "Modules" }).click();
+  await expect(page.getByRole("heading", { name: "Modules", level: 1 })).toBeVisible();
+  await expect(more).toHaveAttribute("aria-expanded", "false");
+  await expect(more).toHaveClass(/current/);
+  await expect(page.locator('#nav a[data-section="modules"]')).toHaveAttribute("aria-current", "page");
   expect(errors).toEqual([]);
 });
 
-test("live resize keeps a partly filled form and a working menu", async ({ signedIn: page, errors }, testInfo) => {
+test("live resize keeps a partly filled form and a working bottom bar", async ({ signedIn: page, errors }, testInfo) => {
   test.skip(isPhone(testInfo), "desktop projects resize; phones have a fixed device viewport");
   await openSection(page, "settings");
   const turns = page.getByRole("spinbutton", { name: "Maximum turns" });
   const original = await turns.inputValue();
   await turns.fill(String(Number(original) + 7));
-  const menu = page.getByRole("button", { name: "Sections" });
+  const more = page.getByRole("button", { name: "More" });
   for (const width of [1280, 1024, 768, 414, 375]) await page.setViewportSize({ width, height: 900 });
-  await expect(menu).toBeVisible();
-  await menu.click();
-  await expect(menu).toHaveAttribute("aria-expanded", "true");
+  await expect(more).toBeVisible();
+  await expect(page.locator("main > .page-head").getByRole("status")).toBeVisible();
+  await more.click();
+  await expect(more).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByRole("link", { name: "Modules" })).toBeVisible();
   for (const width of [768, 1024, 1440]) await page.setViewportSize({ width, height: 900 });
-  await expect(menu).toBeHidden();
+  await expect(more).toBeHidden();
   await expect(turns).toHaveValue(String(Number(original) + 7));
   await expectNoHorizontalOverflow(page);
-  // The rail works and nothing left from the drawer covers the page.
+  // The rail works, the daemon chip is back in its footer, and nothing left from the sheet covers the page.
+  await expect(page.getByRole("navigation", { name: "Sections" }).getByRole("status")).toBeVisible();
   await turns.click();
   await expect(turns).toBeFocused();
   await page.getByRole("link", { name: "Modules" }).click();

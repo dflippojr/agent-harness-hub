@@ -92,7 +92,7 @@ def test_the_hub_never_claims_or_redeems_an_app_request():
 def test_tap_targets_are_at_least_44px():
     css = text(STATIC / "style.css")
     assert re.search(r"--tap:\s*44px", css)
-    for selector in (".btn {", ".nav-link {", ".brand {", ".command {", "details summary {"):
+    for selector in (".btn {", ".nav-link {", ".tab {", ".brand {", ".command {", "details summary {"):
         block = css[css.index(selector):]
         block = block[:block.index("}")]
         assert "min-height: var(--tap)" in block, selector
@@ -122,13 +122,28 @@ def test_rail_groups_and_footer():
     marks = ('label: "Access"', 'id: "pairing"', 'label: "Daemon"', 'id: "settings"')
     assert [app.index(mark) for mark in marks] == sorted(app.index(mark) for mark in marks)
     html = text(STATIC / "index.html")
-    nav = html[html.index('<nav id="nav"'):html.index("</nav>")]
+    start = html.index('<nav id="nav"')
+    nav = html[start:html.index("</nav>", start)]
     for marker in ('id="daemon-chip"', 'role="status"', 'id="host-commands"', 'role="switch"', 'id="signout-button"'):
         assert marker in nav, marker
-    assert "signout" not in html[html.index('<header class="topbar">'):html.index("</header>")]
     assert '<label id="host-commands-row" class="switch host-commands">' in nav
+    assert "topbar" not in html and "menu-button" not in html
+
+
+def test_phone_bottom_bar():
+    """Hub design 13 (#80): below 900 px a bottom bar (Overview, Pairing, Apps, More) replaces the Sections drawer, and
+    More opens the rest of the rail as a sheet; the bar keeps clear of the home indicator."""
+    html = text(STATIC / "index.html")
+    assert '<nav id="tabbar" class="tabbar" aria-label="Sections" hidden></nav>' in html
+    assert html.index('id="tabbar"') < html.index('<nav id="nav"') < html.index('<main id="main"')
+    app = text(STATIC / "app.mjs")
+    bar = app[app.index("const BAR = ["):app.index("];", app.index("const BAR = ["))]
+    assert re.findall(r'id: "(\w+)"', bar) == ["overview", "pairing", "apps"]
+    assert '"aria-controls": "nav"' in app and '"More"' in app
     css = text(STATIC / "style.css")
-    assert "body:not(.signed-out) .topbar { display: none; }" in css
+    assert "@media (max-width: 899.98px)" in css and 'matchMedia("(max-width: 899.98px)")' in app
+    assert "--tabbar-h: calc(50px + max(6px, env(safe-area-inset-bottom)));" in css
+    assert ".rail-brand, .nav .on-bar { display: none; }" in css
 
 
 def test_phone_and_desktop_layouts():

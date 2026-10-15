@@ -100,31 +100,35 @@ test("Settings still offers the profile editor when the module is present", asyn
   await expect(page.getByRole("button", { name: "Save profile" })).toBeVisible();
 });
 
-test.describe("phone drawer", () => {
+test.describe("phone More sheet", () => {
   test.use({ viewport: { width: 375, height: 667 }, hasTouch: true, isMobile: true });
 
-  test("a tap on the backdrop closes the drawer and returns focus to the menu button", async ({ page }) => {
+  test("a tap on the backdrop closes the sheet and returns focus to More", async ({ page }) => {
     const { errors } = await mount(page, "#/modules");
-    const menu = page.getByRole("button", { name: "Sections" });
-    await menu.tap();
-    await expect(menu).toHaveAttribute("aria-expanded", "true");
-    await page.touchscreen.tap(350, 400);
-    await expect(menu).toHaveAttribute("aria-expanded", "false");
-    await expect(menu).toBeFocused();
-    await menu.tap();
-    await page.getByRole("navigation").getByRole("link", { name: "Apps" }).tap();
-    await expect(menu).toHaveAttribute("aria-expanded", "false");
-    expect(new URL(page.url()).hash).toBe("#/apps");
+    const more = page.getByRole("button", { name: "More" });
+    await more.tap();
+    await expect(more).toHaveAttribute("aria-expanded", "true");
+    // Above the sheet, on the dimmed page.
+    await page.touchscreen.tap(187, 60);
+    await expect(more).toHaveAttribute("aria-expanded", "false");
+    await expect(more).toBeFocused();
+    await more.tap();
+    await page.getByRole("navigation", { name: "More sections" }).getByRole("link", { name: "Settings" }).tap();
+    await expect(more).toHaveAttribute("aria-expanded", "false");
+    expect(new URL(page.url()).hash).toBe("#/settings");
     expect(errors.filter(e => !/503/.test(e))).toEqual([]);
   });
 
-  test("taps inside the drawer leave it open", async ({ page }) => {
+  test("taps inside the sheet leave it open, and a tab in the bar closes it", async ({ page }) => {
     await mount(page, "#/modules");
-    const menu = page.getByRole("button", { name: "Sections" });
-    await menu.tap();
-    // A group label: inside the drawer, but not a link or a footer control.
+    const more = page.getByRole("button", { name: "More" });
+    await more.tap();
+    // A group label: inside the sheet, but not a link or a footer control.
     await page.locator("#nav .nav-group").first().tap();
-    await expect(menu).toHaveAttribute("aria-expanded", "true");
+    await expect(more).toHaveAttribute("aria-expanded", "true");
+    await page.getByRole("navigation", { name: "Sections" }).getByRole("link", { name: "Apps" }).tap();
+    await expect(more).toHaveAttribute("aria-expanded", "false");
+    expect(new URL(page.url()).hash).toBe("#/apps");
   });
 });
 

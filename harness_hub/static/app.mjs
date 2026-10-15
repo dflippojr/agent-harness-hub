@@ -1,5 +1,5 @@
-// Hub shell: sign-in gate, the grouped section rail (a drawer on phones) with its daemon chip, Pairing badge and footer,
-// the banner slot under each page head, and the hash router.
+// Hub shell: sign-in gate, the grouped section rail with its daemon chip, Pairing badge and footer, the phone's bottom
+// bar, the banner slot under each page head, and the hash router.
 
 import { api } from "./lib/api.mjs";
 import { banner, clear, emptyState, h, hubDownState, icon } from "./lib/dom.mjs";
@@ -30,6 +30,13 @@ const GROUPS = [
   ] },
 ];
 const SECTIONS = GROUPS.flatMap((group) => group.sections);
+// Below 900 px a bottom bar carries these three and More, which opens the rest of the rail as a sheet.
+const BAR = [
+  { id: "overview", label: "Overview" },
+  { id: "pairing", label: "Pairing" },
+  { id: "apps", label: "Apps" },
+];
+const phone = matchMedia("(max-width: 899.98px)");
 
 // Remembered per browser; only this on/off preference is stored, never anything from the Hub or the daemon.
 const HOST_COMMANDS_KEY = "hub.hostCommands";
@@ -38,44 +45,59 @@ const main = document.getElementById("main");
 const nav = document.getElementById("nav");
 const sections = document.getElementById("nav-sections");
 const chip = document.getElementById("daemon-chip");
+const railFoot = chip.parentElement;
 const hostCommands = document.getElementById("host-commands");
-const menu = document.getElementById("menu-button");
+const tabbar = document.getElementById("tabbar");
 const signOut = document.getElementById("signout-button");
 const slot = h("div", { id: "banner-slot", class: "banner-slot" });
 let stopPage = null;
-let pairingBadge = null;
+let more = null; // the bottom bar's More button, which opens the sheet
+let pairingBadges = []; // the rail's and the bottom bar's
 
 function current() {
   const id = location.hash.replace(/^#\/?/, "") || "overview";
   return SECTIONS.find((s) => s.id === id) || SECTIONS[0];
 }
 
+const sheetOpen = () => document.body.classList.contains("menu-open");
+
 function setMenu(open) {
   document.body.classList.toggle("menu-open", open);
-  menu.setAttribute("aria-expanded", String(open));
+  if (more) more.setAttribute("aria-expanded", String(open));
 }
 
 function buildNav() {
-  pairingBadge = h("span", { class: "nav-badge", hidden: true });
+  const onBar = new Set(BAR.map((s) => s.id));
+  pairingBadges = [0, 1].map(() => h("span", { class: "nav-badge", hidden: true }));
+  // The sheet is the rail without the bar's sections (li.on-bar, hidden below 900 px).
   clear(sections, GROUPS.map((group, i) => {
     const labelId = group.label ? `nav-group-${i}` : null;
     return [
       group.label ? h("p", { class: "nav-group", id: labelId }, group.label) : null,
-      h("ul", { "aria-labelledby": labelId }, group.sections.map((s) => h("li", {},
+      h("ul", { "aria-labelledby": labelId }, group.sections.map((s) => h("li", { class: onBar.has(s.id) ? "on-bar" : null },
         h("a", { href: `#/${s.id}`, "data-section": s.id, class: "nav-link" }, icon(s.id, "nav-icon"),
-          h("span", { class: "nav-label" }, s.label), s.id === "pairing" ? pairingBadge : null)))),
+          h("span", { class: "nav-label" }, s.label), s.id === "pairing" ? pairingBadges[0] : null)))),
     ];
   }));
-  nav.addEventListener("click", (event) => {
-    if (event.target.closest("a")) setMenu(false);
-  });
+  more = h("button", { type: "button", id: "more-button", class: "tab", "aria-controls": "nav", "aria-expanded": "false",
+    onclick: () => setMenu(!sheetOpen()) }, icon("more", "nav-icon"), h("span", { class: "tab-label" }, "More"));
+  clear(tabbar, BAR.map((s) => h("a", { href: `#/${s.id}`, "data-section": s.id, class: "tab" }, icon(s.id, "nav-icon"),
+    h("span", { class: "tab-label" }, s.label), s.id === "pairing" ? pairingBadges[1] : null)), more);
+  tabbar.hidden = false;
+  for (const bar of [nav, tabbar]) {
+    bar.addEventListener("click", (event) => {
+      if (event.target.closest("a")) setMenu(false);
+    });
+  }
 }
 
 function markCurrent(id) {
-  for (const link of nav.querySelectorAll("a[data-section]")) {
+  for (const link of document.querySelectorAll("#nav a[data-section], #tabbar a[data-section]")) {
     if (link.dataset.section === id) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   }
+  // A section from the sheet lights up More, as the bar's own sections light up their tab.
+  if (more) more.classList.toggle("current", !BAR.some((s) => s.id === id));
 }
 
 // Each part is redrawn only when its text changes, so a 30 s Overview refresh does not repeat an announcement.
@@ -90,9 +112,9 @@ function drawStatus() {
     chip.textContent = daemon ? daemon.text : "";
   }
   const count = pairingCount();
-  if (pairingBadge) {
-    pairingBadge.hidden = !count;
-    clear(pairingBadge, count ? [String(count), h("span", { class: "visually-hidden" }, " need you")] : null);
+  for (const badge of pairingBadges) {
+    badge.hidden = !count;
+    clear(badge, count ? [String(count), h("span", { class: "visually-hidden" }, " need you")] : null);
   }
   const shown = daemonBanner();
   const bannerKey = shown ? JSON.stringify(shown) : "";
@@ -109,11 +131,16 @@ function bannerAction(action) {
   return h("a", { class: "btn", href: action.href }, action.label);
 }
 
-// The slot sits under the page head that every page draws first; the sign-in page has none.
-function placeSlot() {
+// The slot sits under the page head that every page draws first; the sign-in page has none. Below 900 px the daemon
+// chip moves from the rail's footer to beside the page title, and the rail, now the More sheet, is named for it.
+function placeShell() {
   const head = main.querySelector(":scope > .page-head");
   if (head) head.after(slot);
   else slot.remove();
+  const title = phone.matches && head ? head.querySelector("h1") : null;
+  if (title) title.after(chip);
+  else if (chip.parentElement !== railFoot) railFoot.prepend(chip);
+  nav.setAttribute("aria-label", phone.matches ? "More sections" : "Sections");
 }
 
 function readHostCommands() {
@@ -141,7 +168,7 @@ async function route() {
   markCurrent(section.id);
   document.title = `${section.label} · Hub`;
   stopPage = section.render(main);
-  placeSlot();
+  placeShell();
   main.focus({ preventScroll: true });
 }
 
@@ -165,7 +192,6 @@ async function signedIn() {
 }
 
 async function boot() {
-  menu.addEventListener("click", () => setMenu(!document.body.classList.contains("menu-open")));
   signOut.addEventListener("click", async () => {
     await api("session", { method: "DELETE" }).catch(() => {});
     location.hash = "#/overview";
@@ -173,13 +199,21 @@ async function boot() {
   });
   window.addEventListener("hub:signed-out", () => location.reload());
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") setMenu(false);
-  });
-  // The drawer's backdrop (body.menu-open::after) blocks the page, so a tap or click outside the drawer closes it.
-  document.addEventListener("click", (event) => {
-    if (!document.body.classList.contains("menu-open") || nav.contains(event.target) || menu.contains(event.target)) return;
+    if (event.key !== "Escape" || !sheetOpen()) return;
     setMenu(false);
-    menu.focus();
+    more.focus();
+  });
+  // The sheet's backdrop (body.menu-open::after) covers the page above the bar, so a tap or click outside the sheet
+  // and the bar closes it.
+  document.addEventListener("click", (event) => {
+    if (!sheetOpen() || nav.contains(event.target) || tabbar.contains(event.target)) return;
+    setMenu(false);
+    more.focus();
+  });
+  // Crossing 900 px swaps the bar and sheet for the rail: close the sheet and put the chip where this layout shows it.
+  phone.addEventListener("change", () => {
+    setMenu(false);
+    placeShell();
   });
 
   let state;
