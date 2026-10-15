@@ -4,12 +4,35 @@
 import { SECTIONS, expect, expectNoHorizontalOverflow, hubUrl, isPhone, openSection, scheme, test } from "./fixtures.mjs";
 
 const BACKGROUND = { light: "#f3f4f6", dark: "#000000" };
+const CLI_PARITY_SECTIONS = ["admin", "apps", "marketplace", "modules", "pairing", "settings"];
+
+async function expectTapTargets(scope, context) {
+  const targets = scope.locator("button:visible, a:visible, summary:visible, label:has([role=switch]):visible, .command:visible");
+  for (const target of await targets.all()) {
+    const { name, iconOnly } = await target.evaluate((el) => {
+      const visibleLabel = el.cloneNode(true);
+      visibleLabel.querySelectorAll("svg, .visually-hidden, [hidden]").forEach((child) => child.remove());
+      return {
+        name: `${el.tagName.toLowerCase()} ${el.getAttribute("aria-label") || el.textContent.trim() || el.title}`,
+        iconOnly: el.matches("button") && !visibleLabel.textContent.trim(),
+      };
+    });
+    const box = await target.boundingBox();
+    expect(box.height, `${context}: ${name} height`).toBeGreaterThanOrEqual(44);
+    if (iconOnly) expect(box.width, `${context}: ${name} width`).toBeGreaterThanOrEqual(44);
+  }
+}
 
 test("each section loads, is marked current and survives a reload", async ({ signedIn: page, errors }, testInfo) => {
+  await expect(page.getByRole("switch", { name: "Show host commands", includeHidden: true })).not.toBeChecked();
   expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--bg").trim()))
     .toBe(BACKGROUND[scheme(testInfo)]);
   for (const section of SECTIONS) {
     await openSection(page, section.id);
+    if (CLI_PARITY_SECTIONS.includes(section.id)) {
+      await expect(page.getByRole("button", { name: /^Host commands?$/ }).first(),
+        `${section.label} offers CLI parity with the switch off`).toBeVisible();
+    }
     await expect(page).toHaveTitle(`${section.label} · Hub`);
     await expect(page.locator(`#nav a[data-section="${section.id}"]`)).toHaveAttribute("aria-current", "page");
     await page.reload();
@@ -49,6 +72,7 @@ test("the rail groups the sections, shows the daemon chip and banner, and rememb
   await expect(keysList).toBeHidden();
   // The switch shows every command in place of the buttons, and the browser remembers it.
   await host.check();
+  expect(await page.evaluate(() => Object.keys(localStorage))).toEqual(["hub.hostCommands"]);
   await expect(page.locator("body")).toHaveClass(/show-host-commands/);
   await expect(keysList).toBeVisible();
   await expect(reveal).toBeHidden();
@@ -56,6 +80,8 @@ test("the rail groups the sections, shows the daemon chip and banner, and rememb
   await expect(host).toBeChecked();
   await expect(keysList).toBeVisible();
   await host.uncheck();
+  // Turning the switch off removes its key; no other browser preferences or credentials are stored here.
+  expect(await page.evaluate(() => Object.keys(localStorage))).toEqual([]);
   await page.reload();
   await expect(host).not.toBeChecked();
   await expect(keysList).toBeHidden();
@@ -82,6 +108,15 @@ test("phone: pages fit the device width and the bottom bar navigates", async ({ 
   for (const section of SECTIONS) {
     await openSection(page, section.id);
     await expectNoHorizontalOverflow(page);
+    await expectTapTargets(page.getByRole("main"), section.label);
+    await page.getByRole("button", { name: "More", exact: true }).click();
+    const drawer = page.getByRole("navigation", { name: "More sections" });
+    await expect(drawer).toBeVisible();
+    // Measure the open sheet after its slide transition, avoiding fractional transformed boxes in WebKit.
+    await drawer.evaluate((el) => Promise.all(el.getAnimations().map((animation) => animation.finished)));
+    await expectTapTargets(drawer, `${section.label} drawer`);
+    await page.keyboard.press("Escape");
+    await expect(drawer).toBeHidden();
   }
   const bar = page.getByRole("navigation", { name: "Sections" });
   const more = bar.getByRole("button", { name: "More" });

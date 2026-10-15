@@ -1,5 +1,5 @@
 /* Hub styles. Colours come only from the tokens below (light, then dark), which match the Stables canvases. --tap is the smallest touch target:
-   every button, link in the navigation and copyable command is at least 44px tall (tests/test_static.py). */
+   every button, link in the navigation and copyable command is at least 44px tall (tools/ui-tests/tests/navigation.spec.mjs). */
 :root {
   --bg: #f3f4f6;
   --panel: #ffffff;
@@ -1448,6 +1448,7 @@ details summary { min-height: var(--tap); display: flex; align-items: center; cu
 .spend-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .spend-table tr.near > * { background: var(--warn-bg); }
 .spend-id { font-weight: 400; font-size: .85rem; }
+.spend-issue { display: inline-flex; align-items: center; min-height: var(--tap); }
 .sort {
   min-height: var(--tap); padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer;
 }

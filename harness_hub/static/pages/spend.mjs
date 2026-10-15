@@ -47,7 +47,7 @@ export function renderSpend(main) {
     command("harness hub status"), problem,
     h("h2", {}, "Apps"),
     h("p", { class: "muted" }, "Lifetime totals per App. Today, 7-day and 30-day windows and a daily trend per App " +
-      "wait on the daemon (", h("a", { href: DAEMON_ISSUE, rel: "noreferrer", target: "_blank" }, "agent-harness#686"),
+      "wait on the daemon (", h("a", { class: "spend-issue", href: DAEMON_ISSUE, rel: "noreferrer", target: "_blank" }, "agent-harness#686"),
     "). An App is flagged when its sessions reach 80% of a session cap; parked sessions count toward both caps."),
     near, apps,
     h("h2", {}, "Backends"),
