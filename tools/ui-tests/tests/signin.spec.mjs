@@ -34,9 +34,9 @@ test("signed out, an unknown link is refused and a fresh link signs in", async (
   await expect(signinCard(other)).toBeVisible();
   await other.close();
 
-  // Sign out sits in the rail's footer; below 900 px the rail is the Sections drawer.
-  const menu = page.getByRole("button", { name: "Sections" });
-  if (await menu.isVisible()) await menu.click();
+  // Sign out sits in the rail's footer; below 900 px it is in the bottom bar's More sheet.
+  const more = page.getByRole("button", { name: "More" });
+  if (await more.isVisible()) await more.click();
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(signinCard(page)).toBeVisible();
   await page.reload();

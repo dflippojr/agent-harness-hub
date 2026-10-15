@@ -3,7 +3,7 @@
 // show lifetime totals. Local-model usage shows tokens only: its cost is "—", never a notional price.
 
 import { api } from "../lib/api.mjs";
-import { clear, command, h, when } from "../lib/dom.mjs";
+import { blocked, blockedState, clear, command, emptyState, h, sentence, when } from "../lib/dom.mjs";
 import { poller } from "../lib/poll.mjs";
 
 const POLL_MS = 60000;
@@ -34,6 +34,7 @@ const COLUMNS = [
 
 export function renderSpend(main) {
   let stopped = false, busy = false, data = null, sort = { key: "cost", descending: true };
+  let readError = null; // why the last read failed, or null once one succeeds
   const poll = poller(() => load());
   const problem = h("p", { class: "notice bad", role: "alert" });
   const near = h("p", { class: "notice warn", "aria-live": "polite" });
@@ -61,11 +62,14 @@ export function renderSpend(main) {
     refresh.disabled = true;
     try {
       data = await api("spend");
-      problem.textContent = data.error ? data.error + (data.stale ?
+      readError = null;
+      problem.textContent = data.error ? sentence(data.error) + (data.stale ?
         " Showing the last good inventory from " + when(data.fetched_at) + "." : "") : "";
     } catch (error) {
       if (stopped) return;
-      problem.textContent = error.message;
+      readError = error;
+      // With nothing read yet, a read that could not run at all shows as its state in place of the tables.
+      problem.textContent = !data && blocked(error) ? "" : error.message;
     }
     if (stopped) return;
     busy = false;
@@ -101,14 +105,17 @@ export function renderSpend(main) {
   function drawApps() {
     const rows = data?.apps;
     if (!Array.isArray(rows)) {
-      clear(apps, h("p", { class: "muted" }, "No App usage is available."));
+      clear(apps, blockedState(readError, "Usage figures", () => load()) ??
+        h("p", { class: "muted" }, "No App usage is available."));
       clear(near);
       return;
     }
     const flagged = rows.filter((row) => row.caps?.near);
     near.textContent = flagged.length ? "Near a session cap: " + flagged.map(label).join(", ") + "." : "";
     if (!rows.length) {
-      clear(apps, h("p", { class: "muted" }, "No Apps are paired."));
+      clear(apps, emptyState("apps", "No apps paired yet", "Each app's usage shows here once it pairs and makes " +
+        "requests. Start one from Marketplace or the app's own setup screen.",
+      h("a", { class: "btn", href: "#/marketplace" }, "Open Marketplace"), { level: 3 }));
       return;
     }
     clear(apps, h("table", {},
@@ -122,7 +129,7 @@ export function renderSpend(main) {
   function drawBackends() {
     const rows = data?.backends || [];
     if (!rows.length) {
-      clear(backends, h("p", { class: "muted" }, data?.backends_error || "No backend usage is available."));
+      clear(backends, h("p", { class: "muted" }, sentence(data?.backends_error) || "No backend usage is available."));
       return;
     }
     const windows = [["today", "Today"], ["week", "7 days"]];

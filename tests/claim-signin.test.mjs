@@ -101,21 +101,24 @@ test("the server's refusals read as sentences", () => {
   assert.deepEqual(sentences("The Hub server did not answer."), { title: "The Hub server did not answer.", detail: "" });
 });
 
-test("the sign-in card numbers its steps and shows a used link as a sentence with what to do", async (t) => {
-  let main;
-  mount(t, (el) => {
-    main = el;
-    renderSignin(el, { session: { signin_command: "python -m harness_hub signin-link" }, error: new Error(INVALID_LINK) });
-    return () => {};
-  }, () => Promise.reject(new Error("no calls")));
-  const card = find(main, (el) => el.attrs.get("aria-labelledby") === "signin-title");
-  assert.equal(find(card, (el) => el.tag === "h1").textContent, "Sign in to the Hub");
-  const alert = find(card, (el) => el.attrs.get("role") === "alert");
-  assert.equal(alert.textContent, "That sign-in link is not valid.Links work once, for ten minutes. Make a new one below.");
-  const steps = byClass(card, "signin-step");
-  assert.equal(steps.length, 2);
-  assert.match(steps[0].textContent, /^1On the daemon host.*python -m harness_hub signin-link/);
-  const docker = find(card, (el) => el.tag === "details");
-  assert.match(docker.textContent, /^The Hub runs in Docker/);
-  assert.equal(find(main, (el) => el.attrs.get("data-action") === "tailnet-signin"), undefined);
-});
+for (const [source, message] of [["the page's own check", INVALID_LINK],
+  ["the server's refusal, as api.mjs words it", "That sign-in link is not valid; links work once, for ten minutes."]]) {
+  test(`the sign-in card numbers its steps and shows a used link (${source}) as a sentence with what to do`, async (t) => {
+    let main;
+    mount(t, (el) => {
+      main = el;
+      renderSignin(el, { session: { signin_command: "python -m harness_hub signin-link" }, error: new Error(message) });
+      return () => {};
+    }, () => Promise.reject(new Error("no calls")));
+    const card = find(main, (el) => el.attrs.get("aria-labelledby") === "signin-title");
+    assert.equal(find(card, (el) => el.tag === "h1").textContent, "Sign in to the Hub");
+    const alert = find(card, (el) => el.attrs.get("role") === "alert");
+    assert.equal(alert.textContent, "That sign-in link is not valid.Links work once, for ten minutes. Make a new one below.");
+    const steps = byClass(card, "signin-step");
+    assert.equal(steps.length, 2);
+    assert.match(steps[0].textContent, /^1On the daemon host.*python -m harness_hub signin-link/);
+    const docker = find(card, (el) => el.tag === "details");
+    assert.match(docker.textContent, /^The Hub runs in Docker/);
+    assert.equal(find(main, (el) => el.attrs.get("data-action") === "tailnet-signin"), undefined);
+  });
+}

@@ -36,7 +36,7 @@ test("the banner keeps the priority order: not answering, too old, restarting, r
   assert.equal(daemonBanner().title, "This daemon's Owner API is 1.20; the Hub needs 1.24 or later.");
   noteRead("apps", 503, GONE);
   assert.deepEqual(daemonBanner(), { tone: "bad", title: "The daemon at https://daemon.test is not answering.",
-    detail: daemonBanner().detail });
+    detail: daemonBanner().detail, action: { label: "Retry now", retry: true } });
   assert.deepEqual(daemonChip(), { tone: "bad", text: "Daemon not answering" });
   noteRead("apps", 200, []);
   assert.equal(daemonBanner().tone, "bad");

@@ -6,7 +6,7 @@
 // sit in the page head. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { clear, command, h, pill, when } from "../lib/dom.mjs";
+import { blockedState, clear, command, h, pill, sentence, when } from "../lib/dom.mjs";
 import { poller } from "../lib/poll.mjs";
 
 const POLL_MS = 1000;
@@ -16,7 +16,7 @@ const valueText = (value) => value === null || value === undefined ? "" :
 const APPLY = { live: ["Live", "ok"], daemon_restart: ["Restart", "warn"], installer_only: ["Installer only", "muted"] };
 const RECOVERY = { lkg_restore: "restored its last good settings",
   overlay_quarantined: "set aside saved settings it could not load" };
-const sentence = (text) => text ? text[0].toUpperCase() + text.slice(1) : "";
+const capital = (text) => text ? text[0].toUpperCase() + text.slice(1) : "";
 const isList = (spec) => spec.type.endsWith("_list");
 
 // A value as the owner reads it: On and Off, not true and false; a list on one line.
@@ -144,9 +144,16 @@ export function renderSettings(main) {
       if (stopped) return;
       [schema, config] = rows;
       drawRegistry(keepDrafts);
-      await loadControls();
+      await loadControls(keepDrafts);
       lock(restarting);
-    } catch (error) { if (!stopped) message(error.message, true); }
+    } catch (error) {
+      if (stopped) return;
+      // Before any settings were read, a read that could not run at all shows as its state, with the step that fixes it.
+      // Until then the warning slot holds only that state, so any other error clears a state an earlier read left.
+      const state = config ? null : blockedState(error, "Settings", () => load());
+      if (!config) clear(warning, state);
+      message(state ? "" : error.message, !state);
+    }
   }
 
   // The saved revision and its state, as a chip in the page head.
@@ -167,7 +174,7 @@ export function renderSettings(main) {
     chip.textContent = text;
     clear(lede, "Daemon settings, saved as revisions you can roll back.", config && !config.supervised_restart ?
       " Restart is manual on this daemon: it has no supervisor, so Restart shows the steps." : "");
-    clear(warning, config?.warning ? h("p", { class: "notice bad" }, config.warning) : null);
+    clear(warning, config?.warning ? h("p", { class: "notice bad" }, sentence(config.warning)) : null);
   }
 
   // A category in the list, with its count; selecting it shows its section alone.
@@ -253,7 +260,7 @@ export function renderSettings(main) {
         "Not set" : `${shown(spec.default, spec)} (default)`);
     }
     input.disabled = !spec.writable;
-    const [applyLabel, tone] = APPLY[spec.apply] || [sentence(String(spec.apply || "").replaceAll("_", " ")), "muted"];
+    const [applyLabel, tone] = APPLY[spec.apply] || [capital(String(spec.apply || "").replaceAll("_", " ")), "muted"];
     const changedPill = pill("Changed", "run", { hidden: true });
     const reset = h("button", { type: "button", class: "btn text setting-reset", hidden: true,
       "aria-label": `Reset ${label} to its default` }, "Reset");
@@ -427,8 +434,8 @@ export function renderSettings(main) {
     report(error.message, true);
     for (const [key, row] of Object.entries(error.body?.error?.keys || {})) {
       const f = fields.get(key);
-      if (f) setFieldError(f, row.message);
-      else box.append(h("p", {}, key + ": " + row.message));
+      if (f) setFieldError(f, sentence(row.message));
+      else box.append(h("p", {}, key + ": " + sentence(row.message)));
     }
     showFirstError();
     applyView();
@@ -472,7 +479,7 @@ export function renderSettings(main) {
     return [
       { id: "smart-approvals", title: "Smart approvals mode", read: "smart-approvals", cli: "harness smart-approvals show",
         draw: (data, box, report) => {
-          const mode = h("select", {}, ["off", "shadow", "auto"].map((v) => h("option", { value: v }, sentence(v))));
+          const mode = h("select", {}, ["off", "shadow", "auto"].map((v) => h("option", { value: v }, capital(v))));
           mode.value = data.mode;
           box.append(field("Mode", mode), h("p", { class: "hint" }, data.secret_ref ? "Token file path: " + data.secret_ref :
             "No token file path configured."),
@@ -508,7 +515,7 @@ export function renderSettings(main) {
           const profile = h("textarea", { rows: 8, disabled: !data.enabled }); profile.value = data.profile;
           box.append(field("Agent profile", profile), h("p", { class: "hint" },
             data.enabled ? "Saving commits and pushes this profile to the memory library." : "Memory library is disabled."),
-          data.refresh_error ? h("p", { class: "notice bad" }, data.refresh_error) : null);
+          data.refresh_error ? h("p", { class: "notice bad" }, sentence(data.refresh_error)) : null);
           if (data.enabled) box.append(h("div", { class: "settings-actions" }, button("Save profile", () => perform(() =>
             saveControl("memory", { content: profile.value, summary: "Update agent profile from Hub Settings" }, report), report))));
           box.append(command("harness memory set-profile <content>", { parity: true }));
@@ -538,17 +545,24 @@ export function renderSettings(main) {
         }, report))), command("harness notify test", { parity: true })) },
     ];
   }
-  async function loadControls() {
-    await Promise.all(controls.map(async ({ card, body, report }) => {
+  // Keeping drafts, a control that already drew stays as it is, with any edit in it; only one that failed is read again.
+  async function loadControls(keepDrafts = false) {
+    await Promise.all(controls.map(async (group) => {
+      const { card, body, report } = group;
+      if (keepDrafts && group.drawn) return;
+      group.drawn = false;
       report("");
       clear(body, card.read ? command(card.cli, { parity: true }) : null);
       if (!card.read) {
         card.draw(null, body, report);
+        group.drawn = true;
         return;
       }
       try {
         const data = await api("settings/" + card.read);
-        if (!stopped) card.draw(data, body, report);
+        if (stopped) return;
+        card.draw(data, body, report);
+        group.drawn = true;
       } catch (error) { if (!stopped) body.append(h("p", { class: "notice bad", role: "alert" }, error.message)); }
     }));
   }
@@ -589,5 +603,8 @@ export function renderSettings(main) {
     if (!stopped) poll.schedule(restarting ? POLL_MS : 5000, { whileHidden: restarting });
   }
   void load(); void pollHealth();
-  return () => { stopped = true; poll.stop(); };
+  const stop = () => { stopped = true; poll.stop(); };
+  // The banner's Retry now reads again in place, so an unsaved edit survives it, in a setting or a control.
+  stop.retry = () => load(true);
+  return stop;
 }

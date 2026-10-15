@@ -158,3 +158,19 @@ test("Settings keeps its 1 s health poll while hidden during a restart, then pau
   await page.advance(HOUR);
   assert.deepEqual(urls(page, seen), []);
 });
+
+// A poll that turns "the Hub server is not answering" into "not claimed" redraws, though nothing it read changed.
+for (const [name, render, every] of [["Pairing requests", renderPairing, 5000], ["Marketplace", renderMarketplace, 5000],
+  ["Apps", renderApps, 30000]]) {
+  test(`${name}: a poll that finds the Hub unclaimed after it was down shows the claim link`, async (t) => {
+    let hubDown = true;
+    const page = mount(t, render, () => hubDown ? Promise.reject(new TypeError("Failed to fetch")) :
+      Promise.resolve(response({ detail: "Claim this Hub on Overview first.", claimed: false }, 409)));
+    await page.advance(0);
+    assert.match(page.main.textContent, /The Hub server is not answering/);
+    hubDown = false;
+    await page.advance(every);
+    assert.match(page.main.textContent, /Claim this Hub first/);
+    assert.doesNotMatch(page.main.textContent, /The Hub server is not answering/);
+  });
+}

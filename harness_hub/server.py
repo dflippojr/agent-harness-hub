@@ -129,6 +129,12 @@ def _unreachable(detail: str, **extra: Any) -> JSONResponse:
     return _error(503, detail, reachable=False, **extra)
 
 
+# A read or write the Hub refuses because it has not claimed the daemon. claimed false lets a page show its Claim this
+# Hub first state, with a link to Overview, instead of the refusal's sentence.
+def _unclaimed(detail: str) -> JSONResponse:
+    return _error(409, detail, claimed=False)
+
+
 def _forwarded(reply: Any) -> JSONResponse:
     return JSONResponse({**settings_error(reply.body, reply.status), "reachable": True}, status_code=reply.status)
 
@@ -499,7 +505,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     async def get_modules(request: Request):
         key = claims.key()
         if key is None:
-            return _error(409, "Claim this Hub on Overview before reading inventory.")
+            return _unclaimed("Claim this Hub on Overview before reading inventory.")
         apps_page = request.url.path == "/api/apps"
         result = await read_inventory(key, (lambda body: apps_view(body, key["key_id"], tuple(store.secrets())))
                                       if apps_page else module_view)
@@ -527,7 +533,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         the inventory cache, so its poll adds no disk writes; a failed read falls back to the cached inventory."""
         key = claims.key()
         if key is None:
-            return _error(409, "Claim this Hub on Overview before reading spend.")
+            return _unclaimed("Claim this Hub on Overview before reading spend.")
         secrets = tuple(store.secrets())
         good = inventory.get(key["key_id"])
         body, error, fetched_at = (good["inventory"], "", good["fetched_at"]) if good else (None, "", None)
@@ -605,7 +611,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         """Local entries (#520) with their armed slots. Listing grants nothing; nothing from an entry is fetched."""
         key = claims.key()
         if key is None:
-            return _error(409, "Claim this Hub on Overview before reading the Marketplace.")
+            return _unclaimed("Claim this Hub on Overview before reading the Marketplace.")
         secrets = tuple(store.secrets())
 
         async def read_slots() -> tuple[Any, bool]:
@@ -665,7 +671,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         or a crafted body can neither widen what the owner saw nor arm a slot for an id that is not listed."""
         key = claims.key()
         if key is None:
-            return _error(409, "Claim this Hub on Overview before setting up an app.")
+            return _unclaimed("Claim this Hub on Overview before setting up an app.")
         if not request.headers.get("origin"):
             return _error(403, "Setting up an app requires a same-origin Origin")
         data = bytearray()
@@ -789,7 +795,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return _error(404, "Unknown Apps operation. Restore is available only on the daemon host CLI.")
         key = claims.key()
         if key is None:
-            return _error(409, "Claim this Hub on Overview before administering Apps.")
+            return _unclaimed("Claim this Hub on Overview before administering Apps.")
         body = None
         if request.method != "GET":
             if not request.headers.get("origin"):
@@ -870,7 +876,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return _error(404, "Unknown pairing operation")
         key = claims.key()
         if key is None:
-            return _error(409, "Claim this Hub on Overview before deciding pairing requests.")
+            return _unclaimed("Claim this Hub on Overview before deciding pairing requests.")
         body = None
         if request.method == "POST":
             if not request.headers.get("origin"):
@@ -961,7 +967,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return _error(404, "Unknown administration operation")
         key = claims.key()
         if key is None:
-            return _error(409, "Claim this Hub on Overview before administering the daemon.")
+            return _unclaimed("Claim this Hub on Overview before administering the daemon.")
         target_names = re.findall(r"{(\w+)}", ADMIN_ROUTES[operation][1])
         targets = {name: request.query_params.get(name, "") for name in target_names}
         if any(not TARGET.fullmatch(value) for value in targets.values()):
@@ -1047,7 +1053,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return _error(404, "unknown Settings operation")
         key = claims.key()
         if key is None:
-            return _error(409, "Claim this Hub on Overview before administering Settings.")
+            return _unclaimed("Claim this Hub on Overview before administering Settings.")
         body, name = None, ""
         if request.method != "GET":
             if not request.headers.get("origin"):

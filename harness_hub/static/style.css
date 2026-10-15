@@ -26,7 +26,8 @@
   --tap: 44px;
   --radius: 12px;
   --rail-w: 248px;
-  --topbar-h: 56px;
+  /* The phone's bottom bar: 6px above and below its 44px tabs, or the home indicator's inset below. */
+  --tabbar-h: calc(50px + max(6px, env(safe-area-inset-bottom)));
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   color-scheme: light dark;
 }
@@ -85,21 +86,6 @@ a { color: var(--accent); }
   border-radius: var(--radius);
 }
 
-/* Top bar, below 900px only: the menu button and the brand. From 900px the rail carries both. */
-.topbar {
-  position: sticky;
-  top: 0;
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: var(--topbar-h);
-  padding: 6px max(12px, env(safe-area-inset-right)) 6px max(12px, env(safe-area-inset-left));
-  padding-top: max(6px, env(safe-area-inset-top));
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
-}
-
 .brand {
   display: inline-flex;
   align-items: center;
@@ -111,8 +97,8 @@ a { color: var(--accent); }
   text-decoration: none;
 }
 
-body.signed-out .menu-button,
-body.signed-out .nav { display: none; }
+body.signed-out .nav,
+body.signed-out .tabbar { display: none; }
 
 /* Buttons: never smaller than --tap. */
 .btn {
@@ -133,38 +119,29 @@ body.signed-out .nav { display: none; }
 /* A destructive action (Deny, Revoke) is outlined red, never filled, as on the Stables approval sheet. */
 .btn.danger { background: transparent; border: 1.5px solid var(--bad); color: var(--bad); }
 .btn.icon { padding: 0; display: inline-grid; place-items: center; }
-.btn:focus-visible, .nav-link:focus-visible, a:focus-visible, summary:focus-visible {
+.btn:focus-visible, .nav-link:focus-visible, .tab:focus-visible, a:focus-visible, summary:focus-visible {
   outline: 3px solid var(--accent);
   outline-offset: 2px;
 }
 
-/* Navigation: a drawer on phones, a fixed left rail from 900px. Overview, then the Access and Daemon groups, then the
-   footer (daemon chip, Show host commands, Sign out) at the bottom. */
+/* Navigation: from 900px a fixed left rail with Overview, then the Access and Daemon groups, then the footer (daemon
+   chip, Show host commands, Sign out) at the bottom. Below 900px there is no rail: a bottom bar carries Overview,
+   Pairing and Apps, and its More opens the rest of the rail as a sheet above the bar. */
 .nav {
   position: fixed;
   z-index: 2;
-  top: var(--topbar-h);
+  top: 0;
   bottom: 0;
   left: 0;
   display: flex;
   flex-direction: column;
-  width: min(86vw, var(--rail-w));
+  width: var(--rail-w);
   padding: 14px 10px max(14px, env(safe-area-inset-bottom));
   background: var(--panel);
   border-right: 1px solid var(--line);
   overflow-y: auto;
-  transform: translateX(-105%);
-  transition: transform .2s ease;
 }
-body.menu-open .nav { transform: none; }
-body.menu-open::after {
-  content: "";
-  position: fixed;
-  inset: var(--topbar-h) 0 0 0;
-  background: var(--backdrop);
-  z-index: 1;
-}
-.rail-brand { display: none; padding: 0 8px; margin-bottom: 8px; }
+.rail-brand { display: inline-flex; padding: 0 8px; margin-bottom: 8px; }
 .nav-sections { flex: 1 0 auto; }
 .nav ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .nav-group {
@@ -251,6 +228,44 @@ body.menu-open::after {
 .signout { display: flex; align-items: center; gap: 8px; padding: 0 10px; border-color: transparent; font-size: .9rem; }
 .signout .nav-icon { color: currentColor; }
 
+/* The bottom bar, as on the Stables phone: an icon over a short label, the current one in the accent colour, and the
+   Pairing badge at the icon's top right. More lights up for a section from its sheet. */
+.tabbar { display: none; }
+.tab {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-height: var(--tap);
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: .6875rem;
+  font-weight: 600;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: pointer;
+}
+.tab .nav-icon { width: 24px; height: 24px; color: currentColor; }
+.tab[aria-current="page"], .tab.current { color: var(--accent); }
+.tab .nav-badge {
+  position: absolute;
+  top: 0;
+  left: calc(50% + 6px);
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  font-size: .6875rem;
+  line-height: 18px;
+}
+
 .main {
   max-width: 1100px;
   margin: 0 auto;
@@ -261,16 +276,61 @@ body.menu-open::after {
 .banner-slot:empty { display: none; }
 
 @media (min-width: 900px) {
-  body:not(.signed-out) .topbar { display: none; }
-  .nav { top: 0; transform: none; transition: none; }
-  .rail-brand { display: inline-flex; }
-  body.menu-open::after { display: none; }
   body:not(.signed-out) .main { margin-left: var(--rail-w); padding: 28px 44px; }
 }
 
 /* Pages and cards. */
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .page-head h1 { margin: 0; font-size: 1.6rem; }
+
+@media (max-width: 899.98px) {
+  body:not(.signed-out) .tabbar:not([hidden]) {
+    position: fixed;
+    z-index: 3;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    gap: 4px;
+    height: var(--tabbar-h);
+    padding: 6px max(8px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+  }
+  /* The More sheet slides up from behind the bar; closed, it is hidden from the keyboard and screen readers too. */
+  .nav {
+    top: auto;
+    right: 0;
+    bottom: var(--tabbar-h);
+    width: auto;
+    max-height: calc(100% - var(--tabbar-h) - max(24px, env(safe-area-inset-top)));
+    padding: 6px max(10px, env(safe-area-inset-right)) 12px max(10px, env(safe-area-inset-left));
+    border-right: 0;
+    border-top: 1px solid var(--line);
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -10px 30px var(--shadow);
+    transform: translateY(calc(100% + var(--tabbar-h)));
+    visibility: hidden;
+    transition: transform .2s ease, visibility 0s linear .2s;
+  }
+  body.menu-open .nav { transform: none; visibility: visible; transition: transform .2s ease; }
+  body.menu-open::after {
+    content: "";
+    position: fixed;
+    inset: 0 0 var(--tabbar-h) 0;
+    z-index: 1;
+    background: var(--backdrop);
+  }
+  .rail-brand, .nav .on-bar { display: none; }
+  .rail-foot { margin-top: 10px; }
+  /* No top bar: the page head is the header, with a large title and the daemon chip beside it (app.mjs). */
+  body:not(.signed-out) .main {
+    padding-top: max(16px, env(safe-area-inset-top));
+    padding-bottom: calc(var(--tabbar-h) + 24px);
+  }
+  .page-head h1 { font-size: 1.75rem; letter-spacing: -.02em; }
+  .page-head > .daemon-chip { align-self: center; justify-self: start; margin: 0; }
+}
 
 .grid { display: grid; gap: 16px; grid-template-columns: 1fr; margin-top: 16px; }
 @media (min-width: 700px) { .grid { grid-template-columns: 1fr 1fr; } .span { grid-column: 1 / -1; } }
@@ -295,6 +355,10 @@ body.menu-open::after {
 .notice.bad { background: var(--bad-bg); color: var(--bad); }
 /* An empty notice (no message yet) takes no space: only a real message shows its box. */
 .notice:empty { display: none; }
+/* A write's outcome inside the card that was acted on (decision 5 of #65); cards drawn edge to edge inset it. */
+.card > .notice[data-field="notice"], .apps-detail > .notice[data-field="notice"] { margin: 12px 0 0; }
+.card.decision > .notice[data-field="notice"], .card.market-entry > .notice[data-field="notice"],
+.card.modules-table > .notice[data-field="notice"] { margin: 0 22px 18px; }
 
 .command {
   display: flex;
@@ -719,7 +783,6 @@ details summary { min-height: var(--tap); display: flex; align-items: center; cu
 
 /* Sign in (Hub design 5): the brand over one centred card with numbered steps; the error is a banner of sentences,
    and the Docker variant opens from a chevron. Signed out there is no top bar at any width. */
-body.signed-out .topbar { display: none; }
 .signin { max-width: 560px; margin: 0 auto; padding: 72px 0 24px; }
 .signin-brand {
   display: flex;
@@ -937,6 +1000,8 @@ body.signed-out .topbar { display: none; }
   .settings-dock { padding: 10px; }
   .savebar .btn { flex: 1 1 auto; }
 }
+/* Below 900px the save bar sticks above the bottom bar. */
+@media (max-width: 899.98px) { .settings-dock { bottom: calc(var(--tabbar-h) + 12px); } }
 
 .module-facts { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
 .module-facts dt, .grid .card h2 { overflow-wrap: anywhere; }
@@ -949,6 +1014,8 @@ body.signed-out .topbar { display: none; }
 .apps-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 28px; }
 .apps-layout.has-detail .apps-keys { display: none; }
 .card.apps-table { padding: 0; overflow: hidden; border-radius: 14px; }
+/* No apps paired yet, under a table that lists only this Hub's own key. */
+.card.apps-table + .card.empty { margin-top: 12px; }
 .apps-table .table td { overflow-wrap: normal; }
 .apps-table .table td.nowrap { white-space: nowrap; }
 .apps-table tbody tr[data-app-id] { cursor: pointer; }
