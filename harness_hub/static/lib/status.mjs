@@ -152,7 +152,7 @@ export function subscribe(listener) {
 }
 
 // An accepted restart is evidence even if the owner navigates away before the first health poll. Its request
-// order shares the reads' counter so a late acceptance cannot replace a newer completed health observation.
+// order is allocated at acceptance, so health already in flight cannot settle it.
 export function noteRestart(started) {
   reads = Math.max(reads, started);
   restart(true, started);

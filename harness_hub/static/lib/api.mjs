@@ -46,7 +46,8 @@ export async function api(path, { method = "GET", body } = {}) {
   }
   // The shell uses the reads the pages make and accepted restarts, even when navigation skips the health poll.
   if (method === "GET" && path !== "session") noteRead(path.split("?")[0], response.status, data, order);
-  if (method === "POST" && path === "settings/restart" && response.ok && data?.accepted === true) noteRestart(order);
+  // Acceptance is new evidence: only health requested after it can settle this restart.
+  if (method === "POST" && path === "settings/restart" && response.ok && data?.accepted === true) noteRestart(++started);
   if (!response.ok) {
     if (response.status === 401 && path !== "session") window.dispatchEvent(new CustomEvent("hub:signed-out"));
     throw new ApiError(response.status, data);

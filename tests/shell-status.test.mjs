@@ -479,7 +479,7 @@ test("an accepted restart settles a warning even when navigation skips every act
 });
 
 
-test("a delayed restart acceptance cannot restore a restart after newer confirmed health", async (t) => {
+test("health requested before restart acceptance cannot settle that accepted restart", async (t) => {
   resetStatus();
   const originalFetch = globalThis.fetch;
   const originalStorage = globalThis.sessionStorage;
@@ -500,6 +500,8 @@ test("a delayed restart acceptance cannot restore a restart after newer confirme
   assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
   accept();
   await pending;
+  assert.equal(daemonBanner().title, "The daemon is restarting.");
+  await api("overview");
   assert.equal(daemonBanner(), null);
   // A subsequent Settings read that still asks for a restart is newer evidence.
   await api("settings/config");
