@@ -161,7 +161,7 @@ test("edit sends only the changed fields after a question in the pane", async ({
   await expect(pane(page)).toContainText("That is 10 GiB.");
   await pane(page).getByRole("button", { name: "Save changes" }).click();
   await expect(asked(page)).toContainText("Synthetic member → Renamed member");
-  await expect(asked(page)).toContainText("20 GiB → 10 GiB"); expect(writes).toHaveLength(0);
+  await expect(asked(page)).toContainText("20 GiB (21,474,836,480 bytes) → 10 GiB (10,737,418,240 bytes)"); expect(writes).toHaveLength(0);
   await page.getByRole("button", { name: "Confirm update member", exact: true }).click();
   await expect.poll(() => writes.length).toBe(1);
   expect(writes[0]).toEqual({ id: "account_save", method: "PATCH", target: { user_id: "u-synthetic" },
@@ -169,6 +169,15 @@ test("edit sends only the changed fields after a question in the pane", async ({
   await expect(pane(page).getByRole("button", { name: "Edit member" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Renamed member", level: 2 })).toBeVisible();
   await expect(pane(page)).toContainText("0 B of 10 GiB");
+  expect(errors).toEqual([]);
+});
+
+test("a quota change the rounded size hides still shows in the question", async ({ page }) => {
+  const { errors } = await mount(page, { overrides: { accounts: [{ ...member, disk_quota_bytes: 12 * 1024 ** 3 }] } });
+  await pane(page).getByRole("button", { name: "Edit member" }).click();
+  await pane(page).getByLabel("Disk quota in bytes").fill(String(12 * 1024 ** 3 - 400 * 1024 ** 2));
+  await pane(page).getByRole("button", { name: "Save changes" }).click();
+  await expect(asked(page)).toContainText("12 GiB (12,884,901,888 bytes) → 12 GiB (12,465,471,488 bytes)");
   expect(errors).toEqual([]);
 });
 

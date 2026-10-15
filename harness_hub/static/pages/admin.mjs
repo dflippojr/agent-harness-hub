@@ -70,7 +70,8 @@ function quotaHint(value) {
 }
 function shown(name, value) {
   if (value === undefined || value === null || value === "") return "None";
-  return name === "disk_quota_bytes" && typeof value === "number" ? size(value) : String(value);
+  // A quota names its exact bytes too: a rounded size alone can read the same before and after a real change.
+  return name === "disk_quota_bytes" && typeof value === "number" ? `${size(value)} (${value.toLocaleString()} bytes)` : String(value);
 }
 
 export function renderAdmin(main) {
