@@ -9,10 +9,14 @@ const CLI_PARITY_SECTIONS = ["admin", "apps", "marketplace", "modules", "pairing
 async function expectTapTargets(scope, context) {
   const targets = scope.locator("button:visible, a:visible, summary:visible, label:has([role=switch]):visible, .command:visible");
   for (const target of await targets.all()) {
-    const { name, iconOnly } = await target.evaluate((el) => ({
-      name: `${el.tagName.toLowerCase()} ${el.getAttribute("aria-label") || el.textContent.trim() || el.title}`,
-      iconOnly: el.matches("button") && !el.textContent.trim(),
-    }));
+    const { name, iconOnly } = await target.evaluate((el) => {
+      const visibleLabel = el.cloneNode(true);
+      visibleLabel.querySelectorAll("svg, .visually-hidden, [hidden]").forEach((child) => child.remove());
+      return {
+        name: `${el.tagName.toLowerCase()} ${el.getAttribute("aria-label") || el.textContent.trim() || el.title}`,
+        iconOnly: el.matches("button") && !visibleLabel.textContent.trim(),
+      };
+    });
     const box = await target.boundingBox();
     expect(box.height, `${context}: ${name} height`).toBeGreaterThanOrEqual(44);
     if (iconOnly) expect(box.width, `${context}: ${name} width`).toBeGreaterThanOrEqual(44);
