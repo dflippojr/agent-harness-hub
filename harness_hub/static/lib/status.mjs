@@ -20,6 +20,7 @@ let ownerError = ""; // Overview's owner API failure behind a healthy /health, u
 let restarting = false; // whether a restart the Hub started is still under way
 let restartSeen = 0; // start order of the newest request that found or accepted a Hub restart
 let restartTarget = null; // the target revision of the newest restart this page started, as accepted; null for none
+let targetRecovery = null; // the recovery the daemon last reported when that restart was accepted; null if unknown
 let at = {}; // per piece of state, when the request behind its current value started
 let reads = 0; // request counter for callers that pass no start order (tests)
 const listeners = new Set();
@@ -119,6 +120,9 @@ function health(reported, active, started) {
   if (newer("running", started)) running = reported.config_revision;
   if (reported.config_confirmed === true && newer("confirmed", started)) {
     confirmed = { revision: reported.config_revision, recovery: recoveryKey(reported.recovery), idle: !active, started };
+    // A recovery since that restart threw its revision out, and the daemon may number the next save the same: the
+    // target no longer says what a restart applied.
+    if (restartTarget !== null && confirmed.recovery !== "" && confirmed.recovery !== targetRecovery) restartTarget = null;
     settle();
   }
 }
@@ -165,7 +169,10 @@ export function subscribe(listener) {
 // accepted.
 export function noteRestart(started, target = null) {
   reads = Math.max(reads, started);
-  if (typeof target === "number") restartTarget = target;
+  if (typeof target === "number") {
+    restartTarget = target;
+    targetRecovery = confirmed ? confirmed.recovery : null;
+  }
   restart(true, started);
   for (const listener of listeners) listener();
 }
@@ -177,7 +184,7 @@ export function resetStatus() {
   ownerError = "";
   restarting = false;
   restartSeen = 0;
-  restartTarget = null;
+  restartTarget = targetRecovery = null;
   at = {};
   reads = 0;
 }

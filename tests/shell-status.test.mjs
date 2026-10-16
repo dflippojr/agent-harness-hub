@@ -223,6 +223,16 @@ test("a Settings read made during this page's restart is settled when that resta
   assert.equal(daemonBanner(), null);
 });
 
+test("a restart that recovered no longer covers a revision saved after it, even one numbered the same", () => {
+  resetStatus();
+  noteRead("settings/health", 200, confirmedAt(3), 1);
+  noteRestart(2, 4);
+  // Revision 4 fails to boot: the daemon restores revision 3, and the next save is numbered 4 again.
+  noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true, recovery: LKG }, 3);
+  noteRead("settings/health", 200, { ...confirmedAt(3), health: { ...confirmedAt(3).health, recovery: LKG } }, 4);
+  assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
+});
+
 test("a Settings config reply older than the health that settled the restart cannot restore it", () => {
   resetStatus();
   noteRead("settings/config", 200, { revision: 2, pending_revision: 2, restart_required: true }, 1);
