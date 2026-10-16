@@ -254,6 +254,16 @@ test("a recovery Settings reported before this page's restart is not one of it, 
   assert.equal(daemonBanner(), null);
 });
 
+test("a Settings read started before the health that settled the last one still counts when it answers", () => {
+  resetStatus();
+  noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true, recovery: null }, 1);
+  // Health finds a recovery and settles that read; a Settings read started before it saw a save made since.
+  noteRead("settings/health", 200, { ...confirmedAt(3), health: { ...confirmedAt(3).health, recovery: LKG } }, 3);
+  assert.equal(daemonBanner(), null);
+  noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true, recovery: LKG }, 2);
+  assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
+});
+
 test("a Settings config reply older than the health that settled the restart cannot restore it", () => {
   resetStatus();
   noteRead("settings/config", 200, { revision: 2, pending_revision: 2, restart_required: true }, 1);

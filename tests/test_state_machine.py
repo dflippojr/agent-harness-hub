@@ -334,6 +334,8 @@ class HubMachine(RuleBasedStateMachine):
         while not read.gate.reached.wait(0.005):
             assert not read.future.done(), read.future.result().text  # the page answered without asking the daemon
             assert time.monotonic() < deadline, f"{page} never asked the daemon for {read.gate.path}"
+        if not before:
+            self._sync()  # the daemon answered it: health may have found the restarted daemon booted
         self.in_flight.append(read)
 
     @precondition(lambda self: self.in_flight)
@@ -537,3 +539,27 @@ def test_143_a_recovery_known_from_settings_is_not_a_recovery_of_the_next_restar
     machine.visit("overview")
     assert machine.applied == 4 and machine.fake.pending_revision is None
     assert machine.shown["banner"] is None, machine.shown
+
+
+def test_143_health_that_settles_a_read_does_not_discard_an_earlier_started_one(machine):
+    """Review of #148: a Settings read starts before a health read but reaches the daemon after it. Health settles
+    the read the shell holds (by a recovery, or by this page's restart ending); the earlier-started read then shows a
+    revision saved since, and must not be thrown away as older."""
+    for ends in ("recovers", "boots"):
+        machine.save("listen.idle", 2)
+        machine.visit("settings/config")
+        machine.restart()
+        if ends == "boots":
+            machine.finish_restart()
+        machine.begin_read("settings/config", before=True)
+        if ends == "recovers":
+            machine.restart_recovers()
+        machine.begin_read("settings/health")
+        machine.save("listen.idle", 3)
+        machine.finish(1)
+        machine.finish(0)
+        assert machine.shown["banner"]["title"] == "Restart needed to apply saved settings.", (ends, machine.shown)
+        machine.restart()
+        machine.finish_restart()
+        machine.visit("settings/health")
+        machine.visit("settings/config")

@@ -13,7 +13,7 @@ let lastGood = null; // the last overview answer that reached the daemon
 let attention = null; // { approve, confirm }: App pairing requests waiting on the owner
 let config = null; // the last Settings read: { revision, pending_revision, restart_required, recovery }
 let running = null; // the settings revision the daemon reported in its last health answer
-let confirmed = null; // { revision, recovery, idle, started }: the newest health answer with a confirmed revision
+let confirmed = null; // { recovery, idle, started }: the newest health answer with a confirmed revision
 let silent = null; // whether the latest evidence says the daemon is not answering; null before any
 let unhealthy = false; // whether the latest evidence is the daemon answering /health with an error (a 503 mid-restart)
 let ownerError = ""; // Overview's owner API failure behind a healthy /health, until an owner API read answers
@@ -120,7 +120,7 @@ function health(reported, active, started) {
   if (!reported || typeof reported.config_revision !== "number") return;
   if (newer("running", started)) running = reported.config_revision;
   if (reported.config_confirmed === true && newer("confirmed", started)) {
-    confirmed = { revision: reported.config_revision, recovery: recoveryKey(reported.recovery), idle: !active, started };
+    confirmed = { recovery: recoveryKey(reported.recovery), idle: !active, started };
     // A recovery since that restart threw its revision out, and the daemon may number the next save the same: the
     // target no longer says what a restart applied.
     if (restartTarget !== null && started > targetAt && confirmed.recovery !== "" && !targetRecoveries.has(confirmed.recovery)) {
@@ -156,10 +156,9 @@ function settle() {
   const over = confirmed.idle && confirmed.started > restartSeen;
   const covered = typeof saved === "number" ? typeof restartTarget === "number" && restartTarget >= saved
     : restartSeen > (at.config || 0);
-  if (recovered || (over && covered)) {
-    config = { ...config, restart_required: false, pending_revision: null };
-    at.config = confirmed.started;
-  }
+  // Settings' own order stays: a Settings read that started before this health may have reached the daemon after it,
+  // so its reply still counts, and one that saw no more than this read is settled again the same way.
+  if (recovered || (over && covered)) config = { ...config, restart_required: false, pending_revision: null };
 }
 
 export function subscribe(listener) {
