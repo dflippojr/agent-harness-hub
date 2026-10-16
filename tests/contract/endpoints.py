@@ -20,6 +20,7 @@ ADMIN = "/api/admin/v1"
 ERROR = Obj({"detail": STR}, optional={"error": Obj({"code": STR}, optional={
     "message": STR, "retryable": BOOL, "details": MapOf(ANY), "keys": MapOf(Obj({"code": STR, "message": STR}))})})
 NO_BODY = None  # a 204: the Hub reads no body
+EMPTY = Obj()  # a write with nothing to say: the Hub sends {}
 
 # Health and discovery ------------------------------------------------------------------------------------------------
 RECOVERY = Obj(optional={"recovery": STR, "reason": STR | None, "warning": STR | None, "at": NUM | None})
@@ -128,7 +129,6 @@ ACCOUNT_ADD = Obj({"login": STR, "display_name": STR},
 ACCOUNT_SAVE = Obj(optional={"login": STR, "display_name": STR, "enabled": BOOL, "disk_quota_bytes": INT,
                              "max_running": INT, "max_queued": INT})
 CONFIRM = Obj({"confirm": Enum(True)})
-EMPTY = Obj()
 # The household audit rows (#88: the time is `ts`, epoch seconds).
 ACCOUNT_AUDIT = Obj({"id": INT, "ts": NUM, "actor_id": STR, "target_id": STR, "action": STR, "outcome": STR,
                      "detail": STR})
@@ -211,7 +211,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     f"GET {ADMIN}/hub": Endpoint(None, {200: INVENTORY, 400: ERROR, 404: ERROR}),
     # Apps (daemon.APPS_ROUTES) -----------------------------------------------------------------------------------
     f"GET {ADMIN}/keys": Endpoint(None, {200: ListOf(KEY)}),
-    f"DELETE {ADMIN}/keys/{{app_id}}": Endpoint(None, {204: NO_BODY, 404: ERROR, 409: ERROR}),
+    f"DELETE {ADMIN}/keys/{{app_id}}": Endpoint(EMPTY, {204: NO_BODY, 404: ERROR, 409: ERROR}),
     f"GET {ADMIN}/apps/erasures": Endpoint(None, {200: ListOf(ERASURE)}),
     f"GET {ADMIN}/apps/{{app_id}}/limits": Endpoint(None, {200: LIMITS, 404: ERROR}),
     f"PUT {ADMIN}/apps/{{app_id}}/limits": Endpoint(LIMITS_REQUEST, {200: LIMITS, 400: ERROR, 404: ERROR}),

@@ -199,6 +199,7 @@ def test_projects_list_and_add(target):
 
 
 # Remote Control -------------------------------------------------------------------------------------------------------
+PROMOTE = "POST /api/admin/v1/remote-control/discovery/scans/{scan_id}/candidates/{candidate_id}/promote"
 REMOTE = [
     ("GET /api/admin/v1/remote-control", {}, None),
     ("POST /api/admin/v1/remote-control/{project}/trust", {"project": "ui"}, {}),
@@ -206,8 +207,7 @@ REMOTE = [
     ("POST /api/admin/v1/remote-control/discovery/scans", {}, {}),
     ("GET /api/admin/v1/remote-control/discovery/scans/{scan_id}", {"scan_id": "scan-contract"}, None),
     ("DELETE /api/admin/v1/remote-control/discovery/scans/{scan_id}", {"scan_id": "scan-contract"}, {}),
-    ("POST /api/admin/v1/remote-control/discovery/scans/{scan_id}/candidates/{candidate_id}/promote",
-     {"scan_id": "scan-contract", "candidate_id": "c-contract"},
+    (PROMOTE, {"scan_id": "scan-contract", "candidate_id": "c-contract"},
      {"slug": "contract", "confirmed_path": "/synthetic/folder", "confirmed_markers": [".git"]}),
 ]
 
@@ -228,8 +228,7 @@ def test_remote_control_lists_folders_scans_promotes_trusts_and_forgets(target):
     ids = {"scan_id": scan["id"]}
     candidate = target.call("GET /api/admin/v1/remote-control/discovery/scans/{scan_id}", ids, expect=200).body[
         "candidates"][0]
-    promoted = target.call("POST /api/admin/v1/remote-control/discovery/scans/{scan_id}/candidates/{candidate_id}"
-                           "/promote", {**ids, "candidate_id": candidate["id"]},
+    promoted = target.call(PROMOTE, {**ids, "candidate_id": candidate["id"]},
                            {"slug": candidate["suggested_slug"], "confirmed_path": candidate["path"],
                             "confirmed_markers": candidate["markers"]}, expect=200).body
     target.call("DELETE /api/admin/v1/remote-control/discovery/scans/{scan_id}", ids, {}, expect=200)

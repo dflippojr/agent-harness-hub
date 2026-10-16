@@ -25,6 +25,7 @@ from harness_hub.server import create_app
 
 from .admin_fake import register_administration
 from .apps_fake import register_apps
+from .contract.targets import check_sent
 from .marketplace_fake import register_marketplace
 from .modules_fake import register_inventory
 from .pairing_fake import register_pairing
@@ -54,6 +55,7 @@ class FakeDaemon:
         self.lose_redeem_replies = 0  # redeems whose 201 is committed here but never reaches the Hub
         self.allowed_logins: object = ["owner@example.test"]  # None: a daemon before Owner API 1.26
         self.owner_api = "1.26"  # the discovery root's api_version
+        self.contract_problems: list[str] = []  # requests the Hub sent outside tests/contract/endpoints.py
         self.app = self._build()
 
     # owner actions on the daemon host
@@ -188,6 +190,8 @@ class FakeDaemon:
 
             async def handle_async_request(self, request):
                 fake.sent.append(str(request.url))
+                fake.contract_problems += check_sent(request.method, request.url.path, await request.aread(),
+                                                     dict(request.url.params))
                 fake.timeouts[request.url.path] = request.extensions.get("timeout", {})
                 if fake.down:
                     raise httpx.ConnectError("refused", request=request)
@@ -260,6 +264,7 @@ def make_hub(tmp_path, fake_daemon):
     yield make
     for client in clients:
         client.__exit__(None, None, None)
+    assert not fake_daemon.contract_problems, f"requests outside the daemon contract: {fake_daemon.contract_problems}"
 
 
 @pytest.fixture

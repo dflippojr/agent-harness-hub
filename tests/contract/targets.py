@@ -14,6 +14,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -71,6 +72,30 @@ def check_request(key: str, body: Any, params: dict | None = None) -> list[str]:
     if params:
         problems += endpoint.params.errors(params, "query") if endpoint.params else [f"{key} takes no query string"]
     return problems
+
+
+_ROUTES = [(key, re.compile(re.sub(r"\\{[^}]*\\}", "[^/]+", re.escape(key.split(" ", 1)[1])) + "$"))
+           for key in ENDPOINTS]
+
+
+def endpoint_for(method: str, path: str) -> str | None:
+    """The contract key a request on the wire is for, or None."""
+    return next((key for key, pattern in _ROUTES if key.startswith(method + " ") and pattern.match(path)), None)
+
+
+def check_sent(method: str, path: str, raw: bytes, query: dict[str, str]) -> list[str]:
+    """What is wrong with one request the Hub sent: the route, the JSON body and the query field names."""
+    key = endpoint_for(method, path)
+    if key is None:
+        return [f"the Hub called {method} {path}, which is not a contract endpoint"]
+    try:
+        body = json.loads(raw) if raw else None
+    except ValueError:
+        return [f"{key}: the body is not JSON"]
+    problems = check_request(key, body)
+    params = ENDPOINTS[key].params
+    unknown = set(query) - (params.fields() if params else set())
+    return problems + ([f"{key}: unexpected query fields {sorted(unknown)}"] if unknown else [])
 
 
 def check_response(key: str, status: int, body: Any) -> list[str]:

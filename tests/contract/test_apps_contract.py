@@ -52,9 +52,10 @@ def test_retention_answers_the_key_row(target):
 
 def test_revoke_schedules_the_erasure_and_never_revokes_the_hub_key(target):
     app_id = target.arrange_app_key("Contract revoke App")
-    target.call("DELETE /api/admin/v1/keys/{app_id}", {"app_id": app_id}, expect=204)
+    target.call("DELETE /api/admin/v1/keys/{app_id}", {"app_id": app_id}, {}, expect=204)
     erasure = next(row for row in target.call("GET /api/admin/v1/apps/erasures", expect=200).body
                    if row["id"] == app_id)
     assert erasure["erase_after"] > erasure["revoked_at"]
-    target.call("DELETE /api/admin/v1/keys/{app_id}", {"app_id": app_id}, expect=404)
-    assert target.call("DELETE /api/admin/v1/keys/{app_id}", {"app_id": target.key_id}, expect=409).code == "hub_key"
+    target.call("DELETE /api/admin/v1/keys/{app_id}", {"app_id": app_id}, {}, expect=404)
+    hub_key = target.call("DELETE /api/admin/v1/keys/{app_id}", {"app_id": target.key_id}, {}, expect=409)
+    assert hub_key.code == "hub_key"
