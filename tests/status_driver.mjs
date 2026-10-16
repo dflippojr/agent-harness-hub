@@ -2,7 +2,7 @@
 // command per stdin line, one JSON answer per stdout line:
 //   {"op": "reset"}                                          forget everything, as a fresh page load
 //   {"op": "read", "path", "status", "data", "started"}      a Hub GET reply, as api.mjs reports it
-//   {"op": "restart", "started", "target"}                   an accepted restart, as api.mjs reports it
+//   {"op": "restart", "started", "target", "known"}          an accepted restart, as api.mjs reports it
 // Every answer is {"banner": ..., "chip": ...}, what the shell shows after the command.
 import { createInterface } from "node:readline";
 
@@ -15,7 +15,7 @@ lines.on("line", (line) => {
     const command = JSON.parse(line);
     if (command.op === "reset") resetStatus();
     else if (command.op === "read") noteRead(command.path, command.status, command.data, command.started);
-    else if (command.op === "restart") noteRestart(command.started, command.target);
+    else if (command.op === "restart") noteRestart(command.started, command.target, command.known);
     else throw new Error(`unknown op ${command.op}`);
     answer = { banner: daemonBanner(), chip: daemonChip() };
   } catch (error) {

@@ -48,7 +48,7 @@ export async function api(path, { method = "GET", body } = {}) {
   if (method === "GET" && path !== "session") noteRead(path.split("?")[0], response.status, data, order);
   // Acceptance is new evidence: only health requested after it can settle this restart.
   if (method === "POST" && path === "settings/restart" && response.ok && data?.accepted === true) {
-    noteRestart(++started, data.target_revision);
+    noteRestart(++started, data.target_revision, data.known_recoveries);
   }
   if (!response.ok) {
     if (response.status === 401 && path !== "session") window.dispatchEvent(new CustomEvent("hub:signed-out"));

@@ -375,7 +375,8 @@ class HubMachine(RuleBasedStateMachine):
             self.epoch, self.ended, self.target = self.epoch + 1, False, response.json()["target_revision"]
             self.order += 1
             self.restart_evidence = (self.order, True)
-            self.shown = self.shell.send(op="restart", started=self.order, target=self.target)
+            self.shown = self.shell.send(op="restart", started=self.order, target=self.target,
+                                         known=response.json()["known_recoveries"])
             self._check_shell()
         self._sync()
 
@@ -563,3 +564,21 @@ def test_143_health_that_settles_a_read_does_not_discard_an_earlier_started_one(
         machine.finish_restart()
         machine.visit("settings/health")
         machine.visit("settings/config")
+
+
+def test_143_a_recovery_the_page_never_saw_before_a_restart_is_not_one_of_it(machine):
+    """Review of #148 at 58e6904: a restart recovers (R) while this page reads nothing, and a save reuses its target. A
+    Settings read samples that pending revision and R but answers only after the next restart is accepted, so the page
+    alone cannot tell R from a recovery of that restart. The Hub had R from the save's reply before it accepted the
+    restart and names it in the 202, so the restart's healthy answer, which still reports R, clears restart needed."""
+    machine.save("listen.idle", 2)
+    machine.restart()
+    machine.restart_recovers()
+    machine.save("listen.idle", 3)  # revision 4 again
+    machine.begin_read("settings/config")
+    machine.restart()
+    machine.finish(0)
+    machine.finish_restart()
+    machine.visit("overview")
+    assert machine.applied == 4 and machine.fake.pending_revision is None
+    assert machine.shown["banner"] is None, machine.shown

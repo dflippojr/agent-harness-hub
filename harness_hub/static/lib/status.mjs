@@ -20,7 +20,7 @@ let ownerError = ""; // Overview's owner API failure behind a healthy /health, u
 let restarting = false; // whether a restart the Hub started is still under way
 let restartSeen = 0; // start order of the newest request that found or accepted a Hub restart
 let restartTarget = null; // the target revision of the newest restart this page started, as accepted; null for none
-let targetRecoveries = new Set(); // the recoveries Settings or health had reported when that restart was accepted
+let targetRecoveries = new Set(); // the recoveries known when that restart was accepted, here or by the Hub
 let targetAt = 0; // that restart's start order: only health requested after it can show it recovered
 let at = {}; // per piece of state, when the request behind its current value started
 let reads = 0; // request counter for callers that pass no start order (tests)
@@ -168,15 +168,17 @@ export function subscribe(listener) {
 
 // An accepted restart is evidence even if the owner navigates away before the first health poll. Its request
 // order is allocated at acceptance, so health already in flight cannot settle it. `target` is its target revision as
-// accepted.
-export function noteRestart(started, target = null) {
+// accepted, and `known` the recoveries the Hub had from the daemon before it accepted the restart.
+export function noteRestart(started, target = null, known = []) {
   reads = Math.max(reads, started);
   if (typeof target === "number") {
     restartTarget = target;
     targetAt = started;
     // Every recovery already reported, by Settings and by health alike: which request started later does not say which
     // sampled the daemon later, and each recovery is identified by when it happened, so one of this restart is new.
-    targetRecoveries = new Set([config ? recoveryKey(config.recovery) : "", confirmed ? confirmed.recovery : ""]);
+    // A reply this page has not had yet may also predate the restart; the Hub names every recovery it had (#143).
+    targetRecoveries = new Set([config ? recoveryKey(config.recovery) : "", confirmed ? confirmed.recovery : "",
+      ...(Array.isArray(known) ? known.map(recoveryKey) : [])]);
   }
   restart(true, started);
   for (const listener of listeners) listener();

@@ -150,6 +150,30 @@ def test_overview_ends_a_restart_that_recovery_resolved_at_a_lower_revision(clai
     assert claimed.get("/api/settings/health").json()["restarting"] is False
 
 
+def test_a_restart_reply_names_the_recoveries_the_hub_had_before_accepting_it(claimed, fake_daemon):
+    # #143: the shell cannot tell a recovery from before a restart from one of it when a reply that predates the restart
+    # answers after it; the Hub had every such reply first, so it names their recoveries in the 202.
+    started = write(claimed, "POST", "restart", {"revision": 3, "confirm": True})
+    assert started.status_code == 202 and started.json()["known_recoveries"] == []
+    fake_daemon.restart_requested, fake_daemon.restart_polls = False, 0
+    first = {"recovery": "lkg_restore", "reason": "synthetic boot failure", "at": 50}
+    fake_daemon.recovery = first
+    saved = write(claimed, "PATCH", "config", {"revision": 3, "changes": {"listen.idle": 2.0}})  # only a save sees it
+    assert saved.status_code == 200
+    fake_daemon.recovery = {**first, "at": 60}
+    assert claimed.get("/api/settings/health").json()["health"]["recovery"]["at"] == 60
+    started = write(claimed, "POST", "restart", {"revision": 4, "confirm": True})
+    assert [row["at"] for row in started.json()["known_recoveries"]] == [50, 60]
+    assert started.json()["known_recoveries"][0] == saved.json()["recovery"]
+    # Bounded: the oldest are forgotten first.
+    fake_daemon.restart_requested, fake_daemon.restart_polls = False, 0
+    for at in range(61, 61 + server.KNOWN_RECOVERIES):
+        fake_daemon.recovery = {**first, "at": at}
+        claimed.get("/api/overview")
+    started = write(claimed, "POST", "restart", {"revision": 4, "confirm": True})
+    assert [row["at"] for row in started.json()["known_recoveries"]] == list(range(61, 61 + server.KNOWN_RECOVERIES))
+
+
 def test_a_health_error_is_the_daemon_answering_not_silence(claimed, fake_daemon):
     # A daemon that answers /health with 503 mid-restart is answering: the shell shows the restart, not an outage.
     started = write(claimed, "POST", "restart", {"revision": 3, "confirm": True})

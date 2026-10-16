@@ -254,6 +254,19 @@ test("a recovery Settings reported before this page's restart is not one of it, 
   assert.equal(daemonBanner(), null);
 });
 
+test("a recovery the Hub knew before accepting this page's restart is not one of it, though this page never saw it", () => {
+  for (const known of [[LKG], []]) {
+    resetStatus();
+    // The read sampled the daemon before the restart but answers after it was accepted.
+    noteRestart(2, 4, known);
+    noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true, recovery: LKG }, 1);
+    noteRead("overview", 200, answer({ health: { config_revision: 4, config_confirmed: true, recovery: LKG } }), 3);
+    // Unless the Hub names it, the recovery may be this restart's, with a save that reused revision 4 still pending.
+    if (known.length) assert.equal(daemonBanner(), null);
+    else assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
+  }
+});
+
 test("a Settings read started before the health that settled the last one still counts when it answers", () => {
   resetStatus();
   noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true, recovery: null }, 1);
