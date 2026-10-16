@@ -55,3 +55,15 @@ test("a used link does not sign in twice", async ({ page }, testInfo) => {
   await second.goto(once);
   await expect(signinCard(second).getByRole("alert")).toHaveText(/sign-in link is not valid/);
 });
+
+test("a malformed link is refused in the page without posting it", async ({ page, errors }, testInfo) => {
+  functionalProject(testInfo);
+  const posts = [];
+  page.on("request", (r) => { if (r.method() === "POST" && new URL(r.url()).pathname === "/api/session") posts.push(r.url()); });
+  await page.goto(`${hubUrl()}/#signin=bogus-code`);
+  await expect(signinCard(page).getByRole("alert")).toHaveText(
+    "That sign-in link is not valid.Links work once, for ten minutes. Make a new one below.");
+  await expect(page).toHaveURL(/#\/overview$/);
+  expect(posts).toEqual([]);
+  expect(errors).toEqual([]);
+});

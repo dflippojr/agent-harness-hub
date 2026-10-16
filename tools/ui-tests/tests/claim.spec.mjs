@@ -19,6 +19,13 @@ test.describe("claim", () => {
 
   test("start, approve on the host, then claimed after reload", async ({ page, errors }) => {
     await signIn(page, instance.dir);
+    // Before the claim, a page that needs the daemon says so once and links to Overview.
+    await page.goto(`${instance.hub}/#/pairing`);
+    const unclaimed = page.locator(".card.empty");
+    await expect(unclaimed.getByRole("heading", { name: "Claim this Hub first" })).toBeVisible();
+    await expect(unclaimed.getByRole("link", { name: "Go to Overview" })).toHaveAttribute("href", "#/overview");
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await unclaimed.getByRole("link", { name: "Go to Overview" }).click();
     const card = page.getByRole("region", { name: "Claim this daemon" });
     const steps = card.getByRole("list", { name: "Claim steps" });
     await expect(card).toContainText("This Hub has not claimed the daemon yet.");
@@ -48,6 +55,13 @@ test.describe("claim", () => {
     await expect(page.getByRole("button", { name: "Start claim" })).toHaveCount(0);
     await page.reload();
     await expect(tile).toContainText("Claimed");
-    expect(errors).toEqual([]);
+    // Unseeded, the daemon holds only this Hub's own key: Apps says none are paired and where they come from.
+    await page.goto(`${instance.hub}/#/apps`);
+    const empty = page.locator(".card.empty");
+    await expect(empty.getByRole("heading", { name: "No apps paired yet" })).toBeVisible();
+    await expect(empty).toContainText("Only this Hub's own key is listed.");
+    await expect(empty.getByRole("link", { name: "Open Marketplace" })).toHaveAttribute("href", "#/marketplace");
+    // The unclaimed pages' 409s are failed resource loads in the console.
+    expect(errors.filter((e) => !/status of 409/.test(e))).toEqual([]);
   });
 });

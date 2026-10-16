@@ -153,6 +153,37 @@ test("phone: pages fit the device width and the bottom bar navigates", async ({ 
   expect(errors).toEqual([]);
 });
 
+test("phone: a tap on the backdrop closes More and returns focus; taps inside the sheet leave it open",
+  async ({ signedIn: page, errors }, testInfo) => {
+    test.skip(!["phone-dark", "pixel-dark"].includes(testInfo.project.name), "touch: one WebKit and one Chromium phone");
+    await openSection(page, "modules");
+    const more = page.getByRole("button", { name: "More" });
+    const sheet = page.getByRole("navigation", { name: "More sections" });
+    await more.tap();
+    await expect(more).toHaveAttribute("aria-expanded", "true");
+    // Above the sheet, on the dimmed page. Chromium only: WebKit's touch emulation sends no click for a tap on the
+    // backdrop, which the shell's document click handler needs (to check on a real iPhone).
+    if (testInfo.project.name === "pixel-dark") {
+      await page.touchscreen.tap(Math.round(page.viewportSize().width / 2), 60);
+      await expect(more).toHaveAttribute("aria-expanded", "false");
+      await expect(more).toBeFocused();
+    } else await page.keyboard.press("Escape");
+    // A group label is inside the sheet but is neither a link nor a footer control.
+    await more.tap();
+    await sheet.evaluate((el) => Promise.all(el.getAnimations().map((animation) => animation.finished)));
+    await page.locator("#nav .nav-group").first().tap();
+    await expect(more).toHaveAttribute("aria-expanded", "true");
+    await sheet.getByRole("link", { name: "Settings" }).tap();
+    await expect(more).toHaveAttribute("aria-expanded", "false");
+    await expect(page).toHaveURL(/#\/settings$/);
+    // A tab in the bar closes the sheet too.
+    await more.tap();
+    await page.getByRole("navigation", { name: "Sections" }).getByRole("link", { name: "Apps" }).tap();
+    await expect(more).toHaveAttribute("aria-expanded", "false");
+    await expect(page).toHaveURL(/#\/apps$/);
+    expect(errors).toEqual([]);
+  });
+
 test("live resize keeps a partly filled form and a working bottom bar", async ({ signedIn: page, errors }, testInfo) => {
   test.skip(isPhone(testInfo), "desktop projects resize; phones have a fixed device viewport");
   await openSection(page, "settings");
