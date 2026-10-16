@@ -19,7 +19,9 @@ import secrets
 import shutil
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -204,6 +206,34 @@ class FakeTarget(Target):
         self.client.close()
 
 
+class NtfySink:
+    """A loopback stand-in for the ntfy server notifications publish to: it accepts and keeps every message."""
+
+    def __init__(self):
+        received = self.received = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802 - the http.server hook name
+                received.append((self.path, self.rfile.read(int(self.headers.get("content-length") or 0))))
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            do_PUT = do_POST  # noqa: N815
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
 class DaemonTarget(Target):
     """A real Agent Harness daemon from a checkout, in fake model mode, on loopback, with throwaway config and data.
 
@@ -215,6 +245,7 @@ class DaemonTarget(Target):
     def __init__(self, src: Path, root: Path, python: str = sys.executable):
         self.src, self.root, self.python = src, root, python
         self.proc: subprocess.Popen | None = None
+        self.ntfy = NtfySink()
         port = ui_instance.free_port()
         self.url = f"http://127.0.0.1:{port}"
         config_dir, _ = ui_instance.write_daemon_config(root, port)
@@ -235,8 +266,8 @@ class DaemonTarget(Target):
 
     def _switch_on_modules(self, config_file: Path) -> None:
         """The add-ons whose owner routes the Hub calls and that run with nothing outside DIR: backups into DIR,
-        instruction skills and notifications (their reviewer and ntfy server are a closed loopback port, so nothing is
-        sent), and a memory library cloned from a bare repo in DIR (a commit identity in DIR's HOME). Images and
+        instruction skills (the hosted reviewer is a closed loopback port, never called), notifications to a loopback
+        ntfy sink, and a memory library cloned from a bare repo in DIR (a commit identity in DIR's HOME). Images and
         Remote Control need ComfyUI or Claude Code, so they stay absent and their cases check the absent answer."""
         config = json.loads(config_file.read_text(encoding="utf-8"))
         seed, bare = self.root / "memory-seed", self.root / "memory.git"
@@ -251,7 +282,7 @@ class DaemonTarget(Target):
             subprocess.run(["git", *argv], env=self.env, check=True, capture_output=True, timeout=60)
         config["modules"].update(backup=True, notifications=True, memory_library=True, skills=True)
         config.update(backup={"enabled": True, "dir": (self.root / "backups").as_posix()},
-                      notify={"enabled": True, "server": "http://127.0.0.1:9", "topic": "contract"},
+                      notify={"enabled": True, "server": self.ntfy.url, "topic": "contract"},
                       skills={"enabled": True, "reviewer_base_url": "http://127.0.0.1:9/v1",
                               "reviewer_model": "contract-reviewer"},
                       memory_library={"enabled": True, "writes": True, "repo": bare.as_posix(),
@@ -311,6 +342,7 @@ class DaemonTarget(Target):
                 self.proc.wait(timeout=15)
         with contextlib.suppress(Exception):
             self.http.close()
+        self.ntfy.close()
         self.log.close()
 
 

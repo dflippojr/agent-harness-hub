@@ -117,4 +117,4 @@ def test_google_signin_reads_its_preflight(target):
 
 
 def test_a_test_notification_answers_whether_it_was_sent(target):
-    target.call("POST /api/admin/v1/notify/test", body={}, expect=200)
+    assert target.call("POST /api/admin/v1/notify/test", body={}, expect=200).body["sent"] is True
