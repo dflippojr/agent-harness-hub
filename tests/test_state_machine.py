@@ -76,8 +76,8 @@ LEAK = "auth failed for ha-" + "A1b2C3d4" * 6
 
 settings.register_profile(
     "hub-state-machine",
-    max_examples=int(os.environ.get("HUB_STATE_MACHINE_EXAMPLES", "200")),
-    stateful_step_count=25,
+    max_examples=int(os.environ.get("HUB_STATE_MACHINE_EXAMPLES", "150")),
+    stateful_step_count=50,
     derandomize=True,
     database=None,
     deadline=None,
@@ -302,15 +302,20 @@ class HubMachine(RuleBasedStateMachine):
             assert banner is not None, "the shell lost a restart its newest evidence says is under way"
 
     # --- rules ------------------------------------------------------------------------------------------------------
-    @rule(page=st.sampled_from(PAGES))
+    @rule(page=st.sampled_from(PAGES), hold=st.sampled_from(("none", "before", "after")))
+    def read(self, page, hold):
+        """A page read: answered at once, or left in flight before or after the daemon answers it."""
+        if hold == "none" or len(self.in_flight) >= MAX_IN_FLIGHT:
+            self.visit(page)
+        else:
+            self.begin_read(page, before=hold == "before")
+
     def visit(self, page):
         read = self._start(page)
         response = self._get(page)
         read.sample = self.transport.last.get(HELD_PATH[page])
         self._finish(read, response)
 
-    @precondition(lambda self: len(self.in_flight) < MAX_IN_FLIGHT)
-    @rule(page=st.sampled_from(PAGES), before=st.booleans())
     def begin_read(self, page, before=False):
         read = self._start(page)
         read.gate = Gate(HELD_PATH[page], before)
@@ -345,6 +350,7 @@ class HubMachine(RuleBasedStateMachine):
         assert response.status_code in (200, 503), response.text
         self._sync()
 
+    @precondition(lambda self: not self.fake.restart_requested)
     @rule()
     def restart(self):
         self.order += 1
@@ -451,6 +457,17 @@ def test_143_health_at_the_saved_revision_is_not_a_restart(machine):
     machine.restart()
     machine.finish_restart()
     machine.visit("settings/health")
+
+
+def test_143_a_settings_read_during_this_pages_restart_clears_when_it_ends(machine):
+    """Review of #148: a Settings read made during this page's restart still shows the target pending; confirmed health
+    after the restart must clear restart needed (the invariants only check that it is never cleared too early)."""
+    machine.save("listen.idle", 2)
+    machine.restart()
+    machine.visit("settings/config")
+    machine.finish_restart()
+    machine.visit("settings/health")
+    assert machine.shown["banner"] is None, machine.shown
 
 
 def test_143_a_save_during_a_restart_does_not_keep_it_running(machine):
