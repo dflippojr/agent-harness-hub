@@ -1,4 +1,5 @@
 // Shared fixtures: a page signed in to the run's Hub, page readiness, overflow and console checks.
+import { createHash, randomBytes } from "node:crypto";
 import { test as base, expect } from "@playwright/test";
 import { signinLink } from "../instance.mjs";
 
@@ -54,6 +55,66 @@ export async function appAsksToPair(request, name, scopes = ["sessions"]) {
     data: { name, scopes, code_challenge: "A".repeat(43), code_challenge_method: "S256" } });
   expect(asked.status()).toBe(201);
   return asked.json();
+}
+
+// An App's PKCE pair: it claims with the challenge and later redeems its own token with the verifier.
+export function pkce() {
+  const verifier = randomBytes(32).toString("base64url");
+  return { verifier, challenge: createHash("sha256").update(verifier).digest("base64url") };
+}
+
+// The Hub's own API from a signed-in tab, with the headers its pages send; for setting up state the journey is not about.
+export async function hubApi(page, path, { method = "GET", body } = {}) {
+  return page.evaluate(async ([path, method, body]) => {
+    const headers = { Accept: "application/json", "X-Hub-Session": sessionStorage.getItem("hub.session") };
+    if (method !== "GET") Object.assign(headers, { "X-Hub-Request": "1", "Content-Type": "application/json" });
+    const response = await fetch(`/api/${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    return { status: response.status, json: await response.json().catch(() => null) };
+  }, [path, method, body]);
+}
+
+// Arm a slot for a Marketplace entry as Set up and Approve would; slots are owner-made, so the daemon's per-source
+// request limit does not apply. Returns the slot.
+export async function armSlot(page, name = "Agent Harness Web") {
+  const { json: view } = await hubApi(page, "marketplace");
+  const entry = view.entries.find((e) => e.name === name);
+  const armed = await hubApi(page, "marketplace/arm", { method: "POST", body: {
+    catalog_app_id: entry.catalog_app_id, scopes: entry.scopes.map((s) => s.scope), consent_digest: entry.consent_digest } });
+  expect(armed.status).toBe(201);
+  return armed.json.request;
+}
+
+// The App claims an armed slot with its challenge; returns the daemon's answer, which holds the code the App shows.
+export async function appClaims(request, id, challenge) {
+  const claimed = await request.post(`${daemonUrl()}/api/v1/pair/requests/${id}/claim`, {
+    data: { code_challenge: challenge, code_challenge_method: "S256" } });
+  expect(claimed.status()).toBe(200);
+  return claimed.json();
+}
+
+// The App fetches its own token once the owner approved; returns the new key's inventory row.
+export async function appRedeems(request, id, verifier) {
+  const redeemed = await request.post(`${daemonUrl()}/api/v1/pair/requests/${id}/token`, { data: { code_verifier: verifier } });
+  expect(redeemed.status()).toBe(201);
+  return (await redeemed.json()).app;
+}
+
+// A paired App with its own key: arm, claim, confirm and redeem, all outside the page.
+export async function pairApp(page, request, name) {
+  const { verifier, challenge } = pkce();
+  const slot = await armSlot(page, name);
+  const { match_code } = await appClaims(request, slot.id, challenge);
+  expect((await hubApi(page, `pairing/${slot.id}/confirm`, { method: "POST", body: { match: match_code } })).status).toBe(200);
+  return appRedeems(request, slot.id, verifier);
+}
+
+// The JSON bodies of the page's writes to one Hub API path, as they leave the browser.
+export function writesTo(page, pathname) {
+  const bodies = [];
+  page.on("request", (r) => {
+    if (r.method() !== "GET" && new URL(r.url()).pathname === pathname) bodies.push(r.postDataJSON());
+  });
+  return bodies;
 }
 
 // HUB-04's save and rollback of Maximum turns, shared by settings.spec.mjs and the verify skill's drive step. The save
