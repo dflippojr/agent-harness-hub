@@ -212,6 +212,17 @@ test("a served Spend read clears an owner API failure; an errored one does not",
   assert.equal(daemonBanner(), null);
 });
 
+test("a Settings read made during this page's restart is settled when that restart ends", () => {
+  resetStatus();
+  noteRestart(1, 4);
+  noteRead("settings/health", 200, RESTARTING, 2);
+  // The daemon keeps revision 4 pending until the restarted process confirms it.
+  noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true }, 3);
+  assert.equal(daemonBanner().title, "The daemon is restarting.");
+  noteRead("settings/health", 200, confirmedAt(4), 4);
+  assert.equal(daemonBanner(), null);
+});
+
 test("a Settings config reply older than the health that settled the restart cannot restore it", () => {
   resetStatus();
   noteRead("settings/config", 200, { revision: 2, pending_revision: 2, restart_required: true }, 1);

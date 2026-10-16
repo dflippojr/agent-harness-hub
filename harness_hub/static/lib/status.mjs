@@ -19,7 +19,7 @@ let unhealthy = false; // whether the latest evidence is the daemon answering /h
 let ownerError = ""; // Overview's owner API failure behind a healthy /health, until an owner API read answers
 let restarting = false; // whether a restart the Hub started is still under way
 let restartSeen = 0; // start order of the newest request that found or accepted a Hub restart
-let restartTarget = null; // the revision this page's own accepted restart boots, or null when it started none
+let restartTarget = null; // the target revision of the newest restart this page started, as accepted; null for none
 let at = {}; // per piece of state, when the request behind its current value started
 let reads = 0; // request counter for callers that pass no start order (tests)
 const listeners = new Set();
@@ -130,20 +130,26 @@ function recoveryKey(recovery) {
 }
 
 // A confirmed health answer newer than the Settings read settles the restart that read asked for, in whichever order
-// the answers arrive, when the daemon reports either: a recovery the read did not report, so the daemon restarted since
-// and threw the pending revision out (lkg_restore or overlay_quarantined), whatever lower revision it now runs; or, with
-// no Hub restart under way any more, the end of one seen after the read (the Hub ends one only on confirmed health at its
-// target or a recovery). That end settles a read with no pending revision, or one whose pending revision this page's own
-// restart targeted; a pending revision saved since, or by another tab during a restart it cannot see the target of,
-// still needs applying. Health's own revision proves nothing here: the daemon reports the saved revision there as soon
-// as it is saved, before any restart applies it (#143).
+// the answers arrive, when the daemon reports any of:
+// - a recovery the read did not report, so the daemon restarted since and threw the pending revision out (lkg_restore
+//   or overlay_quarantined), whatever lower revision it now runs;
+// - with no Hub restart under way any more, as health requested after the last sign of one says (the Hub ends one only
+//   on confirmed health at or past its target, or a recovery): the end of a restart this page started whose target is
+//   at or past the read's pending revision, whenever the read was made (the daemon keeps a pending revision only until
+//   the restart that boots it, so the read saw it before that restart ended); or, for a read with no pending revision,
+//   the end of a restart seen after the read.
+// Nothing else settles a known pending revision. Health's own revision proves nothing: the daemon reports a revision
+// there as soon as it is saved, before any restart applies it (#143). A revision saved during a restart may or may not
+// be in the boot, and health looks the same either way, so it waits for a Settings read; so does a restart another tab
+// started, whose target this page never saw.
 function settle() {
   if (!config || !config.restart_required || !confirmed || confirmed.started < (at.config || 0)) return;
   const saved = config.pending_revision;
   const recovered = confirmed.recovery !== "" && confirmed.recovery !== recoveryKey(config.recovery);
-  const restarted = confirmed.idle && restartSeen > (at.config || 0) && confirmed.started > restartSeen;
-  const covered = typeof saved !== "number" || (typeof restartTarget === "number" && restartTarget >= saved);
-  if (recovered || (restarted && covered)) {
+  const over = confirmed.idle && confirmed.started > restartSeen;
+  const covered = typeof saved === "number" ? typeof restartTarget === "number" && restartTarget >= saved
+    : restartSeen > (at.config || 0);
+  if (recovered || (over && covered)) {
     config = { ...config, restart_required: false, pending_revision: null };
     at.config = confirmed.started;
   }
@@ -155,7 +161,8 @@ export function subscribe(listener) {
 }
 
 // An accepted restart is evidence even if the owner navigates away before the first health poll. Its request
-// order is allocated at acceptance, so health already in flight cannot settle it. `target` is the revision it boots.
+// order is allocated at acceptance, so health already in flight cannot settle it. `target` is its target revision as
+// accepted.
 export function noteRestart(started, target = null) {
   reads = Math.max(reads, started);
   if (typeof target === "number") restartTarget = target;
