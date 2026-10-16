@@ -20,7 +20,7 @@ let ownerError = ""; // Overview's owner API failure behind a healthy /health, u
 let restarting = false; // whether a restart the Hub started is still under way
 let restartSeen = 0; // start order of the newest request that found or accepted a Hub restart
 let restartTarget = null; // the target revision of the newest restart this page started, as accepted; null for none
-let targetRecovery = null; // the recovery the daemon last reported when that restart was accepted; null if unknown
+let targetRecoveries = new Set(); // the recoveries Settings or health had reported when that restart was accepted
 let targetAt = 0; // that restart's start order: only health requested after it can show it recovered
 let at = {}; // per piece of state, when the request behind its current value started
 let reads = 0; // request counter for callers that pass no start order (tests)
@@ -123,7 +123,7 @@ function health(reported, active, started) {
     confirmed = { revision: reported.config_revision, recovery: recoveryKey(reported.recovery), idle: !active, started };
     // A recovery since that restart threw its revision out, and the daemon may number the next save the same: the
     // target no longer says what a restart applied.
-    if (restartTarget !== null && started > targetAt && confirmed.recovery !== "" && confirmed.recovery !== targetRecovery) {
+    if (restartTarget !== null && started > targetAt && confirmed.recovery !== "" && !targetRecoveries.has(confirmed.recovery)) {
       restartTarget = null;
     }
     settle();
@@ -175,9 +175,9 @@ export function noteRestart(started, target = null) {
   if (typeof target === "number") {
     restartTarget = target;
     targetAt = started;
-    // The newest evidence of which recovery the daemon reports: health, or a Settings read made since.
-    targetRecovery = config && (!confirmed || (at.config || 0) > confirmed.started) ? recoveryKey(config.recovery)
-      : confirmed ? confirmed.recovery : null;
+    // Every recovery already reported, by Settings and by health alike: which request started later does not say which
+    // sampled the daemon later, and each recovery is identified by when it happened, so one of this restart is new.
+    targetRecoveries = new Set([config ? recoveryKey(config.recovery) : "", confirmed ? confirmed.recovery : ""]);
   }
   restart(true, started);
   for (const listener of listeners) listener();
@@ -190,7 +190,8 @@ export function resetStatus() {
   ownerError = "";
   restarting = false;
   restartSeen = 0;
-  restartTarget = targetRecovery = null;
+  restartTarget = null;
+  targetRecoveries = new Set();
   targetAt = 0;
   at = {};
   reads = 0;

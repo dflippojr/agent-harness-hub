@@ -243,6 +243,17 @@ test("health requested before this page's restart cannot drop its target, whatev
   assert.equal(daemonBanner(), null);
 });
 
+test("a recovery Settings reported before this page's restart is not one of it, though health started later", () => {
+  resetStatus();
+  // Settings started first but sampled the daemon after a recovery; health started second but sampled before it.
+  noteRead("settings/health", 200, confirmedAt(3), 2);
+  noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true, recovery: LKG }, 1);
+  noteRestart(3, 4);
+  // The restart to revision 4 succeeds; the daemon still reports the earlier recovery.
+  noteRead("overview", 200, answer({ health: { config_revision: 4, config_confirmed: true, recovery: LKG } }), 4);
+  assert.equal(daemonBanner(), null);
+});
+
 test("a Settings config reply older than the health that settled the restart cannot restore it", () => {
   resetStatus();
   noteRead("settings/config", 200, { revision: 2, pending_revision: 2, restart_required: true }, 1);

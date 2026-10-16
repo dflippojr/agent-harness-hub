@@ -518,3 +518,22 @@ def test_143_a_save_during_a_restart_does_not_keep_it_running(machine):
     machine.finish_restart()
     machine.visit("settings/health")
     machine.visit("overview")
+
+
+def test_143_a_recovery_known_from_settings_is_not_a_recovery_of_the_next_restart(machine):
+    """Review of #148: Settings starts first but samples the daemon after a restart recovered (R) and a save reused its
+    target; health starts later but sampled before. Accepting the next restart must keep R as known, so its healthy
+    answer, which still reports R, ends that restart and clears restart needed."""
+    machine.begin_read("settings/config", before=True)
+    machine.begin_read("settings/health")
+    machine.save("listen.idle", 2)
+    machine.restart()
+    machine.restart_recovers()
+    machine.save("listen.idle", 3)  # revision 4 again
+    machine.finish(1)
+    machine.finish(0)
+    machine.restart()
+    machine.finish_restart()
+    machine.visit("overview")
+    assert machine.applied == 4 and machine.fake.pending_revision is None
+    assert machine.shown["banner"] is None, machine.shown
