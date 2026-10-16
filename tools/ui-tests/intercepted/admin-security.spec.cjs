@@ -105,20 +105,9 @@ const asked = page => page.getByRole("alert", { name: "Confirm action" });
 // The page notice: under the area control, or in the open member's card after a write on it.
 const notice = page => page.locator("main p.notice[role=status]");
 
-test("disable and cleanup require explicit confirmation; cancel sends nothing", async ({ page }) => {
+// Intercepted: a cleanup that fails (a forced 503); a real cleanup succeeds in accounts.spec.mjs.
+test("a cleanup the daemon cannot run shows its reason", async ({ page }) => {
   const { writes, errors } = await mount(page, { failure: true });
-  await pane(page).getByRole("button", { name: "Disable", exact: true }).click();
-  await expect(asked(page)).toContainText("u-synthetic"); await expect(asked(page)).toContainText("Enabled → Disabled");
-  expect(writes).toHaveLength(0);
-  await asked(page).getByRole("button", { name: "Cancel", exact: true }).click(); expect(writes).toHaveLength(0);
-  await expect(asked(page)).toHaveCount(0);
-  await pane(page).getByRole("button", { name: "Disable", exact: true }).click();
-  await page.getByRole("button", { name: "Confirm update member", exact: true }).click();
-  await expect.poll(() => writes.length).toBe(1);
-  expect(writes[0]).toEqual({ id: "account_save", method: "PATCH", target: { user_id: "u-synthetic" }, body: { enabled: false, confirm: true } });
-  await expect(notice(page)).toHaveText("Daemon accepted update member.");
-  await expect(pane(page).getByRole("button", { name: "Enable", exact: true })).toBeEnabled();
-  await expect(page.getByRole("table", { name: "Members" })).toContainText("Disabled");
   await page.getByRole("button", { name: "Maintenance", exact: true }).click(); await expect(page.getByRole("status")).toHaveText("Current daemon state.");
   await select(page, "cleanup"); await form(page).getByRole("button").click();
   await page.getByRole("button", { name: "Confirm clean up" }).click();
@@ -126,22 +115,14 @@ test("disable and cleanup require explicit confirmation; cancel sends nothing", 
   expect(writes.filter(write => write.id === "cleanup")).toHaveLength(1); expect(errors).toEqual([]);
 });
 
-test("members show readable values and the list and the first member load without a run step", async ({ page }) => {
-  const { reads, errors } = await mount(page, { overrides: { accounts: [member, guest] } });
+// Intercepted: a linked Google account and used disk, which need a real Google sign-in and member work.
+test("a member with a linked Google account and used disk reads Linked and MiB; the footnote names what is not offered", async ({ page }) => {
+  const { errors } = await mount(page, { overrides: { accounts: [member, guest] } });
   const rows = page.getByRole("table", { name: "Members" }).locator("tbody tr");
   await expect(rows).toHaveCount(2);
-  await expect(rows.nth(0)).toContainText("Synthetic member"); await expect(rows.nth(0)).toContainText("member@example.test");
-  await expect(rows.nth(0)).toContainText("Enabled"); await expect(rows.nth(0)).toContainText("0 B");
-  await expect(rows.nth(0)).toContainText("of 20 GiB"); await expect(rows.nth(0)).toContainText("Not linked");
   await expect(rows.nth(1)).toContainText("Disabled"); await expect(rows.nth(1)).toContainText("312 MiB");
   await expect(rows.nth(1)).toContainText("Linked");
   await expect(page.getByRole("heading", { name: "Members" })).toContainText("2");
-  await expect(pane(page)).toContainText("0 B of 20 GiB"); await expect(pane(page)).toContainText("1 running · 2 queued");
-  await expect(pane(page)).toContainText("None yet");
-  await expect(pane(page)).not.toContainText("1760360280"); await expect(pane(page)).not.toContainText("true");
-  expect(reads.map(url => url.pathname)).toEqual(expect.arrayContaining(["/api/manage/accounts", "/api/manage/account"]));
-  expect(reads.find(url => url.pathname === "/api/manage/account").searchParams.get("user_id")).toBe("u-synthetic");
-  await expect(page.getByLabel("Choose action", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Open Synthetic guest" }).click();
   await expect(page.getByRole("heading", { name: "Synthetic guest", level: 2 })).toBeFocused();
   await expect(pane(page).getByRole("button", { name: "Enable", exact: true })).toBeVisible();
@@ -150,38 +131,7 @@ test("members show readable values and the list and the first member load withou
   expect(errors).toEqual([]);
 });
 
-test("edit sends only the changed fields after a question in the pane", async ({ page }) => {
-  const { writes, errors } = await mount(page);
-  await pane(page).getByRole("button", { name: "Edit member" }).click();
-  await expect(pane(page).getByLabel("Display name")).toHaveValue("Synthetic member");
-  await expect(pane(page).getByLabel("Disk quota in bytes")).toHaveValue(String(20 * 1024 ** 3));
-  await pane(page).getByRole("button", { name: "Save changes" }).click();
-  await expect(notice(page)).toContainText("Nothing to save"); expect(writes).toHaveLength(0);
-  await pane(page).getByLabel("Display name").fill("Renamed member");
-  await pane(page).getByLabel("Disk quota in bytes").fill(String(10 * 1024 ** 3));
-  await expect(pane(page)).toContainText("That is 10 GiB.");
-  await pane(page).getByRole("button", { name: "Save changes" }).click();
-  await expect(asked(page)).toContainText("Synthetic member → Renamed member");
-  await expect(asked(page)).toContainText("20 GiB (21,474,836,480 bytes) → 10 GiB (10,737,418,240 bytes)"); expect(writes).toHaveLength(0);
-  await page.getByRole("button", { name: "Confirm update member", exact: true }).click();
-  await expect.poll(() => writes.length).toBe(1);
-  expect(writes[0]).toEqual({ id: "account_save", method: "PATCH", target: { user_id: "u-synthetic" },
-    body: { display_name: "Renamed member", disk_quota_bytes: 10 * 1024 ** 3, confirm: true } });
-  await expect(pane(page).getByRole("button", { name: "Edit member" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Renamed member", level: 2 })).toBeVisible();
-  await expect(pane(page)).toContainText("0 B of 10 GiB");
-  expect(errors).toEqual([]);
-});
-
-test("a quota change the rounded size hides still shows in the question", async ({ page }) => {
-  const { errors } = await mount(page, { overrides: { accounts: [{ ...member, disk_quota_bytes: 12 * 1024 ** 3 }] } });
-  await pane(page).getByRole("button", { name: "Edit member" }).click();
-  await pane(page).getByLabel("Disk quota in bytes").fill(String(12 * 1024 ** 3 - 400 * 1024 ** 2));
-  await pane(page).getByRole("button", { name: "Save changes" }).click();
-  await expect(asked(page)).toContainText("12 GiB (12,884,901,888 bytes) → 12 GiB (12,465,471,488 bytes)");
-  expect(errors).toEqual([]);
-});
-
+// Intercepted: a member read held until after the owner typed (a slow daemon).
 test("a field left as it was filled is not sent, even when a late read changes the daemon's value", async ({ page }) => {
   let release;
   const detail = new Promise(resolve => { release = resolve; });
@@ -200,6 +150,7 @@ test("a field left as it was filled is not sent, even when a late read changes t
   expect(errors).toEqual([]);
 });
 
+// Intercepted: the reread after a write held open (a slow daemon).
 test("a confirmed write takes its question away at once and holds the controls until the reads finish", async ({ page }) => {
   let release;
   const reread = new Promise(resolve => { release = resolve; });
@@ -220,39 +171,7 @@ test("a confirmed write takes its question away at once and holds the controls u
   expect(writes).toHaveLength(1); expect(errors).toEqual([]);
 });
 
-test("Add member is the primary action and sends only what was typed", async ({ page }) => {
-  const { writes, errors } = await mount(page);
-  await page.getByRole("button", { name: "Maintenance", exact: true }).click();
-  await expect(page.getByRole("status")).toHaveText("Current daemon state.");
-  await page.locator("header").getByRole("button", { name: "Add member" }).click();
-  await expect(page.getByRole("button", { name: "Accounts", exact: true })).toHaveAttribute("aria-pressed", "true");
-  await expect(pane(page).getByLabel(/Exact Tailscale login/)).toBeFocused();
-  await pane(page).getByLabel(/Exact Tailscale login/).fill("new@example.test");
-  await pane(page).getByLabel(/Display name/).fill("New member");
-  await expect(pane(page).getByLabel(/Exact Tailscale login/)).toHaveValue("new@example.test");
-  await pane(page).getByRole("button", { name: "Add member" }).click();
-  await expect.poll(() => writes.length).toBe(1);
-  expect(writes[0]).toEqual({ id: "account_add", method: "POST", target: {}, body: { login: "new@example.test", display_name: "New member" } });
-  await expect(notice(page)).toHaveText("Daemon accepted add member.");
-  await expect(page.getByRole("heading", { name: "New member", level: 2 })).toBeVisible();
-  await expect(pane(page)).toHaveAttribute("data-member-id", "u-created");
-  await expect(page.getByRole("table", { name: "Members" }).locator("tr.selected")).toContainText("new@example.test");
-  expect(errors).toEqual([]);
-});
-
-test("erasing the GitHub credential asks inside the danger zone", async ({ page }) => {
-  const { writes, errors } = await mount(page);
-  const zone = pane(page).locator(".danger-zone");
-  await zone.getByRole("button", { name: "Erase GitHub credential" }).click();
-  await expect(zone.getByRole("alert", { name: "Confirm action" })).toContainText("Erase credential?");
-  await expect(zone.getByRole("button", { name: "Confirm erase GitHub credential" })).toHaveClass(/danger/);
-  expect(writes).toHaveLength(0);
-  await zone.getByRole("button", { name: "Confirm erase GitHub credential" }).click();
-  await expect.poll(() => writes.length).toBe(1);
-  expect(writes[0]).toEqual({ id: "github_reset", method: "POST", target: { user_id: "u-synthetic" }, body: { confirm: true } });
-  expect(errors).toEqual([]);
-});
-
+// Intercepted: the list reread failing right after the code was created (a forced 502).
 test("a link code stays shown when the reread after creating it fails", async ({ page }) => {
   let wrote = false;
   const { errors } = await mount(page, { refuse: (id, method) => {
@@ -268,6 +187,7 @@ test("a link code stays shown when the reread after creating it fails", async ({
 
 // The Hub's clock is SERVER_NOW; the browser's runs 20 minutes fast or slow. Expiry is the daemon's epoch seconds (#132).
 const SERVER_NOW = 1760400000;
+// Intercepted: (both tests) the browser clock skewed against the Hub's, while time runs fast.
 for (const skewMinutes of [20, -20]) {
   test(`a link code lives its real lifetime with the browser clock ${skewMinutes} min off`, async ({ page }) => {
     await page.clock.install({ time: (SERVER_NOW + skewMinutes * 60) * 1000 });
@@ -295,6 +215,7 @@ for (const skewMinutes of [20, -20]) {
   });
 }
 
+// Intercepted: a member read that fails while the list read succeeds (a forced 502).
 test("a failed detail read keeps the list's values and says so in the pane", async ({ page }) => {
   const { errors } = await mount(page, { overrides: { account: new Error("Daemon did not answer.") } });
   await expect(pane(page).getByRole("alert")).toContainText("Daemon did not answer.");
@@ -302,31 +223,7 @@ test("a failed detail read keeps the list's values and says so in the pane", asy
   expect(errors).toEqual([]);
 });
 
-test("Google code is shown once and is cleared by navigation and disposal", async ({ page }) => {
-  const { writes, errors } = await mount(page, { overrides: { accounts: [member, guest] } });
-  await pane(page).getByRole("button", { name: "Create link code" }).click();
-  await expect(page.locator("[data-link-code]")).toHaveText("ahg-synthetic-once");
-  await expect(pane(page).getByRole("button", { name: "Dismiss code" })).toBeFocused();
-  await page.getByRole("button", { name: "Open Synthetic guest" }).click();
-  await expect(page.getByText("ahg-synthetic-once")).toHaveCount(0);
-  await page.getByRole("button", { name: "Open Synthetic member" }).click();
-  await pane(page).getByRole("button", { name: "Create link code" }).click();
-  await expect(page.locator("[data-link-code]")).toBeVisible();
-  await page.getByRole("button", { name: "Audit", exact: true }).click();
-  await expect(page.getByText("ahg-synthetic-once")).toHaveCount(0);
-  await page.getByRole("button", { name: "Accounts", exact: true }).click();
-  await pane(page).getByRole("button", { name: "Create link code" }).click();
-  await expect(page.locator("[data-link-code]")).toBeVisible();
-  await pane(page).getByRole("button", { name: "Cancel link code" }).click();
-  await page.getByRole("button", { name: "Confirm cancel Google link code", exact: true }).click();
-  await expect(page.getByText("ahg-synthetic-once")).toHaveCount(0);
-  await pane(page).getByRole("button", { name: "Create link code" }).click();
-  await expect(page.locator("[data-link-code]")).toBeVisible();
-  await page.evaluate(() => window.stopAdmin()); await expect(page.getByText("ahg-synthetic-once")).toHaveCount(0);
-  expect(writes.map(write => write.id)).toEqual(["google_invite", "google_invite", "google_invite", "google_cancel", "google_invite"]);
-  expect(writes[0].target).toEqual({ user_id: "u-synthetic" }); expect(errors).toEqual([]);
-});
-
+// Intercepted: a skill proposal with markup; the fake model daemon has skills off and proposes none.
 test("proposal markup stays text and installation uses the reviewed hash", async ({ page }) => {
   const { writes, errors } = await mount(page);
   await page.getByRole("button", { name: "Skills", exact: true }).click();
@@ -346,6 +243,7 @@ test("proposal markup stays text and installation uses the reviewed hash", async
   expect(errors).toEqual([]);
 });
 
+// Intercepted: an image archive retention preview; the instance turns the image archive off.
 test("retention needs preview and an owner-typed exact phrase", async ({ page }) => {
   const { writes, errors } = await mount(page);
   await page.getByRole("button", { name: "Maintenance", exact: true }).click(); await expect(page.getByRole("status")).toHaveText("Current daemon state.");
@@ -360,33 +258,17 @@ test("retention needs preview and an owner-typed exact phrase", async ({ page })
   expect(errors).toEqual([]);
 });
 
-for (const width of [390, 1280]) test("layout and audit paging at " + width, async ({ page }) => {
-  await page.setViewportSize({ width, height: 900 }); const { reads, errors } = await mount(page, { overrides: { accounts: [member, guest] } });
-  // Rendered targets only: a Host command's lines (and their Copy buttons) stay hidden until its button is pressed.
-  const heights = () => page.locator("button, input, select, textarea").evaluateAll(nodes => nodes
-    .filter(node => node.getClientRects().length).map(node => node.getBoundingClientRect().height));
-  await expect(pane(page)).toContainText("0 B of 20 GiB");
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  expect((await heights()).every(height => height >= 44)).toBe(true);
+// Intercepted: a second audit page, which needs more retained rows than one page holds.
+test("audit paging asks for the page before the last row shown", async ({ page }) => {
+  const { reads, errors } = await mount(page);
   await page.getByRole("button", { name: "Audit", exact: true }).click(); await expect(page.getByRole("button", { name: "Next audit page" })).toBeVisible();
   await expect(form(page).getByRole("button")).toBeEnabled();
   await page.getByRole("button", { name: "Next audit page" }).click();
   await expect.poll(() => reads.some(url => url.searchParams.get("before_id") === "2")).toBe(true);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  expect((await heights()).every(height => height >= 44)).toBe(true); expect(errors).toEqual([]);
-});
-
-
-test("a long login at 320px stays inside the members table's box", async ({ page }) => {
-  await page.setViewportSize({ width: 320, height: 900 });
-  const { errors } = await mount(page, { overrides: { accounts: [{ ...member, login: "householdmemberwithalonglogin@example.test" }] } });
-  await expect(pane(page)).toContainText("0 B of 20 GiB");
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
-  const open = await page.getByRole("button", { name: "Open Synthetic member" }).boundingBox();
-  expect(open.x + open.width).toBeLessThanOrEqual(320);
   expect(errors).toEqual([]);
 });
 
+// Intercepted: a proposal whose review is incomplete; the instance has no skill proposals.
 test("incomplete review blocks both the install shortcut and a manually selected install", async ({ page }) => {
   const { writes } = await mount(page, { overrides: { proposal: { ...proposal, review_complete: false } } });
   await page.getByRole("button", { name: "Skills", exact: true }).click();
@@ -401,6 +283,7 @@ test("incomplete review blocks both the install shortcut and a manually selected
   expect(writes).toHaveLength(0);
 });
 
+// Intercepted: a withheld proposal id beside a safe one, which the daemon never sends.
 test("invalid targets lose only their own actions and safe rows remain actionable", async ({ page }) => {
   await mount(page, { overrides: { skills: { proposals: [{ id: "", title: "[withheld: token-shaped]" }, proposal], installed: [] } } });
   await page.getByRole("button", { name: "Skills", exact: true }).click();
@@ -410,7 +293,7 @@ test("invalid targets lose only their own actions and safe rows remain actionabl
   await expect(good.getByRole("button", { name: "Read proposal" })).toBeEnabled();
 });
 
-
+// Intercepted: an installed skill with a project allowlist; the instance installs no skills.
 test("adding projects confirms a fresh before and after list; empty grants no automatic injection", async ({ page }) => {
   const skill = { slug: "safe-skill", title: "Safe skill", projects: ["old-project"], projects_complete: true };
   const { writes, reads } = await mount(page, { overrides: { skills: { installed: [skill], proposals: [] } } });
@@ -434,6 +317,7 @@ test("adding projects confirms a fresh before and after list; empty grants no au
   expect(writes[0]).toEqual({ id: "skill_projects", method: "PUT", target: { slug: "safe-skill" }, body: { projects: [], confirm: true } });
 });
 
+// Intercepted: a withheld project list on an installed skill, which the daemon never sends.
 test("a redacted current project list cannot authorize an allowlist change", async ({ page }) => {
   const { writes } = await mount(page, { overrides: { skills: { installed: [
     { slug: "safe-skill", title: "Safe skill", projects: ["[withheld: token-shaped]"], projects_complete: false }], proposals: [] } } });
@@ -446,6 +330,7 @@ test("a redacted current project list cannot authorize an allowlist change", asy
   expect(writes).toHaveLength(0);
 });
 
+// Intercepted: withheld skill, folder and audit fields, which the daemon never sends.
 test("redacted skill and folder rows preserve controls on other rows and audit paging", async ({ page }) => {
   const { writes, reads } = await mount(page, { overrides: {
     skills: { proposals: [], installed: [{ slug: "", title: "[withheld: token-shaped]" }, { slug: "safe-skill", title: "Safe skill" }] },
@@ -469,6 +354,7 @@ test("redacted skill and folder rows preserve controls on other rows and audit p
   await expect.poll(() => reads.some(url => url.searchParams.get("before_id") === "2")).toBe(true);
 });
 
+// Intercepted: a folder scan with a withheld candidate; the instance has no runners to scan.
 test("only a fully visible scan candidate gets a promotion control", async ({ page }) => {
   await mount(page, { overrides: { scan: { id: "scan-safe", candidates: [
     { id: "bad", suggested_slug: "bad", path: "[withheld: token-shaped]", markers: [".git"], promotion_available: false },
@@ -478,41 +364,4 @@ test("only a fully visible scan candidate gets a promotion control", async ({ pa
   await form(page).getByRole("button").click();
   await expect(page.getByRole("button", { name: "Add folder bad", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Add folder good", exact: true })).toBeEnabled();
-});
-
-for (const scheme of ["light", "dark"]) {
-  test(`the chosen area segment looks selected in the ${scheme} theme`, async ({ page }) => {
-    await page.emulateMedia({ colorScheme: scheme });
-    const { errors } = await mount(page);
-    await page.getByRole("button", { name: "Audit", exact: true }).click();
-    const area = page.getByRole("group", { name: "Area" });
-    await expect(area.locator('[aria-pressed="true"]')).toHaveText("Audit");
-    // The chosen segment's outline stands out from the track at least 3:1 (non-text contrast).
-    const ratio = await page.evaluate(() => {
-      const rgb = colour => colour.match(/\d+(\.\d+)?/g).slice(0, 3).map(Number);
-      const lum = ([r, g, b]) => [r, g, b].map(v => v / 255).map(v => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
-        .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
-      const track = getComputedStyle(document.querySelector(".segmented")).backgroundColor;
-      const outline = getComputedStyle(document.querySelector('.segmented [aria-pressed="true"]')).borderTopColor;
-      const [a, b] = [outline, track].map(colour => lum(rgb(colour)));
-      return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-    });
-    expect(ratio).toBeGreaterThanOrEqual(3);
-    expect(errors).toEqual([]);
-  });
-}
-
-test("a write's notice stays with the member it acted on, not whichever member is open next", async ({ page }) => {
-  const { errors } = await mount(page, { overrides: { accounts: [member, guest] } });
-  await pane(page).getByRole("button", { name: "Disable", exact: true }).click();
-  await page.getByRole("button", { name: "Confirm update member", exact: true }).click();
-  await expect(pane(page).locator("p.notice[role=status]")).toHaveText("Daemon accepted update member.");
-  await page.getByRole("button", { name: "Open Synthetic guest" }).click();
-  await expect(page.getByRole("heading", { name: "Synthetic guest" })).toBeVisible();
-  // The guest's card holds no notice; it went back under the area control.
-  await expect(pane(page).locator("p.notice")).toHaveCount(0);
-  await expect(page.locator("main > p.notice[role=status]")).toHaveText("Daemon accepted update member.");
-  await page.getByRole("button", { name: "Open Synthetic member" }).click();
-  await expect(pane(page).locator("p.notice[role=status]")).toHaveText("Daemon accepted update member.");
-  expect(errors).toEqual([]);
 });

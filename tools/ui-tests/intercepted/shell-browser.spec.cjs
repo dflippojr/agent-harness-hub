@@ -50,36 +50,7 @@ async function mount(page, hash, { signedIn = true, memoryReply = memory, hubDow
   return { posts, errors, missing };
 }
 
-// Parsing of every malformed shape is in browser-session.test.mjs; this checks that nothing is posted.
-test("a malformed sign-in link is refused without posting it", async ({ page }) => {
-  const { posts, errors } = await mount(page, "#signin=bogus-code", { signedIn: false });
-  await expect(page.getByRole("alert")).toHaveText(
-    "That sign-in link is not valid.Links work once, for ten minutes. Make a new one below.");
-  expect(new URL(page.url()).hash).toBe("#/overview");
-  expect(posts).toEqual([]);
-  expect(errors).toEqual([]);
-});
-
-test("Modules with a healthy inventory shows no empty error box", async ({ page }) => {
-  const { errors } = await mount(page, "#/modules");
-  await expect(page.locator("tr[data-module=hub]")).toContainText("Running");
-  await expect(page.locator(".notice.bad:visible")).toHaveCount(0);
-  for (const alert of await page.locator("[role=alert]:visible").all()) await expect(alert).not.toHaveText("");
-  expect(errors).toEqual([]);
-});
-
-test("Settings explains an absent memory library module instead of an error", async ({ page }) => {
-  const { errors } = await mount(page, "#/settings", { memoryReply: { ...memory, installed: false, enabled: false, profile: "" } });
-  await page.getByRole("button", { name: "Memory agent profile" }).click();
-  const box = page.locator("section.card").filter({ has: page.getByRole("heading", { name: "Memory agent profile" }) });
-  await expect(box).toContainText("The memory library module (memory_library) is not installed or is switched off");
-  await expect(box.getByText("harness config set memory_library.enabled=true", { exact: true })).toBeVisible();
-  await expect(box.getByLabel("Agent profile", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("Not Found")).toHaveCount(0);
-  await expect(box.locator(".notice.bad")).toHaveCount(0);
-  expect(errors).toEqual([]);
-});
-
+// Intercepted: a memory library module; the instance turns memory_library off.
 test("Settings still offers the profile editor when the module is present", async ({ page }) => {
   await mount(page, "#/settings");
   await page.getByRole("button", { name: "Memory agent profile" }).click();
@@ -87,38 +58,7 @@ test("Settings still offers the profile editor when the module is present", asyn
   await expect(page.getByRole("button", { name: "Save profile" })).toBeVisible();
 });
 
-test.describe("phone More sheet", () => {
-  test.use({ viewport: { width: 375, height: 667 }, hasTouch: true, isMobile: true });
-
-  test("a tap on the backdrop closes the sheet and returns focus to More", async ({ page }) => {
-    const { errors } = await mount(page, "#/modules");
-    const more = page.getByRole("button", { name: "More" });
-    await more.tap();
-    await expect(more).toHaveAttribute("aria-expanded", "true");
-    // Above the sheet, on the dimmed page.
-    await page.touchscreen.tap(187, 60);
-    await expect(more).toHaveAttribute("aria-expanded", "false");
-    await expect(more).toBeFocused();
-    await more.tap();
-    await page.getByRole("navigation", { name: "More sections" }).getByRole("link", { name: "Settings" }).tap();
-    await expect(more).toHaveAttribute("aria-expanded", "false");
-    expect(new URL(page.url()).hash).toBe("#/settings");
-    expect(errors.filter(e => !/503/.test(e))).toEqual([]);
-  });
-
-  test("taps inside the sheet leave it open, and a tab in the bar closes it", async ({ page }) => {
-    await mount(page, "#/modules");
-    const more = page.getByRole("button", { name: "More" });
-    await more.tap();
-    // A group label: inside the sheet, but not a link or a footer control.
-    await page.locator("#nav .nav-group").first().tap();
-    await expect(more).toHaveAttribute("aria-expanded", "true");
-    await page.getByRole("navigation", { name: "Sections" }).getByRole("link", { name: "Apps" }).tap();
-    await expect(more).toHaveAttribute("aria-expanded", "false");
-    expect(new URL(page.url()).hash).toBe("#/apps");
-  });
-});
-
+// Intercepted: the daemon going silent behind a running Hub (forced 503s).
 test("a daemon that stops answering raises the banner under the page head, and Retry now reads the page again",
   async ({ page }) => {
     const { errors } = await mount(page, "#/modules");
@@ -140,6 +80,7 @@ test("a daemon that stops answering raises the banner under the page head, and R
     expect(errors.filter(error => !error.includes("503"))).toEqual([]);
   });
 
+// Intercepted: the daemon going silent and answering again while edits are unsaved.
 test("Retry now on Settings reads again in place and keeps unsaved edits", async ({ page }) => {
   const turnsSpec = { key: "sessions.max_turns", label: "Maximum turns", type: "int", minimum: 1, maximum: 500,
     category: "Sessions", apply: "live", default: 80, writable: true };
@@ -169,6 +110,7 @@ test("Retry now on Settings reads again in place and keeps unsaved edits", async
   expect(errors.filter(error => !error.includes("503"))).toEqual([]);
 });
 
+// Intercepted: the Hub server not answering, then answering while the daemon does not.
 test("Settings drops the Hub-down state when Retry reaches the Hub but the daemon still does not answer",
   async ({ page }) => {
     const { errors } = await mount(page, "#/settings", { hubDown: /^\/api\/settings\// });
@@ -183,6 +125,7 @@ test("Settings drops the Hub-down state when Retry reaches the Hub but the daemo
     expect(errors.filter(error => !/ERR_CONNECTION_REFUSED|503/.test(error))).toEqual([]);
   });
 
+// Intercepted: the Hub server itself not answering (aborted requests).
 test("a Hub server that does not answer at start shows its state and a Retry, never \"Failed to fetch\"",
   async ({ page }) => {
     const { errors } = await mount(page, "#/overview", { hubDown: true });
@@ -192,6 +135,7 @@ test("a Hub server that does not answer at start shows its state and a Retry, ne
     expect(errors.filter(error => !error.includes("ERR_CONNECTION_REFUSED"))).toEqual([]);
   });
 
+// Intercepted: a claim whose key reply never arrived, which the daemon cannot be made to lose.
 test("a claim whose key reply was lost shows the release command beside Start a new claim", async ({ page }) => {
   const claim = { state: "lost", release_command: "harness hub release --confirm",
     message: "The daemon issued this Hub's key, but the reply never arrived. On the daemon host run "

@@ -259,8 +259,9 @@ default: a **Host command** button under each action shows its command, with Cop
 the rail footer (in the phone menu on a phone) shows them all in place of the buttons; the browser remembers it as
 `hub.hostCommands` in localStorage, the only thing the Hub stores there. Steps only the daemon host can take, such as
 approving a Hub claim, restoring an App or minting a sign-in link, always show their command.
-The shell (sign-in links, Modules and the Settings memory section) has its own isolated spec:
-`npm --prefix tools/ui-tests test -- --workers=1 --project=intercepted shell-browser`.
+The shell's journeys (sign-in links, Modules, the Settings memory section, the phone More sheet) run against a real
+fake model daemon ([docs/ui-testing.md](docs/ui-testing.md)); what only a faked reply can show, such as the daemon or
+the Hub going silent, is in `npm --prefix tools/ui-tests test -- --workers=1 --project=intercepted shell-browser`.
 The phone menu is covered against a real instance by `tools/ui-tests/tests/navigation.spec.mjs`.
 
 For browser testing, `python scripts/ui_instance.py start --dir <dir>` starts a disposable Hub and a fake model
@@ -357,7 +358,9 @@ still withhold the whole affected view; Apps and Modules are checked separately.
 Malformed erasure or session-cap replies show errors instead of an empty queue or
 editable default caps.
 
-With Playwright installed locally, run the isolated Apps security regressions:
+The Apps journeys (caps, retention, revoke, this Hub's row) run against a real fake model daemon
+([docs/ui-testing.md](docs/ui-testing.md)). The regressions that need replies the daemon cannot be made to send (held
+or malformed replies, withheld names, usage history) run with
 `npm --prefix tools/ui-tests test -- --workers=1 --project=intercepted apps-security`.
 These specs intercept all network requests and serve the real static files.
 
@@ -399,7 +402,9 @@ read-only and show `harness hub approve <id> --match <code>`, because they are d
 Approval changes the request's state only: the App then redeems its own token from the daemon with its PKCE
 verifier, so the Hub never calls the App-side `claim` or `token` routes and never sees an App token. Every action
 has its `harness pairing-requests` CLI equivalent behind a **Host command** button. Arming slots for Hub entries belongs to [Marketplace](#marketplace).
-Run the isolated browser regressions with Playwright installed locally:
+The pairing journeys (approve, deny, armed slots, claims, redemption) run against a real fake model daemon
+([docs/ui-testing.md](docs/ui-testing.md)). The regressions that need states it cannot produce (browser-origin slots,
+expired requests, an old daemon's warning) run with
 `npm --prefix tools/ui-tests test -- --workers=1 --project=intercepted pairing-security`.
 
 ### Marketplace
@@ -456,7 +461,9 @@ A stale or unreadable entries file makes `GET /hub` answer 400 with a named erro
 `entries[0].app.app_id: duplicate id`, ...). The page shows that error with the last good entries from the shared
 inventory snapshot, never an empty list and never entries the daemon did not validate, and setting up is refused
 until the file is fixed. Entries that do not match the contract are withheld and counted.
-Run the isolated browser regressions with Playwright installed locally:
+The Marketplace journeys (consent, arming, claims, withdrawal) run against a real fake model daemon and its example
+entries ([docs/ui-testing.md](docs/ui-testing.md)). The regressions that need other entries (elevated scopes, browser
+origins, invalid or drifting catalogs) run with
 `npm --prefix tools/ui-tests test -- --workers=1 --project=intercepted marketplace-security`.
 
 ### Accounts and maintenance
@@ -487,5 +494,6 @@ remain host CLI actions because the Hub key cannot mint owner keys; a footnote u
 
 The checked-in administration route snapshot comes from the daemon's API/parity documentation; tests fail if
 an operation loses its catalogue entry or daemon dispatch. Tests use synthetic account and folder data only.
-Run the isolated administration browser regressions with Playwright installed locally:
-`npm --prefix tools/ui-tests test -- --workers=1 --project=intercepted admin-security`.
+The account journeys, including the retained audit's time and detail, run against a real fake model daemon
+([docs/ui-testing.md](docs/ui-testing.md)). The regressions that need skills, scans, held or failed replies or a
+skewed clock run with `npm --prefix tools/ui-tests test -- --workers=1 --project=intercepted admin-security`.

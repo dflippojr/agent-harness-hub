@@ -59,6 +59,7 @@ async function mount(page, initial, { answer } = {}) {
 }
 const card = (page, id) => page.locator('[data-entry="' + id + '"]');
 
+// Intercepted: a paired entry, a data-URI icon and an unverified native key; the daemon's example entries have none.
 test("entries show their state, the not-verified label and native keys; nothing is fetched from an entry", async ({ page }) => {
   const { errors, outside } = await mount(page, view([
     entry("test.example.notes", { state: "paired", paired: ["k-notes"], browser_origins: ["https://notes.example.test"], icon: ICON }),
@@ -87,40 +88,7 @@ test("entries show their state, the not-verified label and native keys; nothing 
   expect(errors).toEqual([]);
 });
 
-test("Set up opens the consent screen and nothing is armed until Approve; then the id and daemon URL are shown", async ({ page }) => {
-  const armed = slot("pr-new");
-  const { writes, errors, outside } = await mount(page, view([entry("test.example.native")]), { answer: pathname =>
-    pathname === "/api/marketplace/arm" ? { status: 201, json: { request: armed, daemon_url: "https://daemon.test",
-      name: "Synthetic native" }, view: view([entry("test.example.native", { slots: [armed] })]) } : null });
-  await card(page, "test.example.native").getByRole("button", { name: "Set up Synthetic native" }).click();
-  const consent = page.locator(".market-consent");
-  await expect(consent).toContainText("Arming grants scope consent.");
-  await expect(consent).toContainText("Both browser and native claims wait for you to type the code");
-  await expect(consent.getByRole("heading", { name: "Set up Synthetic native (test.example.native)?" })).toBeVisible();
-  await expect(consent.locator('[data-scope="sessions"] .disclosure-text')).toHaveText(SESSIONS.text);
-  await expect(consent).toContainText("Publisher's reason (not verified): " + SESSIONS.justification);
-  await expect(consent).toContainText("Native app. When it claims the slot, you confirm it here or on Pairing requests");
-  await expect(consent.getByText("harness pairing-requests arm test.example.native --scopes sessions", { exact: true })).toBeVisible();
-  await consent.getByRole("button", { name: "Cancel" }).click();
-  await expect(consent).toHaveCount(0);
-  expect(writes).toEqual([]);
-  await card(page, "test.example.native").getByRole("button", { name: "Set up Synthetic native" }).click();
-  expect(writes).toEqual([]);
-  await page.locator(".market-consent").getByRole("button", { name: "Approve" }).click();
-  await expect.poll(() => writes.length).toBe(1);
-  expect(writes[0]).toMatchObject({ path: "/api/marketplace/arm",
-    body: { catalog_app_id: "test.example.native", scopes: ["sessions"] } });
-  expect(writes[0].headers["x-hub-request"]).toBe("1");
-  const handoff = page.locator(".market-handoff");
-  await expect(handoff).toContainText("Give this only to Synthetic native; it lets that app claim the slot once.");
-  await expect(handoff.getByText("pr-new", { exact: true })).toBeVisible();
-  await expect(handoff.getByText("https://daemon.test", { exact: true })).toBeVisible();
-  await expect(handoff.getByRole("button", { name: "Copy: pr-new" })).toBeVisible();
-  await expect(card(page, "test.example.native").locator('[data-slot="pr-new"]')).toContainText("waiting for the app to claim");
-  expect(outside).toEqual([]);
-  expect(errors).toEqual([]);
-});
-
+// Intercepted: a poll that adds an entry while the consent is open, and an entry with elevated scopes and origins.
 test("the consent opens inside the entry's card and keeps its choices and focus across a poll (Hub design 10)", async ({ page }) => {
   await page.clock.install({ time: NOW * 1000 });
   const ops = entry("test.example.ops", { scopes: [SESSIONS, HOMELAB], elevated: ["homelab"],
@@ -160,26 +128,7 @@ test("the consent opens inside the entry's card and keeps its choices and focus 
   expect(errors).toEqual([]);
 });
 
-test("a slot shows Pairing's countdown chip, and Withdraw asks inside its own slot", async ({ page }) => {
-  await page.clock.install({ time: NOW * 1000 });
-  const { writes, errors } = await mount(page, view([entry("test.example.native", { slots: [slot("pr-armed")] })]));
-  const box = card(page, "test.example.native").locator('[data-slot="pr-armed"]');
-  await expect(box.getByText("Waiting for the app", { exact: true })).toBeVisible();
-  await expect(box.locator(".countdown")).toHaveText(/^[89]:\d\d left$/);
-  const before = await box.locator(".countdown").textContent();
-  await page.clock.runFor(2000);
-  await expect(box.locator(".countdown")).not.toHaveText(before);
-  await box.getByRole("button", { name: "Withdraw slot for Synthetic native" }).click();
-  const ask = box.getByRole("alert");
-  await expect(ask.getByRole("heading", { name: "Withdraw the slot for Synthetic native?" })).toBeVisible();
-  await expect(ask.getByRole("button", { name: "Confirm withdraw" })).toBeFocused();
-  await ask.getByRole("button", { name: "Cancel" }).click();
-  await expect(box.getByRole("alert")).toHaveCount(0);
-  await expect(box.getByRole("button", { name: "Withdraw slot for Synthetic native" })).toBeFocused();
-  expect(writes).toEqual([]);
-  expect(errors).toEqual([]);
-});
-
+// Intercepted: the armed entry leaving the list after arming.
 test("the hand-off stays until Done even when its entry leaves the list after arming", async ({ page }) => {
   const armed = slot("pr-kept");
   const { writes, errors } = await mount(page, view([entry("test.example.native"), entry("test.example.other")]),
@@ -199,6 +148,7 @@ test("the hand-off stays until Done even when its entry leaves the list after ar
   expect(errors).toEqual([]);
 });
 
+// Intercepted: entries with elevated scopes and browser origins; the daemon's example entries have neither.
 test("elevated scopes need the acknowledgement and a browser app needs its exact origin chosen", async ({ page }) => {
   const ops = entry("test.example.ops", { scopes: [SESSIONS, HOMELAB], elevated: ["homelab"],
     browser_origins: ["https://ops.example.test", "https://ops2.example.test"] });
@@ -250,7 +200,8 @@ test("elevated scopes need the acknowledgement and a browser app needs its exact
   expect(errors).toEqual([]);
 });
 
-for (const [kind, origin] of [["native", ""], ["browser", "https://app.example.test"]]) {
+// Intercepted: a browser slot, which needs an entry with a browser origin; the native claim is in slots.spec.mjs.
+for (const [kind, origin] of [["browser", "https://app.example.test"]]) {
   test(`${kind} claims need the typed code; slots are withdrawn after confirmation`, async ({ page }) => {
     const claimed = slot("pr-claimed", { state: "claimed", needs: "confirm", match_code: "482913",
       origin, browser: Boolean(origin) });
@@ -295,6 +246,7 @@ for (const [kind, origin] of [["native", ""], ["browser", "https://app.example.t
   });
 }
 
+// Intercepted: a poll that adds an entry while a code is half typed.
 test("a typed code survives a poll that changes the list", async ({ page }) => {
   await page.clock.install({ time: NOW * 1000 });
   const claimed = slot("pr-claimed", { state: "claimed", needs: "confirm" });
@@ -310,6 +262,7 @@ test("a typed code survives a poll that changes the list", async ({ page }) => {
   await expect(input()).toBeFocused();
 });
 
+// Intercepted: a catalog the daemon reports invalid, with and without a last good copy.
 test("a named entries error keeps the last good entries; with none, no entries are shown", async ({ page }) => {
   const { errors } = await mount(page, view([entry("test.example.native")], { state: "error",
     error: "hub.entries: invalid JSON", stale: true }));
@@ -327,6 +280,7 @@ test("a named entries error keeps the last good entries; with none, no entries a
   expect(second.errors).toEqual([]);
 });
 
+// Intercepted: the entry's scopes changing between the consent screen and Approve.
 test("a 409 on Approve shows the server's reason and refreshes", async ({ page }) => {
   const { writes, errors } = await mount(page, view([entry("test.example.native")]), { answer: () => ({ status: 409,
     json: { detail: "The entry's scopes changed since the consent screen was shown. Review it again." } }) });
@@ -338,6 +292,7 @@ test("a 409 on Approve shows the server's reason and refreshes", async ({ page }
   expect(errors).toEqual([]);
 });
 
+// Intercepted: markup in an entry's name, summary and disclosures; the daemon's example entries are plain.
 test("entry text renders as text, never as HTML", async ({ page }) => {
   const markup = '<img src=x onerror="window.injected=1"><script>window.injected=2</script>';
   const { errors, outside } = await mount(page, view([entry("test.example.x", { name: markup, summary: markup,
@@ -351,31 +306,7 @@ test("entry text renders as text, never as HTML", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-for (const [label, width] of [["phone", 390], ["desktop", 1280]]) {
-  test(`${label} layout keeps 44px targets and no horizontal scroll`, async ({ page }) => {
-    await page.setViewportSize({ width, height: 900 });
-    const long = "https://a-very-long-subdomain-name-for-layout.example.test";
-    const { errors } = await mount(page, view([
-      entry("test.example.ops", { scopes: [SESSIONS, { ...HOMELAB, text: "A long disclosure ".repeat(20) }],
-        elevated: ["homelab"], browser_origins: [long, long + ":8443"], icon: ICON }),
-      entry("test.example.native", { slots: [slot("pr-c", { state: "claimed", needs: "confirm" })],
-        unverified_origin: { paired: ["k-native"], pending_pairing: true } })]));
-    await card(page, "test.example.ops").getByRole("button", { name: /^Set up/ }).click();
-    // Host commands shown, then hidden behind their Host command buttons: every target is measured either way.
-    for (const shown of [true, false]) {
-      await page.evaluate(on => document.body.classList.toggle("show-host-commands", on), shown);
-      for (const target of await page.locator("main button:visible, main input:visible, main summary:visible").all()) {
-        const box = await target.boundingBox();
-        expect(box.height, await target.evaluate(el => el.outerHTML.slice(0, 80))).toBeGreaterThanOrEqual(44);
-        expect(box.width).toBeGreaterThanOrEqual(44);
-      }
-    }
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    expect(errors).toEqual([]);
-  });
-}
-
-
+// Intercepted: the daemon describing a scope differently from the consent screen (a 409 with a new entry).
 test("disclosure drift reopens daemon consent and sends its digest only after a new approval", async ({ page }) => {
   const original = entry("test.example.ops", { browser_origins: ["https://ops.example.test"] });
   const daemon = entry("test.example.ops", { ...original, consent_digest: "b".repeat(64),
@@ -404,7 +335,7 @@ test("disclosure drift reopens daemon consent and sends its digest only after a 
   expect(errors).toEqual([]);
 });
 
-
+// Intercepted: an add-on scope with no description, which the daemon's entries never have.
 test("blank add-on copy names the Hub and requires a separate acknowledgement", async ({ page }) => {
   const addon = entry("test.example.files", { scopes: [{ scope: "files:write", tier: "standard", text: "",
     justification: "Publisher's reason" }] });
@@ -420,6 +351,7 @@ test("blank add-on copy names the Hub and requires a separate acknowledgement", 
   expect(errors).toEqual([]);
 });
 
+// Intercepted: an older daemon that approved claims without confirmation.
 for (const state of ["approved", "redeemed"]) {
   test(`a browser claim that skips confirmation warns even when already ${state}`, async ({ page }) => {
     await page.clock.install({ time: NOW * 1000 });

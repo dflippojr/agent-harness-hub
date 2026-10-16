@@ -64,6 +64,7 @@ async function handled(page, done, n) {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve))));
 }
 
+// Intercepted: withheld names and device, owner, runner and web keys, which the instance cannot mint; a real revoke is in modules-apps.spec.mjs.
 test("redacted App remains revocable, owner and runner keys never enter the App flow", async ({ page }) => {
   const rows = [app("k-shaped", "[withheld: token-shaped]", { origins: ["https://hp-x.example"] }),
     app("k-device", "Device", { kind: "device" }),
@@ -108,6 +109,7 @@ test("redacted App remains revocable, owner and runner keys never enter the App 
   expect(errors).toEqual([]);
 });
 
+// Intercepted: a verified catalog entry, which needs a signed catalog, and keys named to collide with it.
 test("duplicate and reserved names are flagged and confirmation identifies the actual key", async ({ page }) => {
   const rows = [app("k-real", "Web client"), app("k-copy", "web client"), app("k-impostor", "This Hub"),
     app("k-hub", "Actual Hub", { kind: "owner", role: "hub", this_hub: true }),
@@ -145,6 +147,7 @@ test("duplicate and reserved names are flagged and confirmation identifies the a
   expect(errors).toEqual([]);
 });
 
+// Intercepted: malformed erasure and caps replies (forced 502s).
 test("invalid erasure and limits responses show errors and never offer default resets", async ({ page }) => {
   const { writes, errors } = await mount(page, [app("k-one", "One")], { erasures: null, invalidDetails: true });
   await expect(page.locator(".apps-erasures")).toContainText("invalid erasure data");
@@ -156,12 +159,10 @@ test("invalid erasure and limits responses show errors and never offer default r
   expect(errors).toEqual([]);
 });
 
-test("a healthy inventory shows no empty error box; a failed read still shows its message", async ({ page }) => {
+// Intercepted: an inventory read that fails (a forced 502).
+test("a failed inventory read shows its message", async ({ page }) => {
   const { errors } = await mount(page, [app("k-ok", "Synthetic notes")]);
   await expect(page.getByRole("heading", { name: "Paired apps and keys" })).toBeVisible();
-  const alerts = page.locator("[role=alert]:visible");
-  for (const alert of await alerts.all()) await expect(alert).not.toHaveText("");
-  await expect(page.locator(".notice.bad:visible")).toHaveCount(0);
   await page.route("http://hub.test/api/apps", route => route.fulfill({ status: 502,
     json: { detail: "The daemon returned invalid app inventory." } }));
   await page.getByRole("button", { name: "Refresh apps" }).click();
@@ -169,7 +170,8 @@ test("a healthy inventory shows no empty error box; a failed read still shows it
   expect(errors).toEqual([]);
 });
 
-test("readable states in the table, the detail beside it, caps with the default as placeholder, in-card retention",
+// Intercepted: usage, errors and a 120-day-old token, which the instance's fresh keys never have.
+test("readable states and usage in the table and the detail, and caps with the default as placeholder",
   async ({ page }) => {
     const now = Date.now() / 1000;
     const rows = [app("k-live", "Live app", { last_used_at: now - 30, errors: true, store: {
@@ -190,61 +192,22 @@ test("readable states in the table, the detail beside it, caps with the default 
 
     await page.setViewportSize({ width: 1440, height: 900 });
     const detail = await open(page, "k-live");
-    await expect(detail.getByRole("heading", { level: 2, name: "Live app" })).toBeFocused();
-    await expect(row(page, "k-live")).toHaveClass(/selected/);
     for (const text of ["Requests", "1,234", "Tokens in · out", "100 · 40", "Cost", "$0.50", "Running 2 · done 3",
       "Errors in the last 24 hours: provider_limit"]) await expect(detail).toContainText(text);
-    // Once the caps have loaded (a redraw), the heading still has focus and the list sits beside the detail.
-    await expect(detail.getByLabel("Maximum running (1–100)")).toBeVisible();
-    await expect(detail.getByRole("heading", { level: 2, name: "Live app" })).toBeFocused();
-    const [list, pane] = [await page.locator(".apps-keys").boundingBox(), await detail.boundingBox()];
-    expect(list.x + list.width).toBeLessThanOrEqual(pane.x);
     const running = detail.getByLabel("Maximum running (1–100)");
     await expect(running).toHaveValue("");
     await expect(running).toHaveAttribute("placeholder", "Default 2");
     await expect(detail.getByLabel("Maximum queued (1–1000)")).toHaveValue("10");
-    await expect(detail.getByLabel("Retention days")).toHaveAttribute("placeholder", "Keep until deleted");
     await expect(detail).toContainText("Effective caps: running 2 · queued 10");
     await running.fill("4");
     await detail.getByRole("button", { name: "Save session caps" }).click();
     await expect(page.getByText("Session caps saved.", { exact: true })).toBeVisible();
     // Only the changed cap goes out; the daemon keeps the one left out.
     expect(writes[0]).toEqual({ path: "/api/apps/k-live/limits", method: "PUT", body: { max_running: 4 } });
-    await expect(detail.getByLabel("Retention days")).toBeVisible();
-
-    await detail.getByLabel("Retention days").fill("7");
-    await detail.getByRole("button", { name: "Save retention" }).click();
-    const ask = detail.locator(".apps-form [role=alert]");
-    await expect(ask.getByRole("heading", { name: "Change retention for Live app?" })).toBeVisible();
-    await expect(ask).toContainText("Apply retention 7 days to Live app.");
-    expect(writes).toHaveLength(1);
-    await ask.getByRole("button", { name: "Cancel" }).click();
-    await expect(detail.getByRole("button", { name: "Save retention" })).toBeFocused();
-    await expect(detail.getByLabel("Retention days")).toHaveValue("7");
-    await detail.getByRole("button", { name: "Save retention" }).click();
-    await ask.getByRole("button", { name: "Confirm change retention for Live app" }).click();
-    await expect(page.getByText("Retention saved.", { exact: true })).toBeVisible();
-    expect(writes[1]).toEqual({ path: "/api/apps/k-live/retention", method: "PUT", body: { retention_days: 7, confirm: true } });
-
-    // Below 1200px the detail takes the list's place; Back to all apps returns to it.
-    await page.setViewportSize({ width: 1024, height: 768 });
-    await expect(page.locator(".apps-keys")).toBeHidden();
-    await detail.getByRole("button", { name: "Back to all apps" }).click();
-    await expect(detail).toHaveCount(0);
-    await expect(row(page, "k-live").getByRole("button", { name: "Open Live app" })).toBeFocused();
-    for (const width of [1440, 1024, 390]) {
-      await page.setViewportSize({ width, height: 900 });
-      if (width === 390) await open(page, "k-live");
-      const layout = await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth,
-        small: [...document.querySelectorAll("button,input,a")].filter(el => {
-          const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && (r.height < 44 || r.width < 44);
-        }).map(el => el.textContent) }));
-      expect(layout.scroll).toBeLessThanOrEqual(layout.width);
-      expect(layout.small).toEqual([]);
-    }
     expect(errors).toEqual([]);
   });
 
+// Intercepted: an older caps reply held until after a newer one (a slow daemon).
 test("Refresh reads the open App's caps again, and an older caps reply never replaces a newer one", async ({ page }) => {
   const { errors } = await mount(page, [app("k-a", "App A"), app("k-b", "App B")]);
   const limits = (running) => ({ configured: { max_running: running, max_queued: 10 },
@@ -274,6 +237,7 @@ test("Refresh reads the open App's caps again, and an older caps reply never rep
   expect(errors).toEqual([]);
 });
 
+// Intercepted: caps and inventory reads held open (a slow daemon).
 test("Refresh drops a caps read still in flight, and a save made during a refresh still happens", async ({ page }) => {
   const rows = [app("k-a", "App A")];
   const { writes, errors } = await mount(page, rows);
@@ -315,6 +279,7 @@ test("Refresh drops a caps read still in flight, and a save made during a refres
   expect(errors).toEqual([]);
 });
 
+// Intercepted: caps reads held and released out of order (a slow daemon).
 test("an abandoned caps read never leaves the detail loading, and a read from before a save is dropped", async ({ page }) => {
   const rows = [app("k-a", "App A"), app("k-owner", "Owner CLI", { kind: "owner", role: "owner", scopes: "admin" })];
   const { writes, errors } = await mount(page, rows);
@@ -367,40 +332,10 @@ test("an abandoned caps read never leaves the detail loading, and a read from be
   expect(errors).toEqual([]);
 });
 
-test("an unfinished number stays invalid across a redraw, and an unchanged form sends nothing", async ({ page }) => {
-  const { writes, errors } = await mount(page, [app("k-a", "App A")]);
+// Intercepted: a caps save held open (a slow daemon).
+test("a row click waits while a save runs", async ({ page }) => {
+  const { errors } = await mount(page, [app("k-a", "App A"), app("k-b", "App B")]);
   const a = await open(page, "k-a");
-  const running = a.getByLabel("Maximum running (1–100)");
-  await expect(running).toBeVisible();
-  await a.getByRole("button", { name: "Save session caps" }).click();
-  await expect(page.getByText("Nothing to save: both caps are as the daemon has them.", { exact: true })).toBeVisible();
-  await running.pressSequentially("1e");
-  // Asking the retention question redraws the detail; the half-typed cap keeps its own element and stays invalid.
-  await a.getByLabel("Retention days").fill("5");
-  await a.getByRole("button", { name: "Save retention" }).click();
-  await a.getByRole("button", { name: "Cancel" }).click();
-  await expect.poll(() => running.evaluate((input) => input.validity.badInput)).toBe(true);
-  await a.getByRole("button", { name: "Save session caps" }).click();
-  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve))));
-  expect(writes).toHaveLength(0);
-  expect(errors).toEqual([]);
-});
-
-test("the retention question locks the field it applies, and a row click waits while a save runs", async ({ page }) => {
-  const { writes, errors } = await mount(page, [app("k-a", "App A"), app("k-b", "App B")]);
-  const a = await open(page, "k-a");
-  const days = a.getByLabel("Retention days");
-  await days.fill("7");
-  await a.getByRole("button", { name: "Save retention" }).click();
-  await expect(days).toBeDisabled();
-  await page.getByRole("button", { name: "Refresh apps" }).click();
-  await expect(a.getByRole("heading", { name: "Change retention for App A?" })).toBeVisible();
-  await expect(days).toBeDisabled();
-  await a.getByRole("button", { name: "Confirm change retention for App A" }).click();
-  await expect.poll(() => writes.length).toBe(1);
-  expect(writes[0].body).toEqual({ retention_days: 7, confirm: true });
-  await expect(days).toBeEnabled();
-
   let release;
   const held = new Promise(resolve => { release = resolve; });
   await page.route("http://hub.test/api/apps/k-a/limits", async route => {
@@ -417,6 +352,7 @@ test("the retention question locks the field it applies, and a row click waits w
   expect(errors).toEqual([]);
 });
 
+// Intercepted: a caps change on the host between two reads, which the journeys have no host command for.
 test("Refresh drops typed caps, so a save after it cannot send a value the host has since changed", async ({ page }) => {
   const { writes, errors } = await mount(page, [app("k-a", "App A")]);
   let running = 4;
@@ -439,6 +375,7 @@ test("Refresh drops typed caps, so a save after it cannot send a value the host 
   expect(errors).toEqual([]);
 });
 
+// Intercepted: a stale inventory snapshot beside a fresh erasure queue (a failed refresh).
 test("a key the erasure queue lists reads as revoked even when the inventory is a stale snapshot", async ({ page }) => {
   const now = Date.now() / 1000;
   const rows = [app("k-a", "App A", { last_used_at: now - 30 })];
@@ -459,6 +396,7 @@ test("a key the erasure queue lists reads as revoked even when the inventory is 
   expect(errors).toEqual([]);
 });
 
+// Intercepted: a revoke the daemon refuses with 409; a real revoke succeeds.
 test("a refused revoke shows its reason as a sentence inside the open App, and focus goes to it", async ({ page }) => {
   const { errors } = await mount(page, [app("k-ok", "Synthetic notes")],
     { revoke: { status: 409, json: { detail: "this key changed on the daemon host" } } });
@@ -468,14 +406,5 @@ test("a refused revoke shows its reason as a sentence inside the open App, and f
   const note = detail.locator("p.notice.bad[aria-live]");
   await expect(note).toHaveText("This key changed on the daemon host. Refresh and review the state before trying again.");
   await expect(note).toBeFocused();
-  expect(errors).toEqual([]);
-});
-
-test("with only this Hub's own key, the page says no apps are paired and where they come from", async ({ page }) => {
-  const { errors } = await mount(page, [app("k-hub", "Hub", { kind: "owner", role: "hub", this_hub: true })]);
-  const state = page.locator(".card.empty");
-  await expect(state.getByRole("heading", { name: "No apps paired yet" })).toBeVisible();
-  await expect(state).toContainText("Only this Hub's own key is listed.");
-  await expect(state.getByRole("link", { name: "Open Marketplace" })).toHaveAttribute("href", "#/marketplace");
   expect(errors).toEqual([]);
 });
