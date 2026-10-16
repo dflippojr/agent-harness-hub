@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import re
 import secrets
 import time
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -18,6 +20,8 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
+from hypothesis import settings as hypothesis_settings
+from hypothesis.database import DirectoryBasedExampleDatabase
 
 from harness_hub.auth import create_signin_code
 from harness_hub.config import Settings
@@ -33,6 +37,15 @@ from .settings_fake import register_settings
 
 HUB_HOST = "127.0.0.1:8120"
 TOKEN_SHAPE = re.compile(r"(?<![A-Za-z0-9])(?:ha|ho|hp)-[A-Za-z0-9_\-]{4,}")
+
+# Property tests (Hypothesis). The default profile keeps each one to a few seconds, well under 20 s on a CI runner;
+# HYPOTHESIS_PROFILE=thorough runs far more examples locally. Failing examples are replayed from .hypothesis/.
+hypothesis_settings.register_profile(
+    "hub", max_examples=250, deadline=timedelta(seconds=1), print_blob=True,
+    database=DirectoryBasedExampleDatabase(Path(__file__).resolve().parents[1] / ".hypothesis" / "examples"))
+hypothesis_settings.register_profile("thorough", hypothesis_settings.get_profile("hub"), max_examples=5_000,
+                                     deadline=None)
+hypothesis_settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "hub"))
 
 
 def refusal(status: int, detail: str, code: str = "") -> JSONResponse:
