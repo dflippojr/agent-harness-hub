@@ -165,6 +165,13 @@ def test_a_restart_reply_names_the_recoveries_the_hub_had_before_accepting_it(cl
     started = write(claimed, "POST", "restart", {"revision": 4, "confirm": True})
     assert [row["at"] for row in started.json()["known_recoveries"]] == [50, 60]
     assert started.json()["known_recoveries"][0] == saved.json()["recovery"]
+    # One the guard withholds is not kept, so it cannot withhold a later restart reply.
+    fake_daemon.restart_requested, fake_daemon.restart_polls = False, 0
+    fake_daemon.recovery = {**first, "reason": "auth failed for ha-" + "A1b2C3d4" * 6, "at": 61}
+    assert claimed.get("/api/settings/health").status_code == 500
+    fake_daemon.recovery = None
+    started = write(claimed, "POST", "restart", {"revision": 4, "confirm": True})
+    assert started.status_code == 202 and [row["at"] for row in started.json()["known_recoveries"]] == [50, 60]
     # Bounded: the oldest are forgotten first.
     fake_daemon.restart_requested, fake_daemon.restart_polls = False, 0
     for at in range(61, 61 + server.KNOWN_RECOVERIES):

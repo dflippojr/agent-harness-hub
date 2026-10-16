@@ -203,8 +203,9 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     def observe_recovery(recovery: dict | None) -> None:
         """Remember a recovery a daemon reply reported. Any reply the Hub has before it accepts a restart was sampled
-        before that restart, so these are the recoveries the shell must not take for one of it (#143)."""
-        if recovery and recovery not in recoveries:
+        before that restart, so these are the recoveries the shell must not take for one of it (#143). One the response
+        guard would withhold is not kept: the page never had it, and naming it would withhold every restart reply."""
+        if recovery and recovery not in recoveries and not leaks(json.dumps(recovery).encode(), store.secrets()):
             recoveries.append(recovery)
             del recoveries[:-KNOWN_RECOVERIES]
 
