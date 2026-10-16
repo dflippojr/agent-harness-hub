@@ -248,9 +248,13 @@ python -m pip install --require-hashes -r requirements-dev.lock -r requirements-
 python -m pip install --no-deps --no-build-isolation -e .
 ruff check .
 node --test tests/browser-session.test.mjs
-pytest                     # unit tests against a fake daemon
+pytest                     # unit tests against a fake daemon, with the daemon contract suite against the fakes
 HUB_E2E_DAEMON_SRC=../agent-harness pytest -m e2e   # a real daemon from a checkout (its requirements installed)
 ```
+
+The fakes and the real daemon are held to one contract: `tests/contract/` lists every daemon endpoint the Hub calls
+and runs each case against both, and a nightly run checks it against agent-harness main
+([docs/daemon-contract.md](docs/daemon-contract.md)).
 
 The UI is plain ES modules in `harness_hub/static` with no build step. Every tap target is at least 44 px, and the
 layout switches from a phone menu to a left rail at 900 px; a tap outside the open phone menu closes it.

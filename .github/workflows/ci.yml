@@ -2,8 +2,10 @@ name: CI
 
 # All jobs run on GitHub-hosted runners (public repository: never self-hosted).
 #   lint     - ruff, and a syntax check of every browser ES module
-#   test     - the unit suite on Linux and Windows (the Hub runs on the daemon host, which can be either)
-#   e2e      - a real Agent Harness daemon from a pinned dflippojr/agent-harness commit, claimed and read by the Hub
+#   test     - the unit suite on Linux and Windows (the Hub runs on the daemon host, which can be either), with the
+#              daemon contract suite against the fakes (tests/contract, [fake])
+#   e2e      - a real Agent Harness daemon from a pinned dflippojr/agent-harness commit: the contract suite against it
+#              ([daemon]), then claimed and read by the Hub. drift.yml runs both nightly at agent-harness main
 #   ui       - browser journeys (tools/ui-tests) against a disposable fake model daemon and Hub (docs/ui-testing.md)
 #   package  - the wheel (with the static UI), and the Docker image build and smoke test (scripts/smoke-image.sh)
 #   sonar    - SonarCloud analysis of the test job's coverage; the quality gate fails this check
@@ -147,10 +149,14 @@ jobs:
         run: |
           python -m pip install --require-hashes -r requirements-e2e.lock -r requirements-build.lock
           python -m pip install --no-deps --no-build-isolation -e .
+      - name: Contract suite against the pinned daemon
+        env:
+          HUB_E2E_DAEMON_SRC: daemon
+        run: python -m pytest tests/contract -m e2e -v -p no:cacheprovider
       - name: Claim a real daemon and read the Overview
         env:
           HUB_E2E_DAEMON_SRC: daemon
-        run: python -m pytest -m e2e -v -p no:cacheprovider
+        run: python -m pytest tests/e2e -m e2e -v -p no:cacheprovider
 
   ui:
     # Browser journeys (docs/ui-testing.md) against a disposable fake model daemon and Hub on loopback, with

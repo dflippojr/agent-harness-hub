@@ -5,7 +5,7 @@ request body the Hub sends (None: no body) and, per status code, the response sh
 ERROR. A field is *required* when the daemon always sends it and the Hub reads it, *optional* when the Hub reads it
 but the daemon sends it only sometimes (a module, a state, a later release). Fields neither reads are left out: extra
 fields are allowed. Types follow what the real daemon sends, which the contract suite checks against a disposable
-daemon at the pinned commit and nightly at agent-harness main (tests/contract/README.md).
+daemon at the pinned commit and nightly at agent-harness main (docs/daemon-contract.md).
 """
 
 from __future__ import annotations
