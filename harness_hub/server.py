@@ -201,11 +201,14 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     def observe_restart(shown: dict | None, health_generation: int) -> None:
         """End a restart the Hub started once the daemon answers healthy with confirmed settings, at the target revision
-        or after a recovery. Only a health request begun since this restart can end it. Overview and the Settings
-        health poll both look, so neither page has to stay open."""
+        or a later one (a save made during the restart, which the restarted daemon reports), or after a recovery. Only
+        a health request begun since this restart can end it. Overview and the Settings health poll both look, so
+        neither page has to stay open."""
+        revision = shown["config_revision"] if shown else None
         if (health_generation == restart["generation"] and time.monotonic() >= restart["not_before"]
                 and shown and shown["ok"] and shown["config_confirmed"]) and (
-                restart["target"] is None or shown["config_revision"] == restart["target"] or shown["recovery"]):
+                restart["target"] is None or isinstance(revision, int) and revision >= restart["target"]
+                or shown["recovery"]):
             restart["active"] = False
 
     @app.middleware("http")
