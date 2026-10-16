@@ -233,6 +233,16 @@ test("a restart that recovered no longer covers a revision saved after it, even 
   assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
 });
 
+test("health requested before this page's restart cannot drop its target, whatever recovery it reports", () => {
+  resetStatus();
+  // An earlier recovery is already known from Settings; a health read that started before the restart answers late.
+  noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true, recovery: LKG }, 1);
+  noteRestart(3, 4);
+  noteRead("settings/health", 200, { ...confirmedAt(3), health: { ...confirmedAt(3).health, recovery: LKG } }, 2);
+  noteRead("settings/health", 200, { ...confirmedAt(4), health: { ...confirmedAt(4).health, recovery: LKG } }, 4);
+  assert.equal(daemonBanner(), null);
+});
+
 test("a Settings config reply older than the health that settled the restart cannot restore it", () => {
   resetStatus();
   noteRead("settings/config", 200, { revision: 2, pending_revision: 2, restart_required: true }, 1);
