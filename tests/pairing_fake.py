@@ -115,7 +115,7 @@ def register_pairing(app, fake, owner):
         if failed:
             return failed
         if ELEVATED.intersection(row["scopes"]) and body.get("acknowledge_elevated") is not True:
-            return refusal(400, "elevated scopes need acknowledge_elevated", "")
+            return refusal(400, "elevated scopes need acknowledge_elevated", "acknowledgement_required")
         if not same(row, body.get("match")):
             return refusal(400, "the match code does not match the one the App shows", "match_mismatch")
         approved(row)
