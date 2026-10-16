@@ -250,7 +250,13 @@ ruff check .
 node --test tests/browser-session.test.mjs
 pytest                     # unit tests against a fake daemon
 HUB_E2E_DAEMON_SRC=../agent-harness pytest -m e2e   # a real daemon from a checkout (its requirements installed)
+HUB_STATE_MACHINE_EXAMPLES=2000 pytest tests/test_state_machine.py   # a longer search of restart and cache orderings
 ```
+
+`tests/test_state_machine.py` plays random sequences of page reads (some left in flight), saves, restarts, daemon
+outages and inventory changes against a real Hub, the daemon fake and the shell's real `status.mjs` (it needs Node.js
+on PATH), and checks the restart and cache invariants after every reply. Its fixed profile runs in about 25 seconds.
+A failure prints the shortest sequence that breaks an invariant; keep it as a replay at the end of that file.
 
 The UI is plain ES modules in `harness_hub/static` with no build step. Every tap target is at least 44 px, and the
 layout switches from a phone menu to a left rail at 900 px; a tap outside the open phone menu closes it.
