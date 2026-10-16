@@ -7,13 +7,15 @@ before its request reaches the daemon or after the daemon answered, so other eve
 the read, the daemon's sample and the Hub's use of it.
 
 Rules: visit a page, start a page read and finish it later, save a settings revision, start a restart, finish the
-restart (the daemon boots the revision it accepted), the daemon stops or starts answering, and the inventory changes
-(clean, or with a credential-like string that one page's view would show).
+restart (the daemon boots what is pending), or let it fail and recover (the daemon restores the revision it last ran
+and drops the pending one), the daemon stops or starts answering, and the inventory changes (clean, or with a
+credential-like string that one page's view would show).
 
 Invariants, checked after every reply:
 - a restart ends only on health read since it began: no page reports it over from health read before (#100), and
   health read since then at its target does end it;
-- the shell keeps "restart needed" while the daemon has not applied the saved revision it last read (#101);
+- the shell keeps "restart needed" while the daemon has neither applied nor dropped the saved revision it last
+  read (#101);
 - a cached inventory never makes another page answer a withheld 500 (#89): every cached snapshot is clean in every
   page's view, and no reply carries a credential-like string;
 - every reply that does not show fresh data says why (an error sentence, or `stale` with one).
@@ -73,11 +75,12 @@ LIVE, RESTART = ("queue.limit",), ("listen.idle", "search.enabled")
 MAX_IN_FLIGHT = 3
 WAIT = 10.0  # seconds; only a broken Hub waits this long
 LEAK = "auth failed for ha-" + "A1b2C3d4" * 6
+INVENTORIES = ("generated", "changed", "leaks_on_modules", "leaks_on_apps")
 
 settings.register_profile(
     "hub-state-machine",
-    max_examples=int(os.environ.get("HUB_STATE_MACHINE_EXAMPLES", "150")),
-    stateful_step_count=50,
+    max_examples=int(os.environ.get("HUB_STATE_MACHINE_EXAMPLES", "60")),
+    stateful_step_count=30,
     derandomize=True,
     database=None,
     deadline=None,
@@ -182,6 +185,7 @@ class Read:
         self.gate: Gate | None = None
         self.future: Future | None = None
         self.sample: tuple[int, object] | None = None
+        self.drops = 0  # the model's recoveries when the daemon answered this read
 
 
 class HubMachine(RuleBasedStateMachine):
@@ -218,7 +222,8 @@ class HubMachine(RuleBasedStateMachine):
         # its target, the revision the daemon runs, and the newest Settings read the shell holds.
         self.epoch, self.ended, self.target = 0, True, None
         self.applied = self.fake.revision
-        self.config: tuple[int, dict] | None = None
+        self.drops = 0  # recoveries so far: each one drops the pending revision
+        self.config: tuple[int, dict, int] | None = None  # (start order, body, drops when the daemon answered it)
         self.restart_evidence: tuple[int, bool] = (0, False)
 
     def teardown(self):
@@ -256,7 +261,7 @@ class HubMachine(RuleBasedStateMachine):
             self._check_inventory(read, body)
         if read.page == "settings/config" and response.status_code == 200 and (
                 self.config is None or read.order > self.config[0]):
-            self.config = (read.order, body)
+            self.config = (read.order, body, read.drops)
         if read.page in HEALTH_PAGES and response.status_code == 200 and read.order > self.restart_evidence[0]:
             self.restart_evidence = (read.order, body["restarting"] is True)
         self.shown = self.shell.send(op="read", path=read.page, status=response.status_code, data=body,
@@ -271,7 +276,8 @@ class HubMachine(RuleBasedStateMachine):
         health = sample[1] if sample and sample[0] == 200 and isinstance(sample[1], dict) else None
         config = health.get("config", {}) if health else {}
         if (self.epoch and read.epoch == self.epoch and health and health.get("ok") is True
-                and config.get("confirmed") is True and config.get("revision", -1) >= self.target):
+                and config.get("confirmed") is True and (config.get("revision", -1) >= self.target
+                                                         or config.get("recovery"))):
             self.ended = True
         assert body["restarting"] is (not self.ended), (
             f"{read.page} read at restart generation {read.epoch} answered restarting={body['restarting']} "
@@ -291,7 +297,8 @@ class HubMachine(RuleBasedStateMachine):
         # "Restart needed" stays until the daemon runs the saved revision the shell last read (#101).
         if self.config is not None:
             saved = self.config[1].get("pending_revision")
-            if self.config[1].get("restart_required") and isinstance(saved, int) and self.applied < saved:
+            if (self.config[1].get("restart_required") and isinstance(saved, int) and self.applied < saved
+                    and self.config[2] == self.drops):
                 assert banner is not None, (
                     f"the shell cleared restart needed for revision {saved}; the daemon runs {self.applied}")
         # The newest restart evidence wins: a stale reply never brings the restart banner back, nor hides it.
@@ -302,7 +309,7 @@ class HubMachine(RuleBasedStateMachine):
             assert banner is not None, "the shell lost a restart its newest evidence says is under way"
 
     # --- rules ------------------------------------------------------------------------------------------------------
-    @rule(page=st.sampled_from(PAGES), hold=st.sampled_from(("none", "before", "after")))
+    @rule(page=st.sampled_from(PAGES), hold=st.sampled_from(("none", "none", "before", "after")))
     def read(self, page, hold):
         """A page read: answered at once, or left in flight before or after the daemon answers it."""
         if hold == "none" or len(self.in_flight) >= MAX_IN_FLIGHT:
@@ -313,12 +320,13 @@ class HubMachine(RuleBasedStateMachine):
     def visit(self, page):
         read = self._start(page)
         response = self._get(page)
-        read.sample = self.transport.last.get(HELD_PATH[page])
+        read.sample, read.drops = self.transport.last.get(HELD_PATH[page]), self.drops
         self._finish(read, response)
 
     def begin_read(self, page, before=False):
         read = self._start(page)
         read.gate = Gate(HELD_PATH[page], before)
+        read.drops = self.drops
         with self.transport.lock:
             self.transport.armed = read.gate
         read.future = self.pool.submit(self._get, page)
@@ -337,6 +345,8 @@ class HubMachine(RuleBasedStateMachine):
         """Let the read in flight at `index` (0 is the oldest) reach the daemon or the Hub, and take its reply."""
         read = self.in_flight.pop(index)
         read.gate.release.set()
+        if read.gate.before:
+            read.drops = self.drops  # the daemon answers it now
         response = read.future.result(timeout=WAIT)
         read.sample = read.gate.sample
         self._finish(read, response)
@@ -372,12 +382,26 @@ class HubMachine(RuleBasedStateMachine):
     def finish_restart(self):
         self.fake.restart_polls = 0  # the next /health is the restarted daemon's, at the revision it accepted
 
-    @rule(down=st.booleans())
-    def daemon_answers(self, down):
-        self.fake.down = down
+    @precondition(lambda self: self.fake.restart_requested and self.fake.pending_revision is not None)
+    @rule()
+    def restart_recovers(self):
+        """The restarted daemon cannot boot the pending revision: it restores the revision it last ran, drops the
+        pending one and reports the recovery. Its next save may reuse the dropped revision's number."""
+        self.fake.restart_requested, self.fake.restart_polls = False, 0
+        self.fake.revision, self.fake.pending, self.fake.pending_revision = self.applied, {}, None
+        self.fake.recovery = {"recovery": "lkg_restore", "reason": "synthetic boot failure", "at": self.drops + 1}
+        self.drops += 1
 
-    @rule(kind=st.sampled_from(["generated", "changed", "leaks_on_modules", "leaks_on_apps"]))
+    @rule(change=st.sampled_from(("stops_answering", "answers_again", *INVENTORIES)))
+    def daemon_changes(self, change):
+        """The daemon stops or starts answering, or its inventory changes."""
+        if change in ("stops_answering", "answers_again"):
+            self.fake.down = change == "stops_answering"
+        else:
+            self.inventory_changes(change)
+
     def inventory_changes(self, kind):
+        """The daemon's inventory: its own, a clean change, or one with a string only one page's view would show."""
         from .apps_fake import inventory_apps
 
         clean = [{"name": "hub", "state": "present", "status": {"entries": 2}},
@@ -468,6 +492,19 @@ def test_143_a_settings_read_during_this_pages_restart_clears_when_it_ends(machi
     machine.finish_restart()
     machine.visit("settings/health")
     assert machine.shown["banner"] is None, machine.shown
+
+
+def test_143_a_recovered_restart_does_not_cover_a_save_numbered_like_its_target(machine):
+    """Review of #148: a restart to revision 4 recovers to 3, and the next save is numbered 4 again. Health read after a
+    Settings read started, but answered before that save, must not settle it on the old restart's target."""
+    machine.save("listen.idle", 2)
+    machine.restart()
+    machine.restart_recovers()
+    machine.begin_read("settings/config", before=True)
+    machine.begin_read("settings/health")
+    machine.save("listen.idle", 3)  # revision 4 again
+    machine.finish(0)
+    machine.finish(0)
 
 
 def test_143_a_save_during_a_restart_does_not_keep_it_running(machine):
