@@ -166,19 +166,25 @@ export function subscribe(listener) {
   return () => listeners.delete(listener);
 }
 
+// Every recovery this page has had reported, by Settings and by health alike: which request started later does not say
+// which sampled the daemon later, and each recovery is identified by when it happened, so one of a later restart is
+// new. api.mjs takes them before it asks for a restart: a reply that comes in while that request is under way may
+// already be from the restart.
+export function knownRecoveries() {
+  return [config ? recoveryKey(config.recovery) : "", confirmed ? confirmed.recovery : ""];
+}
+
 // An accepted restart is evidence even if the owner navigates away before the first health poll. Its request
 // order is allocated at acceptance, so health already in flight cannot settle it. `target` is its target revision as
-// accepted, and `known` the recoveries the Hub had from the daemon before it accepted the restart.
-export function noteRestart(started, target = null, known = []) {
+// accepted, `known` the recoveries the Hub had from the daemon before it asked for the restart, and `seen` this page's
+// own from before it did.
+export function noteRestart(started, target = null, known = [], seen = knownRecoveries()) {
   reads = Math.max(reads, started);
   if (typeof target === "number") {
     restartTarget = target;
     targetAt = started;
-    // Every recovery already reported, by Settings and by health alike: which request started later does not say which
-    // sampled the daemon later, and each recovery is identified by when it happened, so one of this restart is new.
     // A reply this page has not had yet may also predate the restart; the Hub names every recovery it had (#143).
-    targetRecoveries = new Set([config ? recoveryKey(config.recovery) : "", confirmed ? confirmed.recovery : "",
-      ...(Array.isArray(known) ? known.map(recoveryKey) : [])]);
+    targetRecoveries = new Set([...seen, ...(Array.isArray(known) ? known.map(recoveryKey) : [])]);
   }
   restart(true, started);
   for (const listener of listeners) listener();

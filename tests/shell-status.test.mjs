@@ -5,7 +5,7 @@ import test from "node:test";
 
 import { api } from "../harness_hub/static/lib/api.mjs";
 import {
-  daemonBanner, daemonChip, noteRead, noteRestart, pairingCount, resetStatus,
+  daemonBanner, daemonChip, knownRecoveries, noteRead, noteRestart, pairingCount, resetStatus,
 } from "../harness_hub/static/lib/status.mjs";
 
 const answer = (extra = {}) => ({
@@ -265,6 +265,19 @@ test("a recovery the Hub knew before accepting this page's restart is not one of
     if (known.length) assert.equal(daemonBanner(), null);
     else assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
   }
+});
+
+test("a recovery reported while this page's restart request is under way can be one of it", () => {
+  resetStatus();
+  const seen = knownRecoveries(); // before the request: no recovery yet
+  // The restart to revision 4 recovers to 3, and a poll reports that before the 202 reaches this page.
+  const recovered = { ...confirmedAt(3), health: { ...confirmedAt(3).health, recovery: LKG } };
+  noteRead("settings/health", 200, recovered, 2);
+  noteRestart(3, 4, [], seen);
+  // Another tab saves revision 4 again; health sampled before that answers last.
+  noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true, recovery: LKG }, 4);
+  noteRead("settings/health", 200, recovered, 5);
+  assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
 });
 
 test("a Settings read started before the health that settled the last one still counts when it answers", () => {

@@ -582,3 +582,21 @@ def test_143_a_recovery_the_page_never_saw_before_a_restart_is_not_one_of_it(mac
     machine.visit("overview")
     assert machine.applied == 4 and machine.fake.pending_revision is None
     assert machine.shown["banner"] is None, machine.shown
+
+
+def test_143_a_recovery_the_hub_has_while_a_restart_is_asked_for_is_not_named_as_known(machine):
+    """Review of #148 at 1407617: the Hub names the recoveries it had before it asked for a restart, not those it gets
+    while the request is under way, which may already be from that restart."""
+    machine.save("listen.idle", 2)
+    gate = Gate("/api/admin/v1/config/restart", before=False)
+    with machine.transport.lock:
+        machine.transport.armed = gate
+    reply = machine.pool.submit(machine.client.post, "/api/settings/restart", headers=ORIGIN,
+                                json={"revision": machine.fake.revision, "confirm": True})
+    assert gate.reached.wait(WAIT)
+    machine.restart_recovers()  # the restart to revision 4 recovers before its 202 reaches the Hub
+    recovery = machine.client.get("/api/settings/health").json()["health"]["recovery"]
+    assert recovery["recovery"] == "lkg_restore"
+    gate.release.set()
+    accepted = reply.result(timeout=WAIT)
+    assert accepted.status_code == 202 and accepted.json()["known_recoveries"] == []

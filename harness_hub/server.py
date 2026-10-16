@@ -202,7 +202,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     recoveries: list[dict] = []  # the newest distinct recoveries any daemon reply reported, oldest first
 
     def observe_recovery(recovery: dict | None) -> None:
-        """Remember a recovery a daemon reply reported. Any reply the Hub has before it accepts a restart was sampled
+        """Remember a recovery a daemon reply reported. Any reply the Hub has before it asks for a restart was sampled
         before that restart, so these are the recoveries the shell must not take for one of it (#143). One the response
         guard would withhold is not kept: the page never had it, and naming it would withhold every restart reply."""
         if recovery and recovery not in recoveries and not leaks(json.dumps(recovery).encode(), store.secrets()):
@@ -1125,6 +1125,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     return _error(400, "invalid backend name")
             if operation == "github_save" and type(body.get("enabled")) is not bool:
                 return _error(400, "enabled must be a boolean")
+        # Taken before the restart is asked for: a reply that comes in while it is under way may already be from it.
+        known = list(recoveries)
         try:
             reply = await daemon.settings(key["token"], operation, body, name)
             if reply.status == 401:
@@ -1144,7 +1146,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             restart.update(active=True, target=reply.body.get("target_revision"), generation=restart["generation"] + 1,
                            not_before=accepted_at + RESTART_GRACE_SECONDS)
             # The recoveries known before this restart: the shell keeps them from ending its target (#143).
-            shown["known_recoveries"] = list(recoveries)
+            shown["known_recoveries"] = known
         return JSONResponse(shown, status_code=reply.status)
 
     @app.get("/api/claim")
