@@ -84,16 +84,18 @@ class Listener:
 
 
 class Redirecting:
-    """The fake daemon behind a switch: while `to` is set, every request gets a redirect there instead."""
+    """The fake daemon behind a switch: while `to` is set, every request (or only those whose path ends with `only`)
+    gets a redirect there instead."""
 
     def __init__(self, app):
         self.app = app
         self.to = ""
+        self.only = ""
         self.status = 307
         self.redirected: list[str] = []
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and self.to:
+        if scope["type"] == "http" and self.to and scope["path"].endswith(self.only):
             self.redirected.append(scope["path"])
             await send({"type": "http.response.start", "status": self.status,
                         "headers": [(b"location", (self.to + scope["path"]).encode()), (b"content-length", b"0")]})
@@ -242,14 +244,15 @@ def test_the_hub_does_not_follow_a_daemon_redirect(tmp_path, clean_env):
         hub.sign_in()
         daemon.to = target.url
         assert hub.post("/api/claim").status_code >= 400
-        daemon.to = ""
-        started = hub.post("/api/claim").json()
-        daemon.to = target.url
-        fake.approve(started["request_id"])
-        # The redeem is redirected: the daemon minted nothing, so the claim fails rather than following it.
+        # Only the redeem is redirected, from before the first poll, so no poll can reach the fake and mint a key.
+        daemon.only = "/token"
+        started = hub.post("/api/claim")
+        assert started.status_code == 201, started.text
+        fake.approve(started.json()["request_id"])
+        # The daemon minted nothing, so the claim fails rather than following the redirect.
         assert hub.wait_for("failed")["state"] == "failed"
-        assert any(path.endswith("/token") for path in daemon.redirected)
-        daemon.to = ""
+        assert any(path.endswith("/token") for path in daemon.redirected) and not fake.minted
+        daemon.to = daemon.only = ""
         claim(hub, fake)
         daemon.to = target.url
         pages = [hub.get(page) for page in ("/api/overview", "/api/settings/config", "/api/apps", "/api/claim")]
