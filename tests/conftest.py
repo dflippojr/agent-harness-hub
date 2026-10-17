@@ -25,7 +25,7 @@ from harness_hub.server import create_app
 
 from .admin_fake import register_administration
 from .apps_fake import register_apps
-from .contract.targets import check_sent
+from .contract.validation import check_sent
 from .marketplace_fake import register_marketplace
 from .modules_fake import register_inventory
 from .pairing_fake import register_pairing

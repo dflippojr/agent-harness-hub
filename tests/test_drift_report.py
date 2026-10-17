@@ -118,11 +118,25 @@ def test_a_dry_run_reads_but_writes_nothing(capsys):
     assert "[dry run] gh issue create" in capsys.readouterr().out
 
 
+def _checkout(sha: str) -> str:
+    return f"""
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: dflippojr/agent-harness
+          ref: {sha}
+          path: daemon
+"""
+
+
 def test_the_pin_is_read_from_ci_and_must_be_one_commit():
-    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert drift.pinned_sha(ci) == "aa5a9047dbe4bcba6b7ec3348d0cd529c00ebe2b"
+    # tests/test_supply_chain.py checks the live ci.yml's pin; this checks the parser on its own.
+    assert drift.pinned_sha("jobs:" + _checkout(PIN) + _checkout(PIN)) == PIN
     with pytest.raises(SystemExit):
-        drift.pinned_sha(ci.replace("aa5a9047dbe4bcba6b7ec3348d0cd529c00ebe2b", PIN, 1))
+        drift.pinned_sha("jobs:" + _checkout(PIN) + _checkout(OLDER))
+    with pytest.raises(SystemExit):
+        drift.pinned_sha("jobs:\n  test:\n    runs-on: ubuntu-latest\n")
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert len(drift.pinned_sha(ci)) == 40  # every daemon checkout in the live ci.yml names one commit
 
 
 def test_an_unreadable_results_file_is_reported_not_ignored(tmp_path):

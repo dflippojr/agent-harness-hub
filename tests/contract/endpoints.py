@@ -10,7 +10,7 @@ daemon at the pinned commit and nightly at agent-harness main (docs/daemon-contr
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .shapes import ANY, BOOL, INT, NUM, STR, Enum, ListOf, MapOf, Obj, Shape
 
@@ -187,12 +187,12 @@ class Endpoint:
     request: Shape | None
     responses: dict[int, Shape | None]
     params: Shape | None = None  # the query string, for the reads that take one
-    notes: str = ""
     # Statuses any owner route answers without a case of its own: a missing or rejected key.
-    common: tuple[int, ...] = field(default=(401,))
+    common: tuple[int, ...] = (401,)
 
 
 def _admin(responses: dict[int, Shape | None], request: Shape | None = None, **kw) -> Endpoint:
+    """An owner administration row, which reads best answers first."""
     return Endpoint(request, responses, **kw)
 
 
