@@ -26,3 +26,6 @@ tools/ui-tests/test-results/
 
 # Verify skill evidence (.claude/skills/verify): screenshots, logs and summaries, never committed.
 .verify/
+
+# Hypothesis example database (property tests): replays failures locally, never committed.
+.hypothesis/

@@ -9,6 +9,7 @@ name: CI
 #   ui       - browser journeys (tools/ui-tests) against a disposable fake model daemon and Hub (docs/ui-testing.md)
 #   package  - the wheel (with the static UI), and the Docker image build and smoke test (scripts/smoke-image.sh)
 #   sonar    - SonarCloud analysis of the test job's coverage; the quality gate fails this check
+#   gate     - the one check to require: always runs, fails unless lint, test, e2e, ui and package all succeeded
 on:
   push:
     branches: [main]
@@ -18,9 +19,12 @@ on:
 permissions:
   contents: read
 
+# A newer push to a PR cancels its older run. Every push to main gets its own group (its commit) and is never
+# cancelled, so each commit of a batch merge is tested on its own: one group per ref would still drop the queued
+# runs in between.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
@@ -65,7 +69,8 @@ jobs:
           python -m pip install --require-hashes -r requirements-dev.lock -r requirements-build.lock
           python -m pip install --no-deps --no-build-isolation -e .
       - name: Unit tests
-        run: python -m pytest -q --cov=harness_hub --cov-report=xml:coverage.xml --cov-report=term
+        # The floor is about a point under the measured line coverage (93% on Linux, 96% on Windows).
+        run: python -m pytest -q --cov=harness_hub --cov-report=xml:coverage.xml --cov-report=term --cov-fail-under=92
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -239,3 +244,22 @@ jobs:
         run: |
           docker build -t agent-harness-hub:ci .
           scripts/smoke-image.sh agent-harness-hub:ci
+
+  gate:
+    # The single check a ruleset (or `ao ready`) requires, so it never lists job names. It runs even when a needed
+    # job failed or was cancelled, and fails unless every needed job succeeded. sonar is not here: its quality gate
+    # is its own check.
+    if: always()
+    needs: [lint, test, e2e, ui, package]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every needed job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          failed=$(echo "$NEEDS" | jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(", ")')
+          if [ -n "$failed" ]; then
+            echo "::error::Not successful: $failed"
+            exit 1
+          fi

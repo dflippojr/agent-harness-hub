@@ -2,10 +2,10 @@
 
 Browser responses are built from allowlisted fields (`views.py`), so nothing secret should get this far. This guard
 checks every `/api/` response body anyway and withholds it (500) when it contains the Hub key or the pending claim's
-verifier, or a string shaped like a full Agent Harness token. Only full-length shapes count: ordinary words such as
-`ha-core` or `hp-laserjet` pass. Shorter key display prefixes (`ho-LW5TqUX`) are redacted field by field in `views.py`.
-Withholding fails closed: a page shows an error, never a secret. The one exemption is the Google link code the owner
-just asked to create (`LINK_CODE`): they are meant to see it once.
+verifier, a string shaped like a full Agent Harness token, or a PEM private key header. Only full-length token shapes
+count: ordinary words such as `ha-core` or `hp-laserjet` pass. Shorter key display prefixes (`ho-LW5TqUX`) are
+redacted field by field in `views.py`. Withholding fails closed: a page shows an error, never a secret. The one
+exemption is the Google link code the owner just asked to create (`LINK_CODE`): they are meant to see it once.
 """
 
 from __future__ import annotations
@@ -23,6 +23,9 @@ log = logging.getLogger("harness_hub.guard")
 # and other keys are the prefix plus `secrets.token_urlsafe(32)` (43 characters), pairing codes plus
 # `token_urlsafe(18)` (24). A longer run counts whole, so a token followed by more token characters is not missed.
 TOKEN_SHAPE = re.compile(r"(?<![A-Za-z0-9])(?:(?:ha|ho|hk)-[A-Za-z0-9_\-]{43,}|(?:hp|hrp)-[A-Za-z0-9_\-]{24,})")
+# A PEM private key's header: PKCS#8, RSA, EC, OpenSSH, encrypted or PGP. The daemon's skill validator flags the same
+# header in skill files (agent-harness `harness_modules/skills/skill_validate.py`); no field the Hub shows holds one.
+PRIVATE_KEY = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")
 # A key list's display prefix (`ho-LW5TqUX`, the token's first 10 characters) or anything shaped like one. Views redact
 # it in fields where a key id or daemon diagnostic can appear; the guard does not, because ordinary words match it.
 KEY_PREFIX_SHAPE = re.compile(r"(?<![A-Za-z0-9])(?:ha|ho|hk|hp|hrp)-[A-Za-z0-9_\-]{4,}")
@@ -62,7 +65,7 @@ def leaks(body: bytes, secrets: Iterable[str], exempt: str | None = None) -> boo
         return True
     if exempt is not None:
         text = text.replace(json.dumps(exempt), '""', 1)
-    return any(TOKEN_SHAPE.search(value) or any(secret in value for secret in known)
+    return any(TOKEN_SHAPE.search(value) or PRIVATE_KEY.search(value) or any(secret in value for secret in known)
                for value in (text, *_decoded(text)))
 
 

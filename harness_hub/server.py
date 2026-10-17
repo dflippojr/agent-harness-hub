@@ -74,6 +74,7 @@ ALLOWED_LOGINS_SECONDS = 5.0  # how long a tailnet sign-in reuses the daemon's a
 PAIRING_COUNT_SECONDS = 5.0  # how long Overview waits for its optional pairing count, consent lock included
 SPEND_CAP_READS = 8  # App session-cap reads in flight at once; every live App is read
 RESTART_GRACE_SECONDS = 1.0  # how long after a restart request the Hub ignores health that predates it
+KNOWN_RECOVERIES = 16  # recoveries the Hub remembers from daemon replies, to name in a restart's 202 (#143)
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 SECURITY_HEADERS = [
@@ -144,8 +145,15 @@ def _unclaimed(detail: str) -> JSONResponse:
     return _error(409, detail, claimed=False)
 
 
+def _error_status(status: int) -> int:
+    """The status for the browser when the daemon refused. A redirect, which the daemon client never follows, is the
+    daemon misbehaving: the browser gets 502, never a 3xx from the Hub's API."""
+    return status if 400 <= status < 600 else 502
+
+
 def _forwarded(reply: Any) -> JSONResponse:
-    return JSONResponse({**settings_error(reply.body, reply.status), "reachable": True}, status_code=reply.status)
+    return JSONResponse({**settings_error(reply.body, reply.status), "reachable": True},
+                        status_code=_error_status(reply.status))
 
 
 async def concurrently(*reads: Any) -> list[Any]:
@@ -198,14 +206,26 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     app.state.sessions = sessions
     app.state.inventory = inventory
     restart = {"active": False, "target": None, "generation": 0, "not_before": 0.0}
+    recoveries: list[dict] = []  # the newest distinct recoveries any daemon reply reported, oldest first
+
+    def observe_recovery(recovery: dict | None) -> None:
+        """Remember a recovery a daemon reply reported. Any reply the Hub has before it asks for a restart was sampled
+        before that restart, so these are the recoveries the shell must not take for one of it (#143). One the response
+        guard would withhold is not kept: the page never had it, and naming it would withhold every restart reply."""
+        if recovery and recovery not in recoveries and not leaks(json.dumps(recovery).encode(), store.secrets()):
+            recoveries.append(recovery)
+            del recoveries[:-KNOWN_RECOVERIES]
 
     def observe_restart(shown: dict | None, health_generation: int) -> None:
         """End a restart the Hub started once the daemon answers healthy with confirmed settings, at the target revision
-        or after a recovery. Only a health request begun since this restart can end it. Overview and the Settings
-        health poll both look, so neither page has to stay open."""
+        or a later one (a save made during the restart, which the restarted daemon reports), or after a recovery. Only
+        a health request begun since this restart can end it. Overview and the Settings health poll both look, so
+        neither page has to stay open."""
+        revision = shown["config_revision"] if shown else None
         if (health_generation == restart["generation"] and time.monotonic() >= restart["not_before"]
                 and shown and shown["ok"] and shown["config_confirmed"]) and (
-                restart["target"] is None or shown["config_revision"] == restart["target"] or shown["recovery"]):
+                restart["target"] is None or isinstance(revision, int) and revision >= restart["target"]
+                or shown["recovery"]):
             restart["active"] = False
 
     @app.middleware("http")
@@ -466,6 +486,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 pairing_task.cancel()
                 await concurrently(pairing_task)
         result = overview(claims, settings.daemon_url, health, ownership, error)
+        if health:
+            observe_recovery(health["health"]["recovery"])
         observe_restart(health["health"] if health else None, health_generation)
         result["answered"] = answered
         result["restarting"] = restart["active"]
@@ -769,7 +791,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 remember_consent(baseline, key["key_id"], shown, acknowledge=True)
                 return _error(409, "The daemon requires a separate acknowledgement for these scopes. "
                               "Review the consent screen again.", consent_entry=consent_entry(baseline, key["key_id"]))
-            return JSONResponse(error, status_code=reply.status)
+            return JSONResponse(error, status_code=_error_status(reply.status))
         actual = scope_disclosures(reply.body.get("disclosures") if isinstance(reply.body, dict) else None,
                                    declared, tuple(store.secrets()))
         shown = [{k: item[k] for k in ("scope", "tier", "text")} for item in entry["scopes"]]
@@ -1056,6 +1078,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         except DaemonUnreachable:
             return {"reachable": False, "answered": False, "restarting": restart["active"], "health": None}
         shown = health_view(reply.body)["health"] if reply.ok else None
+        if shown:
+            observe_recovery(shown["recovery"])
         observe_restart(shown, health_generation)
         # reachable: a health answer was read; answered: the daemon replied at all, a 503 mid-restart included.
         return {"reachable": reply.ok, "answered": True, "status": reply.status, "restarting": restart["active"],
@@ -1111,6 +1135,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     return _error(400, "invalid backend name")
             if operation == "github_save" and type(body.get("enabled")) is not bool:
                 return _error(400, "enabled must be a boolean")
+        # Taken before the restart is asked for: a reply that comes in while it is under way may already be from it.
+        known = list(recoveries)
         try:
             reply = await daemon.settings(key["token"], operation, body, name)
             if reply.status == 401:
@@ -1121,12 +1147,16 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return JSONResponse(control_view(operation, {"enabled": False}, installed=False))
         if not reply.ok:
             return _forwarded(reply)
+        shown = registry_view(reply.body) if operation in (
+            "schema", "config", "validate", "save", "rollback", "restart") else control_view(operation, reply.body)
+        if operation in ("config", "save", "rollback", "restart"):
+            observe_recovery(shown["recovery"])
         if operation == "restart" and isinstance(reply.body, dict) and reply.body.get("accepted") is True:
             accepted_at = time.monotonic()
             restart.update(active=True, target=reply.body.get("target_revision"), generation=restart["generation"] + 1,
                            not_before=accepted_at + RESTART_GRACE_SECONDS)
-        shown = registry_view(reply.body) if operation in (
-            "schema", "config", "validate", "save", "rollback", "restart") else control_view(operation, reply.body)
+            # The recoveries known before this restart: the shell keeps them from ending its target (#143).
+            shown["known_recoveries"] = known
         return JSONResponse(shown, status_code=reply.status)
 
     @app.get("/api/claim")
