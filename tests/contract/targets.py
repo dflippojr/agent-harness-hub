@@ -15,7 +15,6 @@ import importlib.util
 import json
 import os
 import secrets
-import shutil
 import subprocess
 import sys
 import threading
@@ -311,10 +310,3 @@ def _json(response: httpx.Response) -> Any:
 def daemon_source() -> Path | None:
     src = os.environ.get("HUB_E2E_DAEMON_SRC", "")
     return Path(src).resolve() if src else None
-
-
-def keep_logs(root: Path, into: Path | None) -> None:
-    """Copy the daemon log next to the test evidence (CI uploads it), never the config or data."""
-    if into and (root / "daemon.log").is_file():
-        into.mkdir(parents=True, exist_ok=True)
-        shutil.copy(root / "daemon.log", into / f"contract-daemon-{os.getpid()}.log")
