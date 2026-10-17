@@ -144,8 +144,15 @@ def _unclaimed(detail: str) -> JSONResponse:
     return _error(409, detail, claimed=False)
 
 
+def _error_status(status: int) -> int:
+    """The status for the browser when the daemon refused. A redirect, which the daemon client never follows, is the
+    daemon misbehaving: the browser gets 502, never a 3xx from the Hub's API."""
+    return status if 400 <= status < 600 else 502
+
+
 def _forwarded(reply: Any) -> JSONResponse:
-    return JSONResponse({**settings_error(reply.body, reply.status), "reachable": True}, status_code=reply.status)
+    return JSONResponse({**settings_error(reply.body, reply.status), "reachable": True},
+                        status_code=_error_status(reply.status))
 
 
 async def concurrently(*reads: Any) -> list[Any]:
@@ -766,7 +773,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 remember_consent(baseline, key["key_id"], shown, acknowledge=True)
                 return _error(409, "The daemon requires a separate acknowledgement for these scopes. "
                               "Review the consent screen again.", consent_entry=consent_entry(baseline, key["key_id"]))
-            return JSONResponse(error, status_code=reply.status)
+            return JSONResponse(error, status_code=_error_status(reply.status))
         actual = scope_disclosures(reply.body.get("disclosures") if isinstance(reply.body, dict) else None,
                                    declared, tuple(store.secrets()))
         shown = [{k: item[k] for k in ("scope", "tier", "text")} for item in entry["scopes"]]
