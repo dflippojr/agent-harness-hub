@@ -65,3 +65,5 @@ ignore = ["S101"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S105", "S106", "S603", "S607"]
 "scripts/ui_instance.py" = ["S603"]  # test tooling: fixed argv lists, sys.executable, no shell
+# CI tooling: fixed `gh` argv lists, no shell; it parses only JUnit XML its own workflow's test runs wrote.
+"scripts/drift_report.py" = ["S314", "S603", "S607"]

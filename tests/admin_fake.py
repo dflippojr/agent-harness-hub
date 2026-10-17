@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import time
 from pathlib import Path
 
 from fastapi import Request
@@ -129,6 +130,13 @@ def register_administration(app, fake, owner):
     fake.credentials = [copy.deepcopy(CREDENTIAL)]
     fake.retention_phrase = "DELETE 2 ARCHIVED IMAGES synthetic"
     fake.invitation_code = "ahg-synthetic-link-code"
+    fake.household_audit = [AUDIT]  # newest first, as the daemon lists it
+    fake.projects = []
+
+    def audited(target_id, outcome, detail=""):
+        fake.household_audit.insert(0, {"id": len(fake.household_audit) + 2, "ts": time.time(), "actor_id": "owner",
+                                        "target_id": target_id, "action": "create", "outcome": outcome,
+                                        "detail": detail})
 
     def refusal(status, message):
         return JSONResponse({"detail": message}, status_code=status)
@@ -147,15 +155,19 @@ def register_administration(app, fake, owner):
             return fake.admin_overrides[path]
         reply, status = None, 200
         if path == "accounts/audit":
-            reply = [AUDIT]
+            reply = fake.household_audit
         elif path == "accounts":
             if method == "GET":
                 reply = list(fake.accounts.values())
             else:
-                row = {**copy.deepcopy(ACCOUNT), **body, "user_id": "u-created"}
-                if any(account["login"] == row["login"] for account in fake.accounts.values()):
+                row = {**copy.deepcopy(ACCOUNT), **body}
+                twin = next((a for a in fake.accounts.values() if a["login"] == row["login"]), None)
+                if twin:
+                    audited(twin["user_id"], "denied", "login already a member")
                     return refusal(409, "login already a member")
+                row["user_id"] = "u-created" if "u-created" not in fake.accounts else f"u-created-{len(fake.accounts)}"
                 fake.accounts[row["user_id"]] = row
+                audited(row["user_id"], "ok")
                 reply, status = row, 201
         elif path.startswith("accounts/"):
             parts = path.split("/")
@@ -187,12 +199,18 @@ def register_administration(app, fake, owner):
                 reply, status = {**copy.deepcopy(CREDENTIAL), **body}, 201
                 fake.credentials = [reply]
         elif path.startswith("provider-credentials/"):
+            if not any(row["id"] == path.rsplit("/", 1)[-1] for row in fake.credentials):
+                return refusal(404, "no active provider credential with that id")
             fake.credentials = []
             return Response(status_code=204)
         elif path == "skills":
             reply = {"enabled": True, "proposals": [fake.proposal], "installed": [fake.skill]}
         elif path == "skills/enabled":
             reply = [fake.skill] if fake.skill["enabled"] else []
+        elif path.startswith("skills/proposals/") and path.split("/")[2] != fake.proposal["id"]:
+            return refusal(404, "no skill proposal with that id")
+        elif path.startswith("skills/") and path.split("/")[1] not in ("proposals", fake.skill["slug"]):
+            return refusal(404, "no installed skill with that slug")
         elif path.startswith("skills/proposals/"):
             if path.endswith("/install"):
                 if body["content_hash"] != fake.proposal["content_hash"]:
@@ -278,20 +296,17 @@ def register_administration(app, fake, owner):
                 }
             ]
         elif re.fullmatch(r"runners/[^/]+/update", path):
+            if path.split("/")[1] != "synthetic":
+                return refusal(404, "unknown runner")
             reply = {"ok": True, "version": "2"}
+        elif path == "projects" and method == "GET":
+            reply = fake.projects
         elif path == "projects":
-            reply = (
-                {
-                    "name": body["name"],
-                    "description": body.get("description", ""),
-                    "repo": bool(body.get("repo")),
-                    "homelab": False,
-                    "target": "tower",
-                    "managed": True,
-                }
-                if method == "POST"
-                else []
-            )
+            if any(row["name"] == body["name"] for row in fake.projects):
+                return refusal(400, f"project '{body['name']}' already exists")
+            reply, status = {"name": body["name"], "description": body.get("description", ""),
+                             "repo": bool(body.get("repo")), "homelab": False, "target": "tower", "managed": True}, 201
+            fake.projects.append(reply)
         elif path == "remote-control":
             reply = {
                 "enabled": True,

@@ -52,6 +52,27 @@ def _jobs(workflow: str) -> dict[str, str]:
     return dict(zip(parts[1::2], parts[2::2], strict=True))
 
 
+def test_drift_runs_nightly_on_hosted_runners_with_locked_inputs_and_only_the_default_token():
+    drift = (ROOT / ".github/workflows/drift.yml").read_text(encoding="utf-8")
+    assert re.search(r'^  schedule:\n    - cron: "[^"]+"$', drift, re.M) and "workflow_dispatch:" in drift
+    actions = re.findall(r"uses: (\S+)", drift)
+    assert actions and all(re.fullmatch(r"actions/[a-z-]+@[a-f0-9]{40}", action) for action in actions)
+    assert drift.count("persist-credentials: false") == sum(a.startswith("actions/checkout@") for a in actions)
+    assert set(re.findall(r"runs-on: (.+)", drift)) <= {"ubuntu-latest", "${{ matrix.os }}"}
+    assert "self-hosted" not in drift and "secrets." not in drift
+    assert "pip install -r daemon/requirements.txt" not in drift
+    assert drift.count("--require-hashes -r requirements-e2e.lock") == 2
+    header = drift.split("\njobs:\n", 1)[0]
+    assert re.search(r"^permissions:\n  contents: read\n\n", header, re.M)
+    jobs = _jobs(drift)
+    assert set(jobs) == {"resolve", "daemon", "ui", "report"}
+    for job_id, job in jobs.items():
+        assert ("issues: write" in job) == (job_id == "report")
+        assert "github.token" not in job or job_id == "report"
+    # A pull request that changes the workflow runs it, but its report writes nothing.
+    assert "github.event_name == 'pull_request' && '--dry-run'" in jobs["report"]
+
+
 def test_release_publishes_on_version_tags_with_pinned_actions():
     release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     assert 'tags: ["v[0-9]+.[0-9]+.[0-9]+"]' in release

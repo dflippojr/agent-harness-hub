@@ -40,8 +40,10 @@ test("the members table and the first member load without a run step, in readabl
   await expect(pane(page)).toContainText("0 B of 20 GiB");
   await expect(pane(page)).toContainText("1 running · 2 queued");
   await expect(pane(page)).toContainText("None yet");
-  // No epoch seconds or raw booleans: the daemon's created_at is a float such as 1792187816.15.
-  await expect(pane(page)).not.toContainText(/\d{10}/);
+  // No epoch seconds or raw booleans: the daemon's created_at is a float such as 1792187816.15. The member id is
+  // random hex, which can hold ten digits in a row, so it is left out of the check.
+  const id = await pane(page).getAttribute("data-member-id");
+  expect((await pane(page).textContent()).replaceAll(id, "")).not.toMatch(/\d{10}/);
   await expect(pane(page)).not.toContainText("true");
   await expect(page.getByLabel("Choose action", { exact: true })).toHaveCount(0);
   await expect(page.locator(".admin-footnote")).toContainText(/^Not offered here: .+ On the daemon host: harness /);

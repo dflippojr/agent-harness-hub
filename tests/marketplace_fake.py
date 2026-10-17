@@ -68,7 +68,7 @@ def register_marketplace(app, fake, owner):
         if "admin" in scopes or any(scope not in fake.arm_disclosures for scope in scopes):
             return refusal(400, "unknown or empty scopes", "invalid_request")
         if ELEVATED.intersection(scopes) and body.get("acknowledge_elevated") is not True:
-            return refusal(400, "elevated scopes need acknowledge_elevated", "acknowledgement_required")
+            return refusal(400, "elevated scopes need acknowledge_elevated", "invalid_request")
         rid = fake.add_pairing(body.get("name") or body["catalog_app_id"], scopes, state="armed",
                                origin=body.get("origin", ""), catalog_app_id=body["catalog_app_id"],
                                text=fake.arm_disclosures)

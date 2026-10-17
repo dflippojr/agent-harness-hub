@@ -782,7 +782,10 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return _unreachable("The daemon did not answer. Refresh the Marketplace before setting up again.")
         if not reply.ok:
             error = settings_error(reply.body, reply.status)
-            if error["error"]["code"] == "acknowledgement_required":
+            # The daemon refuses an unacknowledged arm with HTTP 400 `invalid_request` and this detail; the code
+            # `acknowledgement_required` is only in its audit row (agent-harness harness/pairing_requests.py).
+            if error["error"]["code"] == "acknowledgement_required" or (
+                    reply.status == 400 and "acknowledge_elevated" in error["detail"]):
                 # A newer daemon may elevate a scope our pinned table does not yet know. It armed nothing.
                 shown = [{k: item[k] for k in ("scope", "tier", "text")} for item in entry["scopes"]]
                 remember_consent(baseline, key["key_id"], shown, acknowledge=True)

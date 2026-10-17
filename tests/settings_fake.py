@@ -6,6 +6,13 @@ from copy import deepcopy
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+# The owner routes this fake answers, as the daemon serves them (each one has a case in tests/contract).
+ROUTES = (("GET", "/config/schema"), ("GET", "/config"), ("POST", "/config/validate"), ("PATCH", "/config"),
+          ("POST", "/config/rollback"), ("POST", "/config/restart"), ("GET", "/smart-approvals"),
+          ("PUT", "/smart-approvals"), ("GET", "/backends"), ("PUT", "/backends/{name}"), ("GET", "/memory"),
+          ("PUT", "/memory/profile"), ("GET", "/github-member-auth"), ("PUT", "/github-member-auth"),
+          ("GET", "/google-signin"), ("POST", "/notify/test"))
+
 
 def register_settings(app, fake, owner):
     rows = [
@@ -59,8 +66,8 @@ def register_settings(app, fake, owner):
     def error(status, code, detail, **extra):
         return JSONResponse({"detail": detail, "error": {"code": code, **extra}}, status_code=status)
 
-    @app.api_route("/api/admin/v1/{path:path}", methods=["GET", "POST", "PUT", "PATCH"])
-    async def settings(path: str, request: Request):
+    async def settings(request: Request):
+        path = request.url.path.removeprefix("/api/admin/v1/")
         if not owner(request):
             return JSONResponse({"detail": "owner key required"}, status_code=401)
         body = await request.json() if request.method != "GET" else None
@@ -154,3 +161,6 @@ def register_settings(app, fake, owner):
         if path == "notify/test":
             return {"sent": True, "provider_credential": "provider-secret-sentinel"}
         return error(404, "not_found", "unknown route")
+
+    for method, path in ROUTES:
+        app.add_api_route("/api/admin/v1" + path, settings, methods=[method])

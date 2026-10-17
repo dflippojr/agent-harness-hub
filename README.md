@@ -253,11 +253,15 @@ python -m pip install --require-hashes -r requirements-dev.lock -r requirements-
 python -m pip install --no-deps --no-build-isolation -e .
 ruff check .
 node --test tests/browser-session.test.mjs
-pytest                     # unit tests against a fake daemon
+pytest                     # unit tests against a fake daemon, with the daemon contract suite against the fakes
 HYPOTHESIS_PROFILE=thorough pytest tests/test_guard_properties.py   # many more generated examples (default: quick)
 HUB_E2E_DAEMON_SRC=../agent-harness pytest -m e2e   # a real daemon from a checkout (its requirements installed)
 HUB_STATE_MACHINE_EXAMPLES=2000 pytest tests/test_state_machine.py   # a longer search of restart and cache orderings
 ```
+
+The fakes and the real daemon are held to one contract: `tests/contract/` lists every daemon endpoint the Hub calls
+and runs each case against both, and a nightly run checks it against agent-harness main
+([docs/daemon-contract.md](docs/daemon-contract.md)).
 
 `tests/test_state_machine.py` plays random sequences of page reads (some left in flight), saves, restarts, daemon
 outages and inventory changes against a real Hub, the daemon fake and the shell's real `status.mjs` (it needs Node.js

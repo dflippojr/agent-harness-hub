@@ -1,10 +1,19 @@
 // HUB-01 navigation and layout: every section loads and survives a reload, the theme follows the color scheme, the
 // rail is grouped with its footer, phones get the bottom bar and its More sheet, and no page scrolls sideways at 320,
 // 375, 768 or 1440 px.
-import { SECTIONS, expect, expectNoHorizontalOverflow, hubUrl, isPhone, openSection, scheme, test } from "./fixtures.mjs";
+import { SECTIONS, expect, expectNoHorizontalOverflow, hubApi, hubUrl, isPhone, openSection, scheme, test } from "./fixtures.mjs";
 
 const BACKGROUND = { light: "#f3f4f6", dark: "#000000" };
 const CLI_PARITY_SECTIONS = ["admin", "apps", "marketplace", "modules", "pairing", "settings"];
+const TAILNET_BANNER = "Tailnet sign-in needs Owner API 1.26 or later.";
+
+// The Owner API version the daemon reports, and whether it is below the 1.26 tailnet sign-in needs. The pinned daemon
+// (aa5a904) reports 1.24; the nightly drift run (.github/workflows/drift.yml) runs these journeys at agent-harness main.
+async function ownerApi(page) {
+  const { json } = await hubApi(page, "overview");
+  expect(["no_tailnet_signin", "supported"]).toContain(json.ownership.compatibility);
+  return { version: json.ownership.api_version, belowTailnet: json.ownership.compatibility === "no_tailnet_signin" };
+}
 
 async function expectTapTargets(scope, context) {
   const targets = scope.locator("button:visible, a:visible, summary:visible, label:has([role=switch]):visible, .command:visible");
@@ -49,14 +58,16 @@ test("the rail groups the sections, shows the daemon chip and banner, and rememb
     .toHaveText([/^Pairing requests/, "Apps", "Spend", "Marketplace"]);
   await expect(nav.getByRole("list", { name: "Daemon" }).getByRole("link"))
     .toHaveText(["Settings", "Modules", "Accounts and maintenance"]);
-  // The pinned daemon (aa5a904) reports Owner API 1.24: live, but below the 1.26 tailnet sign-in needs.
-  await expect(nav.getByRole("status")).toHaveText("Daemon live · API 1.24");
+  // Live, with the daemon's Owner API version; below 1.26 a banner says tailnet sign-in needs a newer daemon.
+  const api = await ownerApi(page);
+  await expect(nav.getByRole("status")).toHaveText(`Daemon live · API ${api.version}`);
   const slot = page.locator("main > .page-head + #banner-slot");
-  await expect(slot.getByRole("status")).toContainText("Tailnet sign-in needs Owner API 1.26 or later.");
+  const tailnet = slot.getByRole("status").filter({ hasText: TAILNET_BANNER });
+  await expect(tailnet).toHaveCount(api.belowTailnet ? 1 : 0);
   // Overview's answer is held in memory: the banner stays under every page head without new reads.
   await nav.getByRole("link", { name: "Apps", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Apps", level: 1 })).toBeVisible();
-  await expect(slot.getByRole("status")).toContainText("Tailnet sign-in needs Owner API 1.26 or later.");
+  await expect(tailnet).toHaveCount(api.belowTailnet ? 1 : 0);
 
   // Host commands (#70): off by default, each action's CLI equivalent waits behind its Host command button.
   const host = nav.getByRole("switch", { name: "Show host commands" });
@@ -125,7 +136,8 @@ test("phone: pages fit the device width and the bottom bar navigates", async ({ 
   await expect(bar.getByRole("link")).toHaveText(["Overview", /^Pairing/, "Apps"]);
   await expect(bar.getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
   // No rail and no drawer: the daemon chip sits beside the page title, and the sheet is closed.
-  await expect(page.locator("main > .page-head").getByRole("status")).toHaveText("Daemon live · API 1.24");
+  const { version } = await ownerApi(page);
+  await expect(page.locator("main > .page-head").getByRole("status")).toHaveText(`Daemon live · API ${version}`);
   await expect(page.locator("#nav")).toBeHidden();
   await bar.getByRole("link", { name: "Apps" }).click();
   await expect(page.getByRole("heading", { name: "Apps", level: 1 })).toBeVisible();

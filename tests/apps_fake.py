@@ -39,8 +39,9 @@ def register_apps(app, fake, owner):
         result = deepcopy(fake.apps_rows)
         if fake.hub:
             result.append({"id": fake.hub["key_id"], "name": "Synthetic Hub", "kind": "owner", "role": "hub",
-                           "prefix": fake.hub_token[:12], "scopes": "admin", "origins": [],
-                           "created_at": fake.hub["claimed_at"], "last_used_at": time.time()})
+                           "prefix": fake.hub_token[:12], "scopes": "admin", "origins": [], "catalog_app_id": "",
+                           "created_at": fake.hub["claimed_at"], "last_used_at": time.time(), "revoked_at": None,
+                           "retention_days": None, "erase_after": None, "erased_at": None})
         return result
 
     fake.key_rows = rows
