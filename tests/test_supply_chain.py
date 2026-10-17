@@ -146,3 +146,18 @@ def test_ci_and_release_smoke_test_the_image_as_a_non_root_user():
     smoke = (ROOT / "scripts/smoke-image.sh").read_text(encoding="utf-8")
     assert '--version' in smoke and '--user "$user"' in smoke and "type=bind,src=$state,dst=/hub-state" in smoke
     assert "--network host" in smoke and "/healthz" in smoke
+
+
+def test_ci_gate_needs_every_job_but_sonar_and_main_runs_are_never_cancelled():
+    ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    jobs = _jobs(ci)
+    gate = jobs["gate"]
+    needs = re.search(r"^    needs: \[([^\]]*)\]$", gate, re.M)
+    assert needs, gate
+    # A new job joins the gate, or the ruleset that requires only `gate` would not cover it.
+    assert {job.strip() for job in needs.group(1).split(",")} == set(jobs) - {"gate", "sonar"}
+    assert "    if: always()\n" in gate
+    assert 'select(.value.result != "success")' in gate and "exit 1" in gate
+    assert "group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}" in ci
+    assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in ci
+    assert re.search(r"python -m pytest .*--cov-fail-under=92\b", jobs["test"])
