@@ -111,7 +111,11 @@ It then stays in the foreground. Start to READY takes about 10 seconds (CI allow
 The seeded pairing requests come from the launcher, which never keeps their verifiers or match codes. Journeys that
 approve create their own request with the daemon's public `POST <daemon>/api/v1/pair/requests` (name, scopes,
 `code_challenge`, `code_challenge_method: S256`). Its answer holds the `match_code` the App would show. The daemon
-allows **10 requests per source in 10 minutes and 3 pending at once**, and the seed uses two.
+allows **10 requests per source in 10 minutes and 3 pending at once**, and the seed uses two. Slots the owner arms
+from Marketplace (`POST <hub>/api/marketplace/arm`, as **Set up** and **Approve** do) do not count: the App claims one
+with `POST <daemon>/api/v1/pair/requests/<id>/claim` and its challenge, gets the `match_code` to show, and after the
+owner confirms it fetches its key with `POST <daemon>/api/v1/pair/requests/<id>/token` and its verifier. Journeys that
+need a claim, a redemption or a paired App of their own use slots.
 
 **Reset.** There is no in-place reset. Reset is Teardown followed by Start.
 
@@ -144,11 +148,12 @@ device and the Windows `tailscaled` service, so it is not applicable here.
 | HUB-06 apps | `#/apps`; ready: "Paired apps and keys" | default | In the keys table, **Open Synthetic App**: its detail opens beside the list (in its place below 1200 px) with focus on its heading. Set Maximum running, **Save session caps**, reload, reopen. Set Retention days, **Save retention**, Cancel, **Save retention** again and confirm; reload, reopen. | The row reads "Never used" and "App-supplied name". A blank cap shows the daemon default as its placeholder. "Session caps saved.", and after reload the field and "Effective caps: running n". Retention asks "Change retention for Synthetic App?" inside its card; Cancel saves nothing and keeps the typed value; Confirm shows "Retention saved." and the value after reload. Revoke is not exercised: the seeded app is shared, and restoring is host-only. | Audit: `app.limits` and `app.retention` (asserted by the suite) |
 | HUB-07 pairing | `#/pairing`; ready: "History · last day" | own request per test | Create a request: its card is under "Needs you", marked "Needs approval". Type a wrong code and Approve; type the App's code and Approve; reload. Create an elevated request: Approve stays disabled until the acknowledgement is checked. Deny, Cancel, Deny, **Confirm deny**, reload. | Wrong code: "the match code does not match the one the App shows" (see #43). Right code: "Approved <name>. The app now fetches its own token.", then a row under "Waiting for the app". Deny asks inside the card ("Deny <name>?"); afterwards the request is a "Denied" row in the History table. | Audit: `pairing_request.create`, `pairing_request.approve`, `pairing_request.deny` |
 | HUB-08 marketplace | `#/marketplace`; ready: button "Set up financial-planner" | default | **Set up financial-planner**, Cancel. Set up again, check any acknowledgement, choose an origin if asked, **Approve**, Done, reload, **Withdraw slot for financial-planner**, **Confirm withdraw**, reload. | "Being listed here grants nothing." Consent, inside the financial-planner card: "Nothing is armed until you approve."; Cancel returns focus to its Set up button. Approve: "Slot armed for financial-planner" in the same card. Confirm withdraw asks inside the slot (`role=alert`). After withdraw and reload: "Set up financial-planner" again. | Not checked in pass 1 |
-| HUB-09 accounts | `#/admin`; ready: heading "Synthetic member" (the first member's detail pane, loaded without a run step) | default | **Add member** in the page head; fill a unique login and name in the pane, **Add member**. Reload. Open the member's row, **Disable**, **Confirm update member**. Reload and open the row again. Open **Audit** and run "Read retained audit". | The members table shows readable values (GiB, Enabled). "Daemon accepted add member." and the new member's pane opens. The member is listed after reload. Disable asks inside the pane and shows the member id; after it, the row reads Disabled and the pane offers **Enable**. Audit lists the retained rows. | None in the retained audit (verified): member changes add no row |
+| HUB-09 accounts | `#/admin`; ready: heading "Synthetic member" (the first member's detail pane, loaded without a run step) | default | **Add member** in the page head; fill a unique login and name in the pane, **Add member**. Reload. Open the member's row, **Disable**, **Confirm update member**. Reload and open the row again. Open **Audit** and run "Read retained audit". | The members table shows readable values (GiB, Enabled). "Daemon accepted add member." and the new member's pane opens. The member is listed after reload. Disable asks inside the pane and shows the member id; after it, the row reads Disabled and the pane offers **Enable**. Audit lists the retained rows. | Audit: `create` with outcome `ok` for the added member; adding the same login again is refused and adds `create` with outcome `denied` and detail "login already a member". Each row shows its `ts` as a readable time (asserted by the suite; the #88 regression check) |
 
 **Independence between cases.** HUB-04 and HUB-05 put the setting back. HUB-06 overwrites the seeded app's caps
 and retention with fresh values each time. HUB-07 and HUB-09 create uniquely named rows (suffix: project and time).
-HUB-08 withdraws what it arms. HUB-03 needs its own `--unclaimed` instance. So one instance serves every device and
+HUB-08 withdraws what it arms. A journey that pairs an App of its own revokes it again, so the Marketplace entries
+read Not paired. HUB-03 needs its own `--unclaimed` instance. So one instance serves every device and
 theme case when they run one at a time, apart from the pairing request limit above.
 
 ## Theme and layout
@@ -191,10 +196,20 @@ theme case when they run one at a time, apart from the pairing request limit abo
 - **Repository.** Public, so CI runs on GitHub-hosted runners only (`ubuntu-latest`), never self-hosted.
 - **Package.** npm, self-contained in `tools/ui-tests`: `package.json` pins `@playwright/test` exactly, with
   `package-lock.json`. Config `tools/ui-tests/playwright.config.mjs`; tests `tools/ui-tests/tests/*.spec.mjs`.
-  `tools/ui-tests/intercepted/*.spec.cjs` are older single-page specs on intercepted synthetic responses over the real
+  `tools/ui-tests/intercepted/*.spec.cjs` are single-page specs on intercepted synthetic responses over the real
   static files: no instance reads or writes through them. They run as the `intercepted` project (Chromium, light) in
   the same command, and the five instance projects skip that folder. `--project=intercepted` runs only them, though
   `global-setup.mjs` still starts the instance, so `HUB_UI_DAEMON_SRC` must be set.
+- **Intercepted only when the real daemon can't produce the state.** A journey runs against the instance whenever the
+  daemon in fake model mode can be brought to the state it checks: happy paths, the daemon's own refusals (a wrong
+  match code, a login already in use, GitHub sign-in not set up), approvals, denials, slots, claims, redemption,
+  revocation, the retained audit. A test goes in `intercepted/` only when it needs a state the daemon cannot be made
+  to produce here: a forced error status, a malformed or withheld reply, a reply held open or answered out of order,
+  a skewed or fast clock, fields the daemon never sends (usage history, skills, scans, browser origins in its example
+  entries), an older daemon's behaviour, or the daemon or the Hub not answering. Each intercepted test carries a
+  `// Intercepted: <reason>.` line naming that state. A mocked reply proves only that the page handles the reply its
+  author imagined; #88 (audit rows with no time) passed its mocks because the mock and the code shared the wrong
+  field name.
   `tools/ui-tests/verify/` and `verify.config.mjs` are the verify skill's drive step
   ([.claude/skills/verify](../.claude/skills/verify/SKILL.md)); the suite's config does not run them.
 - **Commands.**
@@ -211,18 +226,24 @@ theme case when they run one at a time, apart from the pairing request limit abo
   READY and passes its URLs to the tests (`HUB_UI_URL`, `HUB_UI_DAEMON_URL`, `HUB_UI_DIR`). There is no fixed port
   and no `reuseExistingServer`. Its teardown runs `ui_instance.py stop`, also after failed tests. The claim spec
   starts and stops its own `--unclaimed` instance.
-- **Fixtures.** `signedIn` mints a link with `signin-link` and opens it. `errors` collects page and console errors;
+- **Fixtures.** `signedIn` mints a link with `signin-link` and opens it. `hubApi` calls the Hub's API from the signed-in
+  tab, with the headers its pages send, for setting up state a journey is not about; `armSlot`, `appClaims`,
+  `appRedeems` and `pairApp` play the App's side of a slot with a real PKCE pair; `writesTo` records the JSON bodies a
+  page sends to one path. `errors` collects page and console errors;
   each test asserts there are none, apart from the Settings page's 404 for the absent memory module (#41) and
   WebKit's report of fetches cancelled by a reload.
 - **Projects.** `desktop-light` and `desktop-dark` (Chromium, 1440×900), `phone-light` and `phone-dark` (WebKit with
   the iPhone SE descriptor at 375×667) and `pixel-dark` (Chromium, Pixel 7). The overflow sweep (320, 375, 768 and
   1440 px on every section) and the live-resize test run in the desktop projects. `navigation.spec.mjs` runs in all
   five projects, which is where every section is loaded in both colour schemes. The functional journeys (sign-in,
-  settings, module switches, app caps and retention, the marketplace and accounts) repeat the same server round trips
+  settings, module switches, apps, slots, the marketplace and accounts) repeat the same server round trips
   against the one shared instance, so they run only in `desktop-light` (Chromium, desktop) and `phone-dark` (WebKit,
-  phone) through `functionalProject` in `tests/fixtures.mjs`: one project per engine and viewport. Pairing journeys
-  run in `desktop-light`, `desktop-dark` and `phone-dark` because of the daemon's request limit, and the claim in
-  `desktop-light`. The `intercepted` project (Chromium, 1440×900, light)
+  phone) through `functionalProject` in `tests/fixtures.mjs`: one project per engine and viewport. App-initiated
+  pairing journeys run in `desktop-light`, `desktop-dark` and `phone-dark`, and the withheld-name one in
+  `desktop-light`, because of the daemon's request limit; the claim runs in `desktop-light`. `layout.spec.mjs`
+  resizes `desktop-light` to check 44 px targets and no sideways scroll on Pairing, Marketplace, Accounts and Apps.
+  The phone More sheet's taps run in `phone-dark` and `pixel-dark`; a tap on its backdrop is checked in `pixel-dark`
+  only, because WebKit's touch emulation sends no click for it. The `intercepted` project (Chromium, 1440×900, light)
   runs the specs in `intercepted/` and uses no instance.
 - **Serial.** `workers: 1`: the journeys share one instance.
 - **CI.** The `ui` job in `.github/workflows/ci.yml` checks out the pinned daemon, installs the locked Python and npm

@@ -54,7 +54,8 @@ async function mount(page, initial, { answer, read } = {}) {
 }
 const card = (page, id) => page.locator('[data-request-id="' + id + '"]');
 
-for (const [kind, origin] of [["browser", "https://app.test"], ["native", ""]]) {
+// Intercepted: a browser slot, which needs an entry with a browser origin; the native claim is in slots.spec.mjs.
+for (const [kind, origin] of [["browser", "https://app.test"]]) {
   test(`${kind} claimed slots wait for the typed code and refuse wrong codes`, async ({ page }) => {
     const row = request("pr-confirm", { state: "claimed", needs: "confirm", armed: true,
       origin, browser: Boolean(origin), match_code: "" });
@@ -86,47 +87,7 @@ for (const [kind, origin] of [["browser", "https://app.test"], ["native", ""]]) 
   });
 }
 
-test("already-claimed recovery distinguishes redeemed keys from unredeemed claims", async ({ page }) => {
-  await mount(page, [request("pr-redeemed", { state: "redeemed", needs: "", key_id: "k-recovery", match_code: "",
-    finished_at: NOW - 5 })]);
-  // Troubleshooting is a closed disclosure at the foot of the page until the owner opens it.
-  const recovery = page.locator("details.pairing-recovery");
-  await expect(recovery.getByText("harness pairing-requests list", { exact: true })).toBeHidden();
-  await recovery.getByText("Troubleshooting: the app says the slot was already claimed").click();
-  await expect(recovery).toContainText("For a redeemed row, revoke its key_id. For an approved or claimed row, deny it.");
-  for (const cli of ["harness pairing-requests list", "harness keys revoke <key_id>", "harness pairing-requests deny <id>"]) {
-    await expect(recovery.getByText(cli, { exact: true })).toBeVisible();
-  }
-  // The redeemed row is a History row naming its key, which Apps (or harness keys revoke) can revoke.
-  await expect(card(page, "pr-redeemed").locator("td")).toHaveText(
-    ["Synthetic pr-redeemed", "App", "Paired", "sessions", /\d/, "k-recovery"]);
-});
-
-test("elevated scopes keep Approve disabled until the separate acknowledgement is ticked", async ({ page }) => {
-  const row = request("pr-e", { scopes: ["sessions", "approvals"], elevated: ["approvals"], disclosures: [
-    { scope: "sessions", tier: "standard", text: "This app can start agent tasks." },
-    { scope: "approvals", tier: "elevated", text: "This app can **approve or deny tool calls** in its own tasks." }] });
-  const { writes, errors } = await mount(page, [row]);
-  const box = card(page, "pr-e");
-  await expect(box.locator('[data-scope="approvals"] .pill')).toHaveText("Elevated");
-  await expect(box.locator(".decision-head .pill")).toHaveText(["Needs approval", "Elevated scope"]);
-  await expect(box.locator('[data-scope="approvals"] .disclosure-text'))
-    .toHaveText("This app can approve or deny tool calls in its own tasks.");
-  await expect(box.locator('[data-scope="approvals"] .disclosure-text strong')).toHaveText("approve or deny tool calls");
-  await expect(box.getByText("harness pairing-requests approve pr-e --match <code> --acknowledge-elevated", { exact: true })).toBeVisible();
-  await box.getByLabel("Match code the app shows").fill("482913");
-  const approve = box.getByRole("button", { name: /^Approve/ });
-  await expect(approve).toBeDisabled();
-  await approve.click({ force: true });
-  expect(writes).toHaveLength(0);
-  await box.getByRole("checkbox").check();
-  await expect(approve).toBeEnabled();
-  await approve.click();
-  await expect.poll(() => writes.length).toBe(1);
-  expect(writes[0].body).toEqual({ match: "482913", acknowledge_elevated: true });
-  expect(errors).toEqual([]);
-});
-
+// Intercepted: markup in the daemon's disclosure copy, which is fixed text.
 test("disclosure text and names render as text, never as HTML", async ({ page }) => {
   const markup = '<img src=x onerror="window.injected=1"><script>window.injected=2</script>';
   const { errors } = await mount(page, [request("pr-x", { name: markup, origin: "", browser: false,
@@ -140,6 +101,7 @@ test("disclosure text and names render as text, never as HTML", async ({ page })
   expect(errors).toEqual([]);
 });
 
+// Intercepted: malformed bold markers in the daemon's disclosure copy, which is fixed text.
 test("only **pairs** in disclosures become bold, and markup inside them stays text", async ({ page }) => {
   const markup = '<img src=x onerror="window.injected=1">';
   const { errors } = await mount(page, [request("pr-b", { disclosures: [{ scope: "sessions", tier: "standard",
@@ -152,6 +114,7 @@ test("only **pairs** in disclosures become bold, and markup inside them stays te
   expect(errors).toEqual([]);
 });
 
+// Intercepted: a pending Hub claim beside App requests; a claimed Hub never lists one.
 test("confirm a native claim, deny after an in-page confirmation, and Hub claims offer only the host command", async ({ page }) => {
   const rows = [request("pr-c", { state: "claimed", needs: "confirm", origin: "", browser: false, armed: true, match_code: "111222" }),
     request("pr-d"), request("pr-s", { state: "armed", needs: "claim", match_code: "", armed: true }),
@@ -183,6 +146,7 @@ test("confirm a native claim, deny after an in-page confirmation, and Hub claims
   expect(errors).toEqual([]);
 });
 
+// Intercepted: a request that changes state or vanishes between the page's read and the owner's click.
 test("409 and 404 answers refresh the list with a short note", async ({ page }) => {
   const expired = request("pr-n", { state: "expired", needs: "", match_code: "" });
   const { errors } = await mount(page, [request("pr-n"), request("pr-g")], { answer: (id) => id === "pr-n" ?
@@ -201,65 +165,10 @@ test("409 and 404 answers refresh the list with a short note", async ({ page }) 
   expect(errors).toEqual([]);
 });
 
-for (const [label, width] of [["phone", 390], ["desktop", 1280]]) {
-  test(`${label} layout keeps 44px targets and no horizontal scroll`, async ({ page }) => {
-    await page.setViewportSize({ width, height: 900 });
-    const row = request("pr-l", { scopes: ["sessions", "homelab"], elevated: ["homelab"], disclosures: [
-      { scope: "homelab", tier: "elevated", text: "A long disclosure ".repeat(20) }] });
-    const { errors } = await mount(page, [row, request("pr-m", { state: "armed", needs: "claim", match_code: "" })]);
-    // Host commands shown, then hidden behind their Host command buttons: every target is measured either way.
-    for (const shown of [true, false]) {
-      await page.evaluate(on => document.body.classList.toggle("show-host-commands", on), shown);
-      for (const target of await page.locator("main button:visible, main input:visible").all()) {
-        const box = await target.boundingBox();
-        expect(box.height, await target.evaluate(el => el.outerHTML.slice(0, 80))).toBeGreaterThanOrEqual(44);
-        expect(box.width).toBeGreaterThanOrEqual(44);
-      }
-    }
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    expect(errors).toEqual([]);
-  });
-}
-
-
-for (const [state, needs] of [["pending", "approve"], ["claimed", "confirm"]]) {
-  test(`${state} cards never expose the supplied code before the owner types it`, async ({ page }) => {
-    const row = request("pr-hidden", { state, needs, armed: state === "claimed", origin: "", browser: false });
-    const { errors } = await mount(page, [row]);
-    const box = card(page, row.id);
-    await expect(box).not.toContainText(row.match_code);
-    expect(await box.evaluate((el, code) => el.outerHTML.includes(code), row.match_code)).toBe(false);
-    await expect(box.getByLabel("Match code the app shows")).toHaveValue("");
-    await expect(box).toContainText("If the app shows no code or an error, deny.");
-    if (state === "claimed") {
-      await expect(box).toContainText("Redemption is waiting for confirmation");
-    }
-    expect(errors).toEqual([]);
-  });
-}
-
-
-test("requester metadata is unverified and owner-armed metadata explains its source", async ({ page }) => {
-  const { errors } = await mount(page, [request("pr-app"),
-    request("pr-owner", { state: "claimed", needs: "confirm", armed: true })]);
-  const app = card(page, "pr-app"), owner = card(page, "pr-owner");
-  // Said once per card, not inside every label.
-  await expect(app.locator(".caveat")).toHaveText("Name, origin and catalog id are stated by the app, not verified. " +
-    "Only the match code on your app's screen proves this is your app.");
-  await expect(app.locator("dt").filter({ hasText: /^Started from$/ }).locator("+ dd")).toHaveText(/^The app · /);
-  await expect(app.locator("dt").filter({ hasText: /^From$/ }).locator("+ dd"))
-    .toHaveText("https://app.test · catalog test.example.notes");
-  await expect(owner.locator("dt").filter({ hasText: /^Bound to$/ }).locator("+ dd"))
-    .toHaveText("https://app.test · catalog test.example.notes (set by you)");
-  await expect(owner.locator(".caveat")).toContainText("You armed this slot and set its origin and catalog app id");
-  await expect(owner).not.toContainText("not verified");
-  expect(errors).toEqual([]);
-});
-
-
 // One field is enough: the withheld check is one code path over name, origin and catalog_app_id. The server marks
 // each in test_pairing.py::test_withheld_pairing_identity_fields_are_marked_for_host_review.
-for (const [state, needs] of [["pending", "approve"], ["claimed", "confirm"]]) {
+// Intercepted: a claimed slot with a withheld name; slot names come from the daemon's plain entries. The pending case is in pairing-market.spec.mjs.
+for (const [state, needs] of [["claimed", "confirm"]]) {
   test(`a withheld name prevents ${needs} but keeps Deny`, async ({ page }) => {
     const row = request("pr-withheld", { name: "[withheld: token-shaped]", state, needs, armed: state === "claimed" });
     const { writes, errors } = await mount(page, [row]);
@@ -276,6 +185,7 @@ for (const [state, needs] of [["pending", "approve"], ["claimed", "confirm"]]) {
   });
 }
 
+// Intercepted: an older daemon that approved claims without confirmation.
 test("a daemon confirmation warning appears on Pairing requests after a poll", async ({ page }) => {
   await page.clock.install({ time: NOW * 1000 });
   const browser = request("pr-legacy", { state: "armed", armed: true, needs: "claim" });
@@ -292,6 +202,7 @@ test("a daemon confirmation warning appears on Pairing requests after a poll", a
   expect(errors).toEqual([]);
 });
 
+// Intercepted: six pending requests at once, past the daemon's three per source.
 test("a refused approve below the fold brings the message into view and focuses it", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const rows = ["pr-1", "pr-2", "pr-3", "pr-4", "pr-5", "pr-6"].map(id => request(id));
@@ -311,7 +222,7 @@ test("a refused approve below the fold brings the message into view and focuses 
   expect(errors).toEqual([]);
 });
 
-
+// Intercepted: an expired request (ten minutes) and exact group counts the shared instance cannot hold.
 test("requests group into Needs you, Waiting for the app and History, each with its count", async ({ page }) => {
   const { errors } = await mount(page, [request("pr-p"), request("pr-c", { state: "claimed", needs: "confirm", armed: true }),
     request("pr-a", { state: "approved", needs: "redeem" }), request("pr-s", { state: "armed", needs: "claim", armed: true }),
@@ -334,6 +245,7 @@ test("requests group into Needs you, Waiting for the app and History, each with 
   expect(errors).toEqual([]);
 });
 
+// Intercepted: requests in their last two minutes and already expired, on a fake clock.
 test("the countdown chip ticks and turns warn in the last two minutes", async ({ page }) => {
   await page.clock.install({ time: NOW * 1000 });
   const { errors } = await mount(page, [request("pr-t", { expires_at: NOW + 300 }),
@@ -351,6 +263,7 @@ test("the countdown chip ticks and turns warn in the last two minutes", async ({
   expect(errors).toEqual([]);
 });
 
+// Intercepted: a poll that adds a request while the deny question is open.
 test("deny asks inside the card that was clicked, survives a poll, and Cancel returns to Deny", async ({ page }) => {
   await page.clock.install({ time: NOW * 1000 });
   const { writes, errors } = await mount(page, [request("pr-1"), request("pr-2")]);
@@ -375,21 +288,7 @@ test("deny asks inside the card that was clicked, survives a poll, and Cancel re
   expect(errors).toEqual([]);
 });
 
-test("Withdraw asks inside the waiting row", async ({ page }) => {
-  const { writes, errors } = await mount(page, [request("pr-w", { state: "armed", needs: "claim", armed: true, origin: "",
-    browser: false })]);
-  await card(page, "pr-w").getByRole("button", { name: "Withdraw Synthetic pr-w" }).click();
-  const confirm = card(page, "pr-w").getByRole("alert");
-  await expect(confirm).toContainText("Withdraw slot pr-w from a native app. The app cannot use it afterwards; it must ask again.");
-  await expect(card(page, "pr-w").getByRole("button", { name: /^Withdraw/ })).toHaveCount(0);
-  await confirm.getByRole("button", { name: "Confirm withdraw" }).click();
-  await expect.poll(() => writes.length).toBe(1);
-  expect(writes[0]).toMatchObject({ path: "/api/pairing/pr-w/deny", body: { confirm: true } });
-  await expect(page.locator('[data-group="history"] [data-request-id="pr-w"][data-state="denied"]')).toBeVisible();
-  await expect(page.getByText("Withdrew Synthetic pr-w.")).toBeVisible();
-  expect(errors).toEqual([]);
-});
-
+// Intercepted: an empty list; every instance holds its Hub claim in History.
 test("with no requests the page says how one appears", async ({ page }) => {
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
@@ -409,6 +308,7 @@ test("with no requests the page says how one appears", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
+// Intercepted: a scope the daemon did not describe; it describes every scope it accepts.
 for (const [state, needs, armed] of [["pending", "approve", false], ["claimed", "confirm", true]]) {
   test(`a ${state} card lists every requested scope, also one the daemon did not describe`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -421,31 +321,7 @@ for (const [state, needs, armed] of [["pending", "approve", false], ["claimed", 
   });
 }
 
-test("a claimed slot keeps the daemon's scope text one tap away", async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
-  const { errors } = await mount(page, [request("pr-k", { state: "claimed", needs: "confirm", armed: true,
-    scopes: ["sessions:all"], elevated: ["sessions:all"], disclosures: [{ scope: "sessions:all", tier: "elevated",
-      text: "This app can **read every session on this harness**." }] })]);
-  const box = card(page, "pr-k");
-  const text = box.locator('[data-scope="sessions:all"] .disclosure-text');
-  await expect(text).toBeHidden();
-  await box.getByText("What each scope allows").click();
-  await expect(text).toHaveText("This app can read every session on this harness.");
-  await expect(box.locator('[data-scope="sessions:all"] .pill')).toHaveText("Elevated");
-  expect(errors).toEqual([]);
-});
-
-test("before the claim, the page says to claim this Hub first and links to Overview", async ({ page }) => {
-  const { errors } = await mount(page, [], { read: () => ({ status: 409,
-    json: { detail: "Claim this Hub on Overview before deciding pairing requests.", claimed: false } }) });
-  const state = page.locator(".card.empty");
-  await expect(state.getByRole("heading", { name: "Claim this Hub first" })).toBeVisible();
-  await expect(state.getByRole("link", { name: "Go to Overview" })).toHaveAttribute("href", "#/overview");
-  // The state says it once: no refusal sentence beside it.
-  await expect(page.getByRole("alert")).toHaveCount(0);
-  expect(errors).toEqual([]);
-});
-
+// Intercepted: the Hub server itself not answering (an aborted request).
 test("a Hub server that does not answer is named, never \"Failed to fetch\", and Retry reads again", async ({ page }) => {
   let down = true;
   const { errors } = await mount(page, [], { read: () => down ? "abort" : null });

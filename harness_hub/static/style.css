@@ -515,7 +515,8 @@ body.show-host-commands .host-command-toggle { display: none; }
 .switch-track input:disabled + i { opacity: .5; }
 
 /* Tables: uppercase column heads, row rules, and a horizontal scroll box on narrow screens. */
-.table-wrap { overflow-x: auto; }
+/* Positioned, so a cell's visually hidden label scrolls with the table instead of widening the page. */
+.table-wrap { overflow-x: auto; position: relative; }
 .visually-hidden {
   position: absolute;
   width: 1px;

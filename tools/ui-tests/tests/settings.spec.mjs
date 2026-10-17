@@ -73,3 +73,17 @@ test("categories, filter, Changed pill and Discard", async ({ signedIn: page, er
   await expectNoHorizontalOverflow(page);
   expect(errors).toEqual([]);
 });
+
+test("the absent memory library module is explained, not shown as an error", async ({ signedIn: page, errors }, testInfo) => {
+  functionalProject(testInfo);
+  // The instance turns memory_library off, so the daemon answers 404 for its profile.
+  await openSection(page, "settings");
+  await page.getByRole("button", { name: "Memory agent profile" }).click();
+  const box = page.locator("section.card").filter({ has: page.getByRole("heading", { name: "Memory agent profile" }) });
+  await expect(box).toContainText("The memory library module (memory_library) is not installed or is switched off");
+  await expect(box.getByText("harness config set memory_library.enabled=true", { exact: true })).toBeVisible();
+  await expect(box.getByLabel("Agent profile", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Not Found")).toHaveCount(0);
+  await expect(box.locator(".notice.bad")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});

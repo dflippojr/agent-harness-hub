@@ -28,8 +28,8 @@ export default defineConfig({
     { name: "phone-light", testIgnore, use: { ...iphone, colorScheme: "light" } },
     { name: "phone-dark", testIgnore, use: { ...iphone, colorScheme: "dark" } },
     { name: "pixel-dark", testIgnore, use: { ...devices["Pixel 7"], colorScheme: "dark" } },
-    // Specs over the real static files with every request intercepted: no instance, no daemon. They cover client-side
-    // gating the live journeys cannot set up (redacted and withheld replies, 409 and 502, XSS, disclosure drift).
+    // Specs over the real static files with every request intercepted: no instance, no daemon. Only for states the real
+    // daemon cannot be made to produce (forced errors, withheld or held replies, markup, drift); see docs/ui-testing.md.
     { name: "intercepted", testDir: "./intercepted", testMatch: "*.spec.cjs", use: { ...desktop, colorScheme: "light" } },
   ],
 });
