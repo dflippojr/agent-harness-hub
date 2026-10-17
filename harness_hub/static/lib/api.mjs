@@ -1,7 +1,7 @@
 // Calls to this Hub's own server. The browser talks only to the Hub; the Hub alone talks to the daemon.
 
 import { sentence } from "./dom.mjs";
-import { noteRead, noteRestart } from "./status.mjs";
+import { knownRecoveries, noteRead, noteRestart } from "./status.mjs";
 
 // The Hub's own server did not answer: the browser's bare "Failed to fetch", worded as a page shows it.
 export const HUB_DOWN = "The Hub server is not answering. Check that it is still running on the daemon host, then retry.";
@@ -19,6 +19,7 @@ let started = 0; // request start order, so the shell's status ignores a reply o
 
 export async function api(path, { method = "GET", body } = {}) {
   const order = ++started;
+  const seen = method === "POST" && path === "settings/restart" ? knownRecoveries() : [];
   const headers = { Accept: "application/json" };
   const binding = sessionStorage.getItem("hub.session");
   if (binding) headers["X-Hub-Session"] = binding;
@@ -47,7 +48,9 @@ export async function api(path, { method = "GET", body } = {}) {
   // The shell uses the reads the pages make and accepted restarts, even when navigation skips the health poll.
   if (method === "GET" && path !== "session") noteRead(path.split("?")[0], response.status, data, order);
   // Acceptance is new evidence: only health requested after it can settle this restart.
-  if (method === "POST" && path === "settings/restart" && response.ok && data?.accepted === true) noteRestart(++started);
+  if (method === "POST" && path === "settings/restart" && response.ok && data?.accepted === true) {
+    noteRestart(++started, data.target_revision, data.known_recoveries, seen);
+  }
   if (!response.ok) {
     if (response.status === 401 && path !== "session") window.dispatchEvent(new CustomEvent("hub:signed-out"));
     throw new ApiError(response.status, data);

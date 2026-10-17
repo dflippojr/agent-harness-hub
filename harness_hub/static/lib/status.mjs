@@ -13,12 +13,15 @@ let lastGood = null; // the last overview answer that reached the daemon
 let attention = null; // { approve, confirm }: App pairing requests waiting on the owner
 let config = null; // the last Settings read: { revision, pending_revision, restart_required, recovery }
 let running = null; // the settings revision the daemon reported in its last health answer
-let confirmed = null; // { revision, recovery, idle, started }: the newest health answer with a confirmed revision
+let confirmed = null; // { recovery, idle, started }: the newest health answer with a confirmed revision
 let silent = null; // whether the latest evidence says the daemon is not answering; null before any
 let unhealthy = false; // whether the latest evidence is the daemon answering /health with an error (a 503 mid-restart)
 let ownerError = ""; // Overview's owner API failure behind a healthy /health, until an owner API read answers
 let restarting = false; // whether a restart the Hub started is still under way
 let restartSeen = 0; // start order of the newest request that found or accepted a Hub restart
+let restartTarget = null; // the target revision of the newest restart this page started, as accepted; null for none
+let targetRecoveries = new Set(); // the recoveries known when that restart was accepted, here or by the Hub
+let targetAt = 0; // that restart's start order: only health requested after it can show it recovered
 let at = {}; // per piece of state, when the request behind its current value started
 let reads = 0; // request counter for callers that pass no start order (tests)
 const listeners = new Set();
@@ -117,7 +120,12 @@ function health(reported, active, started) {
   if (!reported || typeof reported.config_revision !== "number") return;
   if (newer("running", started)) running = reported.config_revision;
   if (reported.config_confirmed === true && newer("confirmed", started)) {
-    confirmed = { revision: reported.config_revision, recovery: recoveryKey(reported.recovery), idle: !active, started };
+    confirmed = { recovery: recoveryKey(reported.recovery), idle: !active, started };
+    // A recovery since that restart threw its revision out, and the daemon may number the next save the same: the
+    // target no longer says what a restart applied.
+    if (restartTarget !== null && started > targetAt && confirmed.recovery !== "" && !targetRecoveries.has(confirmed.recovery)) {
+      restartTarget = null;
+    }
     settle();
   }
 }
@@ -129,21 +137,28 @@ function recoveryKey(recovery) {
 }
 
 // A confirmed health answer newer than the Settings read settles the restart that read asked for, in whichever order
-// the answers arrive, when the daemon reports any of: running the saved (pending) revision or a later one, so it was
-// applied; a recovery the read did not report, so the daemon restarted since and threw the pending revision out
-// (lkg_restore or overlay_quarantined), whatever lower revision it now runs; or, with no Hub restart under way any more,
-// the end of one that began after the read (the Hub ends one only on confirmed health at its target or a recovery), which
-// settles a read that needed a restart with no pending revision; a known newer pending revision still needs applying.
+// the answers arrive, when the daemon reports any of:
+// - a recovery the read did not report, so the daemon restarted since and threw the pending revision out (lkg_restore
+//   or overlay_quarantined), whatever lower revision it now runs;
+// - with no Hub restart under way any more, as health requested after the last sign of one says (the Hub ends one only
+//   on confirmed health at or past its target, or a recovery): the end of a restart this page started whose target is
+//   at or past the read's pending revision, whenever the read was made (the daemon keeps a pending revision only until
+//   the restart that boots it, so the read saw it before that restart ended); or, for a read with no pending revision,
+//   the end of a restart seen after the read.
+// Nothing else settles a known pending revision. Health's own revision proves nothing: the daemon reports a revision
+// there as soon as it is saved, before any restart applies it (#143). A revision saved during a restart may or may not
+// be in the boot, and health looks the same either way, so it waits for a Settings read; so does a restart another tab
+// started, whose target this page never saw.
 function settle() {
   if (!config || !config.restart_required || !confirmed || confirmed.started < (at.config || 0)) return;
   const saved = config.pending_revision;
-  const applied = typeof saved === "number" && confirmed.revision >= saved;
   const recovered = confirmed.recovery !== "" && confirmed.recovery !== recoveryKey(config.recovery);
-  const restarted = confirmed.idle && restartSeen > (at.config || 0) && confirmed.started > restartSeen;
-  if (applied || recovered || (restarted && typeof saved !== "number")) {
-    config = { ...config, restart_required: false, pending_revision: null };
-    at.config = confirmed.started;
-  }
+  const over = confirmed.idle && confirmed.started > restartSeen;
+  const covered = typeof saved === "number" ? typeof restartTarget === "number" && restartTarget >= saved
+    : restartSeen > (at.config || 0);
+  // Settings' own order stays: a Settings read that started before this health may have reached the daemon after it,
+  // so its reply still counts, and one that saw no more than this read is settled again the same way.
+  if (recovered || (over && covered)) config = { ...config, restart_required: false, pending_revision: null };
 }
 
 export function subscribe(listener) {
@@ -151,10 +166,26 @@ export function subscribe(listener) {
   return () => listeners.delete(listener);
 }
 
+// Every recovery this page has had reported, by Settings and by health alike: which request started later does not say
+// which sampled the daemon later, and each recovery is identified by when it happened, so one of a later restart is
+// new. api.mjs takes them before it asks for a restart: a reply that comes in while that request is under way may
+// already be from the restart.
+export function knownRecoveries() {
+  return [config ? recoveryKey(config.recovery) : "", confirmed ? confirmed.recovery : ""];
+}
+
 // An accepted restart is evidence even if the owner navigates away before the first health poll. Its request
-// order is allocated at acceptance, so health already in flight cannot settle it.
-export function noteRestart(started) {
+// order is allocated at acceptance, so health already in flight cannot settle it. `target` is its target revision as
+// accepted, `known` the recoveries the Hub had from the daemon before it asked for the restart, and `seen` this page's
+// own from before it did.
+export function noteRestart(started, target = null, known = [], seen = knownRecoveries()) {
   reads = Math.max(reads, started);
+  if (typeof target === "number") {
+    restartTarget = target;
+    targetAt = started;
+    // A reply this page has not had yet may also predate the restart; the Hub names every recovery it had (#143).
+    targetRecoveries = new Set([...seen, ...(Array.isArray(known) ? known.map(recoveryKey) : [])]);
+  }
   restart(true, started);
   for (const listener of listeners) listener();
 }
@@ -166,6 +197,9 @@ export function resetStatus() {
   ownerError = "";
   restarting = false;
   restartSeen = 0;
+  restartTarget = null;
+  targetRecoveries = new Set();
+  targetAt = 0;
   at = {};
   reads = 0;
 }

@@ -4,7 +4,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { api } from "../harness_hub/static/lib/api.mjs";
-import { daemonBanner, daemonChip, noteRead, pairingCount, resetStatus } from "../harness_hub/static/lib/status.mjs";
+import {
+  daemonBanner, daemonChip, knownRecoveries, noteRead, noteRestart, pairingCount, resetStatus,
+} from "../harness_hub/static/lib/status.mjs";
 
 const answer = (extra = {}) => ({
   reachable: true, restarting: false, error: "", fetched_at: 1, attention: { approve: 1, confirm: 1 },
@@ -122,18 +124,26 @@ test("a reachable Settings health poll supersedes Overview's outage and restart"
   assert.equal(daemonBanner(), null);
 });
 
-test("restart needed clears once the daemon confirms the saved revision", () => {
+// The daemon's /health reports the saved revision as soon as it is saved (the active envelope moves to it; only the
+// restart-applied keys wait in the pending one), so health at the saved revision is no proof that a restart applied it.
+const RESTARTING = { reachable: false, answered: true, status: 503, restarting: true, health: null };
+const confirmedAt = (revision) => ({ reachable: true, answered: true, restarting: false,
+  health: { ok: true, config_revision: revision, config_confirmed: true } });
+
+test("health at the saved revision keeps restart needed; this page's restart to that revision ending clears it", () => {
   resetStatus();
-  noteRead("settings/config", 200, { revision: 1, pending_revision: 2, restart_required: true });
-  noteRead("overview", 200, answer({ health: { config_revision: 1, config_confirmed: true } }));
+  noteRead("settings/config", 200, { revision: 2, pending_revision: 2, restart_required: true }, 1);
+  noteRead("overview", 200, answer({ health: { config_revision: 2, config_confirmed: true } }), 2);
   assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
-  noteRead("overview", 200, answer({ health: { config_revision: 2, config_confirmed: false } }));
+  noteRestart(3, 2);
+  noteRead("settings/health", 200, RESTARTING, 4);
+  assert.equal(daemonBanner().title, "The daemon is restarting.");
+  noteRead("settings/health", 200, confirmedAt(2), 5);
+  assert.equal(daemonBanner(), null);
+  // A later save needs a restart of its own, whatever revision health reports.
+  noteRead("settings/config", 200, { revision: 3, pending_revision: 3, restart_required: true }, 6);
+  noteRead("settings/health", 200, confirmedAt(3), 7);
   assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
-  noteRead("overview", 200, answer({ health: { config_revision: 2, config_confirmed: true } }));
-  assert.equal(daemonBanner(), null);
-  noteRead("settings/config", 200, { revision: 2, pending_revision: 3, restart_required: true });
-  noteRead("settings/health", 200, { reachable: true, restarting: false, health: { config_revision: 3, config_confirmed: true } });
-  assert.equal(daemonBanner(), null);
 });
 
 test("any page's read that only the daemon could answer clears an older 503 from another page", () => {
@@ -202,14 +212,93 @@ test("a served Spend read clears an owner API failure; an errored one does not",
   assert.equal(daemonBanner(), null);
 });
 
+test("a Settings read made during this page's restart is settled when that restart ends", () => {
+  resetStatus();
+  noteRestart(1, 4);
+  noteRead("settings/health", 200, RESTARTING, 2);
+  // The daemon keeps revision 4 pending until the restarted process confirms it.
+  noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true }, 3);
+  assert.equal(daemonBanner().title, "The daemon is restarting.");
+  noteRead("settings/health", 200, confirmedAt(4), 4);
+  assert.equal(daemonBanner(), null);
+});
+
+test("a restart that recovered no longer covers a revision saved after it, even one numbered the same", () => {
+  resetStatus();
+  noteRead("settings/health", 200, confirmedAt(3), 1);
+  noteRestart(2, 4);
+  // Revision 4 fails to boot: the daemon restores revision 3, and the next save is numbered 4 again.
+  noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true, recovery: LKG }, 3);
+  noteRead("settings/health", 200, { ...confirmedAt(3), health: { ...confirmedAt(3).health, recovery: LKG } }, 4);
+  assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
+});
+
+test("health requested before this page's restart cannot drop its target, whatever recovery it reports", () => {
+  resetStatus();
+  // An earlier recovery is already known from Settings; a health read that started before the restart answers late.
+  noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true, recovery: LKG }, 1);
+  noteRestart(3, 4);
+  noteRead("settings/health", 200, { ...confirmedAt(3), health: { ...confirmedAt(3).health, recovery: LKG } }, 2);
+  noteRead("settings/health", 200, { ...confirmedAt(4), health: { ...confirmedAt(4).health, recovery: LKG } }, 4);
+  assert.equal(daemonBanner(), null);
+});
+
+test("a recovery Settings reported before this page's restart is not one of it, though health started later", () => {
+  resetStatus();
+  // Settings started first but sampled the daemon after a recovery; health started second but sampled before it.
+  noteRead("settings/health", 200, confirmedAt(3), 2);
+  noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true, recovery: LKG }, 1);
+  noteRestart(3, 4);
+  // The restart to revision 4 succeeds; the daemon still reports the earlier recovery.
+  noteRead("overview", 200, answer({ health: { config_revision: 4, config_confirmed: true, recovery: LKG } }), 4);
+  assert.equal(daemonBanner(), null);
+});
+
+test("a recovery the Hub knew before accepting this page's restart is not one of it, though this page never saw it", () => {
+  for (const known of [[LKG], []]) {
+    resetStatus();
+    // The read sampled the daemon before the restart but answers after it was accepted.
+    noteRestart(2, 4, known);
+    noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true, recovery: LKG }, 1);
+    noteRead("overview", 200, answer({ health: { config_revision: 4, config_confirmed: true, recovery: LKG } }), 3);
+    // Unless the Hub names it, the recovery may be this restart's, with a save that reused revision 4 still pending.
+    if (known.length) assert.equal(daemonBanner(), null);
+    else assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
+  }
+});
+
+test("a recovery reported while this page's restart request is under way can be one of it", () => {
+  resetStatus();
+  const seen = knownRecoveries(); // before the request: no recovery yet
+  // The restart to revision 4 recovers to 3, and a poll reports that before the 202 reaches this page.
+  const recovered = { ...confirmedAt(3), health: { ...confirmedAt(3).health, recovery: LKG } };
+  noteRead("settings/health", 200, recovered, 2);
+  noteRestart(3, 4, [], seen);
+  // Another tab saves revision 4 again; health sampled before that answers last.
+  noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true, recovery: LKG }, 4);
+  noteRead("settings/health", 200, recovered, 5);
+  assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
+});
+
+test("a Settings read started before the health that settled the last one still counts when it answers", () => {
+  resetStatus();
+  noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true, recovery: null }, 1);
+  // Health finds a recovery and settles that read; a Settings read started before it saw a save made since.
+  noteRead("settings/health", 200, { ...confirmedAt(3), health: { ...confirmedAt(3).health, recovery: LKG } }, 3);
+  assert.equal(daemonBanner(), null);
+  noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true, recovery: LKG }, 2);
+  assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
+});
+
 test("a Settings config reply older than the health that settled the restart cannot restore it", () => {
   resetStatus();
-  noteRead("settings/config", 200, { revision: 1, pending_revision: 2, restart_required: true }, 1);
-  noteRead("settings/health", 200, { reachable: true, restarting: false,
-    health: { config_revision: 2, config_confirmed: true } }, 3);
-  noteRead("settings/config", 200, { revision: 1, pending_revision: 2, restart_required: true }, 2);
+  noteRead("settings/config", 200, { revision: 2, pending_revision: 2, restart_required: true }, 1);
+  noteRestart(2, 2);
+  noteRead("settings/health", 200, confirmedAt(2), 4);
+  // Read during the restart: the daemon keeps the pending revision until the restarted process confirms it.
+  noteRead("settings/config", 200, { revision: 2, pending_revision: 2, restart_required: true }, 3);
   assert.equal(daemonBanner(), null);
-  noteRead("settings/config", 200, { revision: 2, pending_revision: 3, restart_required: true }, 4);
+  noteRead("settings/config", 200, { revision: 3, pending_revision: 3, restart_required: true }, 5);
   assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
 });
 
@@ -265,10 +354,10 @@ test("an older reply cannot restore a restart, an Overview answer or the last ti
   assert.match(daemonBanner().detail, new RegExp(new Date(200000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })));
 });
 
-test("a health answer that confirmed the saved revision settles a Settings reply that started earlier but came later", () => {
+test("a restart's end settles a Settings reply that started before the restart but came later", () => {
   resetStatus();
-  noteRead("settings/health", 200, { reachable: true, restarting: false,
-    health: { config_revision: 2, config_confirmed: true } }, 2);
+  noteRestart(2, 2);
+  noteRead("settings/health", 200, confirmedAt(2), 3);
   noteRead("settings/config", 200, { revision: 2, pending_revision: 2, restart_required: true }, 1);
   assert.equal(daemonBanner(), null);
   // A newer Settings read still wins over that health answer.
@@ -414,18 +503,23 @@ test("a daemon that answers /health with an error is answering: a restart shows 
 
 
 test("ending an older restart does not settle a revision saved during it", () => {
-  for (const reverse of [false, true]) {
+  for (const [reverse, own] of [[false, false], [true, false], [false, true], [true, true]]) {
     resetStatus();
     noteRead("settings/config", 200, { revision: 4, pending_revision: 4, restart_required: true }, 1);
-    noteRead("overview", 200, answer({ restarting: true }), 2);
+    // This page started the restart to revision 4, or another tab did and this one only saw it under way.
+    if (own) noteRestart(2, 4);
+    else noteRead("overview", 200, answer({ restarting: true }), 2);
     noteRead("settings/config", 200, { revision: 5, pending_revision: 5, restart_required: true }, 3);
     const active = () => noteRead("settings/health", 200, { reachable: true, restarting: true, health: null }, 4);
     const done = () => noteRead("overview", 200, answer({ health: { config_revision: 4, config_confirmed: true } }), 5);
     if (reverse) { done(); active(); } else { active(); done(); }
     assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
     assert.equal(daemonBanner().detail, "Revision 5 is saved; the daemon still runs revision 4.");
-    noteRead("settings/health", 200, { reachable: true, restarting: false,
-      health: { config_revision: 5, config_confirmed: true } }, 6);
+    // Health at revision 5 is only the save; a restart to it applies it.
+    noteRead("settings/health", 200, confirmedAt(5), 6);
+    assert.equal(daemonBanner().title, "Restart needed to apply saved settings.");
+    noteRestart(7, 5);
+    noteRead("settings/health", 200, confirmedAt(5), 8);
     assert.equal(daemonBanner(), null);
   }
 });
