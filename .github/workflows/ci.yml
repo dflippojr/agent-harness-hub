@@ -11,8 +11,10 @@ name: CI
 #   sonar    - SonarCloud analysis of the test job's coverage; the quality gate fails this check
 #   gate-guard - the shared gate guard (dflippojr/.github), pinned by full SHA: fails a pull request that deletes or
 #              skips tests, adds retries, or edits workflows, coverage or Sonar config, unless the owner applied
-#              gate-change-approved
-#   gate     - the one check to require: always runs, fails unless lint, test, e2e, ui, package and gate-guard all succeeded
+#              gate-change-approved. It runs from the pull request's head, so a pull request can rewrite it; the
+#              trusted copy is gate-guard-target.yml, which runs from main and posts the gate-guard check
+#   gate     - the check to require, with gate-guard: always runs, fails unless lint, test, e2e, ui, package and
+#              gate-guard all succeeded
 on:
   push:
     branches: [main]
@@ -257,6 +259,8 @@ jobs:
     # SHA, as its README asks, so the script that judges the pull request is the one that was reviewed. It checks pull
     # requests only (a push prints a notice). The owner's label counts only when the owner applied it. Labels are read
     # when the check runs: after the owner applies one, re-run this job (or the failed jobs) to pass the check.
+    # This job is an early signal inside gate, not the judge: a pull request can replace it, and it accepts a label
+    # applied before the newest push. The gate-guard check from gate-guard-target.yml is the one the ruleset trusts.
     uses: dflippojr/.github/.github/workflows/gate-guard.yml@051a053bfe27988c4bf092216a466388e24a389d
     with:
       guard-ref: 051a053bfe27988c4bf092216a466388e24a389d

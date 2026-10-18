@@ -174,6 +174,49 @@ def test_ci_and_release_smoke_test_the_image_as_a_non_root_user():
     assert "--network host" in smoke and "/healthz" in smoke
 
 
+def _code(workflow: str) -> str:
+    """The workflow without its comment lines, so a trigger or key named in a comment doesn't count."""
+    return "\n".join(line for line in workflow.splitlines() if not line.lstrip().startswith("#")) + "\n"
+
+
+def test_trusted_gate_guard_runs_from_the_default_branch_and_runs_no_pull_request_code():
+    # ci.yml's gate-guard job runs on pull_request, so a pull request supplies its own judge: it can replace that job
+    # with a green no-op. Under pull_request_target this caller is read from main, and the called workflow only
+    # fetches the pull request's commits as git objects; its verdict is the gate-guard check the ruleset requires.
+    target = _code((ROOT / ".github/workflows/gate-guard-target.yml").read_text(encoding="utf-8"))
+    header = target.split("\njobs:\n", 1)[0]
+    assert re.search(r"^on:\n  pull_request_target:\n    types: \[opened, synchronize, reopened, edited, labeled, "
+                     r"unlabeled\]\n\n", header, re.M)
+    assert "pull_request:" not in target and "workflow_dispatch" not in target
+    assert re.search(r"^permissions:\n  contents: read\n  issues: read\n  pull-requests: read\n  checks: write\n\n",
+                     header, re.M)
+    assert "group: gate-guard-target-${{ github.event.pull_request.head.sha }}" in header
+    assert "cancel-in-progress: true" in header
+    jobs = _jobs(target)
+    assert set(jobs) == {"judge"}
+    sha = "051a053bfe27988c4bf092216a466388e24a389d"
+    assert f"    uses: dflippojr/.github/.github/workflows/gate-guard-target.yml@{sha}\n" in jobs["judge"]
+    assert f"      guard-ref: {sha}\n" in jobs["judge"]
+    for unsafe in ("steps:", "run:", "actions/checkout", "secrets", "self-hosted", "github.event.pull_request.title",
+                   "github.head_ref"):
+        assert unsafe not in jobs["judge"], unsafe
+    # One reviewed script judges both checks.
+    assert f"guard-ref: {sha}" in (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+
+def test_review_caller_grants_every_permission_review_v3_requests():
+    # A called workflow can't hold more than its caller grants. review-v3 reads the issues a pull request closes, the
+    # spec it reviews against, so it needs issues: read on top of what review-v2 needed.
+    review = _code((ROOT / ".github/workflows/review.yml").read_text(encoding="utf-8"))
+    assert "uses: dflippojr/agent-harness/.github/workflows/review.yml@review-v3\n" in review
+    assert "tooling_ref: review-v3\n" in review
+    header = review.split("\njobs:\n", 1)[0]
+    permissions = re.search(r"^permissions:\n((?:  .+\n)+)", header, re.M)
+    assert permissions, header
+    assert set(permissions.group(1).split("\n")) - {""} == {
+        "  contents: read", "  pull-requests: write", "  checks: write", "  issues: read"}
+
+
 def test_ci_gate_needs_every_job_but_sonar_and_main_runs_are_never_cancelled():
     ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     jobs = _jobs(ci)

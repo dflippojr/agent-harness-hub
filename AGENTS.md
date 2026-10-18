@@ -3,7 +3,9 @@
 ## How to prove a change works
 
 CI (`.github/workflows/ci.yml`) runs the jobs below on GitHub-hosted runners. The `gate` job needs all of them but
-`sonar`, always runs, and fails unless each one succeeded; it is the one check a ruleset requires. Run the jobs your
+`sonar`, always runs, and fails unless each one succeeded. The ruleset requires it and `gate-guard`, which
+`.github/workflows/gate-guard-target.yml` posts from `main` under `pull_request_target`, so a pull request can't
+rewrite its own judge. A push after the owner's `gate-change-approved` label makes the label stale. Run the jobs your
 change touches locally before you push, from the repository root, with Python 3.12 (3.10 cannot import the tests).
 
 **Setup.** `python -m pip install --require-hashes -r requirements-dev.lock -r requirements-build.lock`, then

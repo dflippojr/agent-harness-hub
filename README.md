@@ -339,7 +339,11 @@ Owner setup before the first tag. Only an admin can do these; the workflow doesn
    and deletions, with only repository admins on the bypass list. Then agent or leaked tokens can't create, move or
    delete release tags.
 4. In Settings → Rules → Rulesets, add a branch ruleset for `main` that requires a pull request before merging. The
-   ancestry check above only means something when `main` can't take direct pushes.
+   ancestry check above only means something when `main` can't take direct pushes. The same ruleset requires the
+   status checks `gate` and `gate-guard`, both from GitHub Actions. `gate-guard` is the check run that
+   `.github/workflows/gate-guard-target.yml` posts from `main` under `pull_request_target`. A pull request can't
+   rewrite it, and it counts the owner's `gate-change-approved` label only when the label was applied after the
+   newest push.
 
 ### Apps
 
