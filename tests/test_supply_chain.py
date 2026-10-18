@@ -7,8 +7,12 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-# The only permitted action outside actions/: the SonarCloud scanner, pinned to a commit SHA.
-ALLOWED_THIRD_PARTY_ACTIONS = {"SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9"}
+# The only permitted action outside actions/: the SonarCloud scanner, pinned to a commit SHA, and the shared gate guard,
+# a reusable workflow pinned to the same full SHA as its guard-ref (asserted below).
+ALLOWED_THIRD_PARTY_ACTIONS = {
+    "SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9",
+    "dflippojr/.github/.github/workflows/gate-guard.yml@051a053bfe27988c4bf092216a466388e24a389d",
+}
 
 
 def test_all_locked_dependencies_have_versions_and_hashes():
@@ -40,6 +44,7 @@ def test_docker_and_ci_install_only_locked_external_inputs():
     )
     assert ci.count("persist-credentials: false") == sum(action.startswith("actions/checkout@") for action in actions)
     assert "ref: aa5a9047dbe4bcba6b7ec3348d0cd529c00ebe2b" in ci
+    assert "guard-ref: 051a053bfe27988c4bf092216a466388e24a389d" in ci
     assert "pip install -r daemon/requirements.txt" not in ci
     assert "--require-hashes -r requirements-e2e.lock" in ci
     assert "python -m build --no-isolation" in ci
