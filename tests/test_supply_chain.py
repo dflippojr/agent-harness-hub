@@ -186,7 +186,7 @@ def test_trusted_gate_guard_runs_from_the_default_branch_and_runs_no_pull_reques
     target = _code((ROOT / ".github/workflows/gate-guard-target.yml").read_text(encoding="utf-8"))
     header = target.split("\njobs:\n", 1)[0]
     assert re.search(r"^on:\n  pull_request_target:\n    types: \[opened, synchronize, reopened, edited, labeled, "
-                     r"unlabeled\]\n\n", header, re.M)
+                     r"unlabeled, closed\]\n\n", header, re.M)
     assert "pull_request:" not in target and "workflow_dispatch" not in target
     assert re.search(r"^permissions:\n  contents: read\n  issues: read\n  pull-requests: read\n  checks: write\n\n",
                      header, re.M)
