@@ -593,7 +593,7 @@ def project(value: Any, schema: Any, secrets: tuple[str, ...] = ()) -> Any:
     if isinstance(schema, list):
         if not isinstance(value, list):
             raise ValueError("Invalid daemon list")
-        if isinstance(schema[0], dict) and any(not isinstance(row, dict) for row in value):
+        if isinstance(schema[0], Mapping) and any(not isinstance(row, dict) for row in value):
             raise ValueError("Invalid daemon list row")
         return [project(row, schema[0], secrets) for row in value[:1000]]
     if schema in (TEXT, LONG, IDENTIFIER, HASH):
