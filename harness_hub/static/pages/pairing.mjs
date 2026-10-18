@@ -318,6 +318,6 @@ export function renderPairing(main) {
     if (refused && !stopped) reveal(notice);
   }
   ticker = setInterval(() => tickExpiries(groups, now()), 1000);
-  load(true);
+  void load(true);
   return () => { stopped = true; poll.stop(); clearInterval(ticker); };
 }

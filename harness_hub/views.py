@@ -8,6 +8,8 @@ import math
 import re
 import time
 import unicodedata
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -504,17 +506,20 @@ CREDENTIAL = {**dict.fromkeys(("id", "app_id", "app_name", "backend", "secret_re
 FINDING = {"code": TEXT, "path": TEXT, "message": TEXT, "severity": TEXT}
 REVIEW = {"recommendation": TEXT, "summary": LONG, "error": TEXT,
           **dict.fromkeys(("scope", "trigger_precision", "conflicts", "prompt_injection", "sensitive_data",
-                           "examples"), {"ok": BOOL, "notes": TEXT})}
-SKILL = {**dict.fromkeys(("id", "slug", "title", "purpose", "activation_suggestion", "content_hash", "status",
-                         "target_slug", "review_status"), TEXT),
-         **dict.fromkeys(("version", "created_at", "updated_at", "installed_at", "example_count",
-                         "reference_count"), NUMBER), "enabled": BOOL, "projects": NAMES,
-         "static_findings": [FINDING], "review": REVIEW, "skill_md": LONG, "diff": LONG,
-         "references": [{"path": TEXT, "content": LONG}],
-         "examples": [{"prompt": LONG, "expected": LONG, "expected_behavior": LONG}],
-         "source_session_id": TEXT, "id": IDENTIFIER, "slug": IDENTIFIER, "content_hash": HASH,
-         "manifest": {**dict.fromkeys(("slug", "title", "purpose", "activation_suggestion",
-                                      "content_hash", "validator_version"), TEXT)}}
+                           "examples"), MappingProxyType({"ok": BOOL, "notes": TEXT}))}
+# dict.fromkeys shares one schema object between keys (and project() tells SKILL by identity), so the shared ones are
+# read-only: a write through one operation would change every operation that shares it.
+SKILL = MappingProxyType({
+    **dict.fromkeys(("id", "slug", "title", "purpose", "activation_suggestion", "content_hash", "status",
+                     "target_slug", "review_status"), TEXT),
+    **dict.fromkeys(("version", "created_at", "updated_at", "installed_at", "example_count",
+                     "reference_count"), NUMBER), "enabled": BOOL, "projects": NAMES,
+    "static_findings": [FINDING], "review": REVIEW, "skill_md": LONG, "diff": LONG,
+    "references": [{"path": TEXT, "content": LONG}],
+    "examples": [{"prompt": LONG, "expected": LONG, "expected_behavior": LONG}],
+    "source_session_id": TEXT, "id": IDENTIFIER, "slug": IDENTIFIER, "content_hash": HASH,
+    "manifest": {**dict.fromkeys(("slug", "title", "purpose", "activation_suggestion",
+                                  "content_hash", "validator_version"), TEXT)}})
 RUNNER_UPDATE = {"ok": BOOL, "version": TEXT, "build_id": TEXT, "at": NUMBER, "message": TEXT,
                  "plist_changed": BOOL}
 RUNNER = {"name": IDENTIFIER, "online": BOOL, "last_seen_seconds": NUMBER, "pending_requests": NUMBER,
@@ -528,8 +533,9 @@ FOLDER = {**dict.fromkeys(("project", "name", "folder", "path", "status", "inval
 CANDIDATE = {"id": IDENTIFIER, "suggested_slug": IDENTIFIER, "path": TEXT, "reason": TEXT, "markers": NAMES,
              **dict.fromkeys(("git", "requires_git", "launchable", "configured_duplicate", "promoted",
                              "trusted"), BOOL)}
-SCAN = {"id": IDENTIFIER, "revision": NUMBER, "status": TEXT, "visited": NUMBER, "candidates": [CANDIDATE],
-        "errors": [{"location": TEXT, "code": TEXT}], "truncated": BOOL, "reason": TEXT, "expires_in": NUMBER}
+SCAN = MappingProxyType({"id": IDENTIFIER, "revision": NUMBER, "status": TEXT, "visited": NUMBER,
+                         "candidates": [CANDIDATE], "errors": [{"location": TEXT, "code": TEXT}], "truncated": BOOL,
+                         "reason": TEXT, "expires_in": NUMBER})
 # Audit metadata is deliberately narrower than free text or caller-defined objects.
 AUDIT = {**dict.fromkeys(("actor_id", "actor_kind", "key_id", "source", "target_id", "target_kind", "action",
                           "outcome"), TEXT),
@@ -577,7 +583,7 @@ SCHEMAS = {
 def project(value: Any, schema: Any, secrets: tuple[str, ...] = ()) -> Any:
     if value is None:
         return None
-    if isinstance(schema, dict):
+    if isinstance(schema, Mapping):
         if not isinstance(value, dict):
             raise ValueError("Invalid daemon object")
         shown = {key: project(value[key], shape, secrets) for key, shape in schema.items() if key in value}
@@ -587,7 +593,7 @@ def project(value: Any, schema: Any, secrets: tuple[str, ...] = ()) -> Any:
     if isinstance(schema, list):
         if not isinstance(value, list):
             raise ValueError("Invalid daemon list")
-        if isinstance(schema[0], dict) and any(not isinstance(row, dict) for row in value):
+        if isinstance(schema[0], Mapping) and any(not isinstance(row, dict) for row in value):
             raise ValueError("Invalid daemon list row")
         return [project(row, schema[0], secrets) for row in value[:1000]]
     if schema in (TEXT, LONG, IDENTIFIER, HASH):

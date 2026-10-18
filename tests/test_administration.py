@@ -378,3 +378,28 @@ def test_the_hub_key_inside_a_link_code_shaped_value_is_still_withheld(claimed, 
     fake_daemon.invitation_code = "ahg-" + fake_daemon.hub_token
     reply = call(claimed, "google_invite", {}, targets={"user_id": created["user_id"]})
     assert reply.status_code == 502 and fake_daemon.hub_token not in reply.text
+
+
+# SonarCloud python:S8508 (#145): dict.fromkeys gives every operation the same schema object, so the tables are frozen.
+@pytest.mark.parametrize(("operation", "path"), [
+    ("skill_install", ()), ("scan", ()), ("proposal", ("review", "scope")),
+])
+def test_shared_response_schemas_cannot_be_changed_through_one_operation(operation, path):
+    from harness_hub.views import SCHEMAS
+
+    schema = SCHEMAS[operation]
+    for key in path:
+        schema = schema[key]
+    with pytest.raises(TypeError):
+        schema["leaked"] = "TEXT"
+
+
+@pytest.mark.parametrize(("operation", "body"), [
+    ("skills", {"proposals": [None], "installed": []}), ("skills_enabled", [None]),
+    ("scan", {"id": "s1", "candidates": [None]}),
+])
+def test_a_non_object_row_under_a_frozen_schema_is_refused(operation, body):
+    from harness_hub.views import administration_view
+
+    with pytest.raises(ValueError, match="Invalid daemon list row"):
+        administration_view(operation, body)
