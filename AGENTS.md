@@ -12,7 +12,7 @@ change touches locally before you push, from the repository root, with Python 3.
 
 ```
 git clone https://github.com/dflippojr/agent-harness ../agent-harness
-git -C ../agent-harness checkout aa5a9047dbe4bcba6b7ec3348d0cd529c00ebe2b
+git -C ../agent-harness checkout 3d3b806a4445254423af52d753171bc497ca1be9
 ```
 
 Name it with `HUB_E2E_DAEMON_SRC` (e2e) and `HUB_UI_DAEMON_SRC` (ui and verify). The pin is the `ref:` in ci.yml's
