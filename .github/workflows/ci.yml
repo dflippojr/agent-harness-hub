@@ -9,7 +9,12 @@ name: CI
 #   ui       - browser journeys (tools/ui-tests) against a disposable fake model daemon and Hub (docs/ui-testing.md)
 #   package  - the wheel (with the static UI), and the Docker image build and smoke test (scripts/smoke-image.sh)
 #   sonar    - SonarCloud analysis of the test job's coverage; the quality gate fails this check
-#   gate     - the one check to require: always runs, fails unless lint, test, e2e, ui and package all succeeded
+#   gate-guard - the shared gate guard (dflippojr/.github), pinned by full SHA: fails a pull request that deletes or
+#              skips tests, adds retries, or edits workflows, coverage or Sonar config, unless the owner applied
+#              gate-change-approved. It runs from the pull request's head, so a pull request can rewrite it; the
+#              trusted copy is gate-guard-target.yml, which runs from main and posts the gate-guard check
+#   gate     - the check to require, with gate-guard: always runs, fails unless lint, test, e2e, ui, package and
+#              gate-guard all succeeded
 on:
   push:
     branches: [main]
@@ -18,6 +23,10 @@ on:
 
 permissions:
   contents: read
+  # gate-guard reads the pull request's labels and the owner's label events. The called workflow can't hold more than
+  # its caller, so both scopes are granted here.
+  issues: read
+  pull-requests: read
 
 # A newer push to a PR cancels its older run. Every push to main gets its own group (its commit) and is never
 # cancelled, so each commit of a batch merge is tested on its own: one group per ref would still drop the queued
@@ -245,12 +254,24 @@ jobs:
           docker build -t agent-harness-hub:ci .
           scripts/smoke-image.sh agent-harness-hub:ci
 
+  gate-guard:
+    # The shared gate guard, called at a full commit SHA that dflippojr/.github main contains; guard-ref names the same
+    # SHA, as its README asks, so the script that judges the pull request is the one that was reviewed. It checks pull
+    # requests only (a push prints a notice). The owner's label counts only when the owner applied it. Labels are read
+    # when the check runs: after the owner applies one, re-run this job (or the failed jobs) to pass the check.
+    # This job is an early signal inside gate, not the judge: a pull request can replace it, and it accepts a label
+    # applied before the newest push. The gate-guard check from gate-guard-target.yml is the one the ruleset trusts.
+    uses: dflippojr/.github/.github/workflows/gate-guard.yml@051a053bfe27988c4bf092216a466388e24a389d
+    with:
+      guard-ref: 051a053bfe27988c4bf092216a466388e24a389d
+      require-owner-label-actor: true
+
   gate:
     # The single check a ruleset (or `ao ready`) requires, so it never lists job names. It runs even when a needed
     # job failed or was cancelled, and fails unless every needed job succeeded. sonar is not here: its quality gate
     # is its own check.
     if: always()
-    needs: [lint, test, e2e, ui, package]
+    needs: [lint, test, e2e, ui, package, gate-guard]
     runs-on: ubuntu-latest
     steps:
       - name: Every needed job succeeded
