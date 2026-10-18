@@ -57,7 +57,7 @@ export function renderOverview(main) {
       if (!stopped) {
         if (reloadRequested) {
           reloadRequested = false;
-          load();
+          void load();
         } else {
           poll.schedule(delay, { whileHidden });
         }
@@ -103,7 +103,7 @@ export function renderOverview(main) {
   }
 
   refresh.addEventListener("click", load);
-  load();
+  void load();
   return () => {
     stopped = true;
     poll.stop();

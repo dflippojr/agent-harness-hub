@@ -500,8 +500,8 @@ export function renderAdmin(main) {
         if (selected.id === "skill_install" && (!reviewedProposal || reviewedProposal.id !== target.pid ||
           reviewedProposal.content_hash !== body.content_hash)) throw Error("Read the complete proposal at this hash first, or review on the host CLI.");
         if (selected.id === "retention_apply" && !preview) throw Error("Read a fresh retention preview before applying it.");
-        if (selected.id === "skill_projects") confirmProjects(selected, target, body);
-        else if (selected.confirmation) confirmAction(selected, target, body); else execute(selected, target, body);
+        if (selected.id === "skill_projects") void confirmProjects(selected, target, body);
+        else if (selected.confirmation) confirmAction(selected, target, body); else void execute(selected, target, body);
       } catch (error) { message(error.message, true); }
     } });
     form.append(...selected.targets.map(name => inputField(name, "text", true, targets[name], true)),
@@ -533,7 +533,7 @@ export function renderAdmin(main) {
   function confirmAction(op, targets, body, detail = {}) {
     const slot = workspace.querySelector(".admin-confirmation");
     const confirm = button("Confirm " + lower(op.label), () => {
-      clear(slot); execute(op, targets, { ...body, confirm: true });
+      clear(slot); void execute(op, targets, { ...body, confirm: true });
     });
     clear(slot, h("section", { class: "notice warn", role: "alert", "aria-label": "Confirm action" },
       h("h3", {}, "Confirm " + lower(op.label)), h("p", {}, op.confirmation),
@@ -606,10 +606,10 @@ export function renderAdmin(main) {
       const previous = {};
       for (const field of workspace.querySelectorAll("[name]")) if (field.value) previous[field.name] = field.value;
       chooseOperation("audit", {}, { ...previous, before_id: reply.next_before_id });
-      execute(selected, {}, { ...previous, before_id: reply.next_before_id });
+      void execute(selected, {}, { ...previous, before_id: reply.next_before_id });
     }));
     if (["scan_start", "scan", "scan_cancel"].includes(op.id) && validTarget(reply?.id)) {
-      output.append(button("Refresh scan", () => { chooseOperation("scan", { scan_id: reply.id }); execute(selected, { scan_id: reply.id }, {}); }),
+      output.append(button("Refresh scan", () => { chooseOperation("scan", { scan_id: reply.id }); void execute(selected, { scan_id: reply.id }, {}); }),
         button("Cancel scan", () => chooseOperation("scan_cancel", { scan_id: reply.id })));
       for (const candidate of reply.candidates || []) {
         if (candidate.promotion_available !== true || !validTarget(candidate.id) || !validTarget(candidate.suggested_slug)) continue;
@@ -641,6 +641,6 @@ export function renderAdmin(main) {
       chooseGroup("accounts");
     } catch (error) { if (!stopped) message(error.message, true); }
   }
-  start();
+  void start();
   return () => { stopped = true; clearTimeout(factTimer); eraseCode(); eraseOutput(); clear(accountsView); };
 }

@@ -198,6 +198,6 @@ export function renderModules(main) {
     drawn = "";
     await load(true);
   }
-  load();
+  void load();
   return () => { stopped = true; poll.stop(); };
 }

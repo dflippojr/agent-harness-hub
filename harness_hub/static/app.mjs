@@ -165,7 +165,7 @@ function setHostCommands(on) {
   }
 }
 
-async function route() {
+function route() {
   if (stopPage) stopPage();
   stopPage = null;
   const section = current();
@@ -254,4 +254,4 @@ async function boot() {
   route();
 }
 
-boot();
+void boot();

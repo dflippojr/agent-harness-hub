@@ -402,6 +402,6 @@ export function renderMarketplace(main) {
     }
   }
   ticker = setInterval(() => tickExpiries(list, now()), 1000);
-  load(true);
+  void load(true);
   return () => { stopped = true; poll.stop(); clearInterval(ticker); };
 }
