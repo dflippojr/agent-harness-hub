@@ -392,3 +392,14 @@ def test_shared_response_schemas_cannot_be_changed_through_one_operation(operati
         schema = schema[key]
     with pytest.raises(TypeError):
         schema["leaked"] = "TEXT"
+
+
+@pytest.mark.parametrize(("operation", "body"), [
+    ("skills", {"proposals": [None], "installed": []}), ("skills_enabled", [None]),
+    ("scan", {"id": "s1", "candidates": [None]}),
+])
+def test_a_non_object_row_under_a_frozen_schema_is_refused(operation, body):
+    from harness_hub.views import administration_view
+
+    with pytest.raises(ValueError, match="Invalid daemon list row"):
+        administration_view(operation, body)
