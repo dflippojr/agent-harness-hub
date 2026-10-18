@@ -12,7 +12,7 @@ The agent-ops `ui-testing-pass` skill reads this file. The commands and the safe
 - **Target.** The Hub console, all seven sections: Overview, Settings, Modules, Apps, Pairing requests, Marketplace,
   and Accounts and maintenance. It is served by the Hub (`python -m harness_hub`) from this repository.
 - **The daemon.** A real Agent Harness daemon from an agent-harness checkout at the commit CI pins
-  (`aa5a9047dbe4bcba6b7ec3348d0cd529c00ebe2b`, the README's minimum daemon) or later, run with `HARNESS_FAKE_MODEL`.
+  (`3d3b806a4445254423af52d753171bc497ca1be9`) or later, run with `HARNESS_FAKE_MODEL`.
   Every model reply is scripted. The Hub never asks it for one: the Hub reads and changes the daemon's owner API.
 - **Loopback only.** The daemon and the Hub both bind `127.0.0.1`. There is no `--public-url`, no `tailscale serve`,
   and no `*.ts.net` address. The launcher refuses ports **8100** (the live daemon's) and **8120** (the live Hub's

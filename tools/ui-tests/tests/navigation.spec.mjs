@@ -8,7 +8,7 @@ const CLI_PARITY_SECTIONS = ["admin", "apps", "marketplace", "modules", "pairing
 const TAILNET_BANNER = "Tailnet sign-in needs Owner API 1.26 or later.";
 
 // The Owner API version the daemon reports, and whether it is below the 1.26 tailnet sign-in needs. The pinned daemon
-// (aa5a904) reports 1.24; the nightly drift run (.github/workflows/drift.yml) runs these journeys at agent-harness main.
+// (3d3b806) reports 1.28; the nightly drift run (.github/workflows/drift.yml) runs these journeys at agent-harness main.
 async function ownerApi(page) {
   const { json } = await hubApi(page, "overview");
   expect(["no_tailnet_signin", "supported"]).toContain(json.ownership.compatibility);

@@ -208,7 +208,7 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         overview = first.call("GET", "/api/overview").json()
         assert overview["reachable"] and overview["error"] == ""
         assert overview["ownership"]["this_hub"] is True and overview["ownership"]["daemon_has_hub"] is True
-        # The pinned daemon (aa5a904) reports Owner API 1.24: the Hub's minimum, below the 1.26 tailnet sign-in needs.
+        # The pinned daemon (3d3b806) reports Owner API 1.28, above the 1.26 tailnet sign-in needs.
         # The nightly drift run (.github/workflows/drift.yml) runs this at agent-harness main, which reports later.
         ownership = overview["ownership"]
         assert ownership["compatibility"] == owner_api_compatibility(ownership["api_version"])
