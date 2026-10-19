@@ -261,9 +261,9 @@ jobs:
     # when the check runs: after the owner applies one, re-run this job (or the failed jobs) to pass the check.
     # This job is an early signal inside gate, not the judge: a pull request can replace it, and it accepts a label
     # applied before the newest push. The gate-guard check from gate-guard-target.yml is the one the ruleset trusts.
-    uses: dflippojr/.github/.github/workflows/gate-guard.yml@051a053bfe27988c4bf092216a466388e24a389d
+    uses: dflippojr/.github/.github/workflows/gate-guard.yml@882623c67a5c3bab64da2136e6070a5325440b47
     with:
-      guard-ref: 051a053bfe27988c4bf092216a466388e24a389d
+      guard-ref: 882623c67a5c3bab64da2136e6070a5325440b47
       require-owner-label-actor: true
 
   gate:
