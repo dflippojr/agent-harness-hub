@@ -23,7 +23,7 @@ def wait_for_status(hub, predicate, timeout: float = 5.0) -> dict:
     while True:
         try:
             status = read_status(hub)
-        except (FileNotFoundError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError):  # Windows refuses a read while the writer is replacing the file
             status = {}
         if predicate(status) or time.monotonic() > deadline:
             assert predicate(status), status
