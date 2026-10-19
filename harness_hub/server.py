@@ -32,6 +32,7 @@ from .daemon import ADMIN_ROUTES, DaemonClient, DaemonUnreachable
 from .guard import TOKEN_SHAPE, ResponseGuard, leaks
 from .inventory import InventoryCache, valid_inventory
 from .state import SERVER_FILE, StateStore, write_private
+from .status import StatusReporter
 from .tailnet import PeerCheck, TailnetIdentity, login
 from .views import (
     REDACTED,
@@ -181,6 +182,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     sessions = Sessions(settings.state_dir)
     inventory = InventoryCache(store.dir, settings.daemon_url)
     peer_check = peer_check or PeerCheck()
+    status = StatusReporter(store.dir, daemon, claims.state, interval=settings.status_seconds, build=settings.build)
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -194,9 +196,11 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             except ClaimError as exc:
                 log.warning("Hub claim not started: %s", exc)
         log.info("Hub %s for %s at %s", __version__, settings.daemon_url, settings.url)
+        status.start()
         try:
             yield
         finally:
+            await status.stop()
             await claims.stop()
 
     app = FastAPI(title="Hub", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None,

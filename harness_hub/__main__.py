@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from .config import (
     normalize_public_url,
 )
 from .state import SERVER_FILE, SigninBusy, read_json
+from .status import build_commit
 
 
 def serve_parser() -> argparse.ArgumentParser:
@@ -41,6 +43,9 @@ def serve_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allowed-host", action="append", default=[], metavar="HOST[:PORT]",
                         help="another exact Host header to answer (repeatable)")
     parser.add_argument("--name", default="Hub", help="the name the daemon records for this Hub")
+    parser.add_argument("--status-interval", type=float, default=0.0, metavar="SECONDS",
+                        help="every SECONDS, poll the daemon's /health and rewrite status.json in the state directory "
+                             "(the production-signals sweep reads it); 0, the default, writes none")
     parser.add_argument("--trust-unverified-identity-headers", action="store_true",
                         help="UNSAFE: outside Windows, trust Tailscale-* identity headers from any local process "
                              "(like the daemon's listen.trust_unverified_identity_headers); ignored on Windows, "
@@ -89,6 +94,8 @@ def serve(argv: list[str]) -> int:
             claim_name=args.name.strip() or "Hub",
             extra_hosts=tuple(h.strip().lower() for h in args.allowed_host if h.strip()),
             trust_unverified_identity_headers=args.trust_unverified_identity_headers,
+            status_seconds=args.status_interval,
+            build=build_commit(os.environ.get("HUB_BUILD_COMMIT")),
         )
     except ValueError as exc:
         parser.error(str(exc))

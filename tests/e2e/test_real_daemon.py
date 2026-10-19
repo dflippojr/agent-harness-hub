@@ -129,7 +129,7 @@ def host_cli(daemon, *args) -> subprocess.CompletedProcess:
 
 
 class Hub:
-    def __init__(self, daemon, state_dir: Path, *, claim_file: Path | None = None):
+    def __init__(self, daemon, state_dir: Path, *, claim_file: Path | None = None, status_seconds: float = 0):
         self.port = free_port()
         self.url = f"http://127.0.0.1:{self.port}"
         self.state_dir = state_dir
@@ -137,6 +137,8 @@ class Hub:
                 "--port", str(self.port)]
         if claim_file:
             args += ["--claim-file", str(claim_file)]
+        if status_seconds:
+            args += ["--status-interval", str(status_seconds)]
         self.bodies: list[str] = []
         self._cleanup = ExitStack()
         try:
@@ -622,3 +624,16 @@ def test_all_scope_disclosures_and_elevated_tiers_match_pinned_daemon():
     tables = json.loads(result.stdout)
     assert {k: v for k, v in tables["disclosures"].items() if k != "admin"} == SCOPE_DISCLOSURES
     assert set(tables["elevated"]) == ELEVATED_SCOPES
+
+
+def test_heartbeat_reads_the_real_daemons_health(daemon, tmp_path):
+    """status.json (docs/production-signals.md) says the real daemon answered, and the Hub is unclaimed."""
+    state = tmp_path / "hub-status"
+    hub = Hub(daemon, state, status_seconds=1)
+    try:
+        status = wait(lambda: (lambda s: s if s.get("daemon_ok") else None)(
+            json.loads((state / "status.json").read_text(encoding="utf-8"))), 30, "the heartbeat to reach the daemon")
+        assert status["claim"] == "unclaimed" and status["daemon_last_ok_at"] == status["written_at"]
+        assert status["build"] == "unknown" and status["started_at"] <= status["written_at"]
+    finally:
+        hub.stop()
