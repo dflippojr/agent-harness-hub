@@ -6,7 +6,8 @@ param(
     [string]$DeployDir = 'D:\Agents\agent-harness-hub',
     [int]$Port = 8120,
     [string]$DaemonUrl = 'http://127.0.0.1:8100',
-    [int]$StatusSeconds = 60
+    [int]$StatusSeconds = 60,
+    [string]$PublicUrl = ''
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'hub-common.ps1')
@@ -36,6 +37,7 @@ while ($true) {
     Log "starting Hub $buildCommit"
     # cmd handles the append redirect so both streams land in one log without PowerShell wrapping stderr.
     $hubArgs = "--daemon-url $DaemonUrl --state-dir `"$($paths.State)`" --host $HubHost --port $Port --status-interval $StatusSeconds"
+    if ($PublicUrl) { $hubArgs += " --public-url $PublicUrl" }
     $proc = Start-Process cmd.exe -ArgumentList "/c `"set HUB_BUILD_COMMIT=$buildCommit&& `"$python`" -u -m harness_hub $hubArgs >> `"$hubLog`" 2>&1`"" `
         -WorkingDirectory $DeployDir -WindowStyle Hidden -PassThru
     $proc.WaitForExit()

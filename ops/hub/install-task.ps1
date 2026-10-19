@@ -3,7 +3,9 @@
 param(
     [string]$DeployDir = 'D:\Agents\agent-harness-hub',
     [int]$Port = 8120,
-    [string]$DaemonUrl = 'http://127.0.0.1:8100'
+    [string]$DaemonUrl = 'http://127.0.0.1:8100',
+    # The https address `tailscale serve` publishes the Hub at (docs/deployment.md); empty keeps it loopback-only.
+    [string]$PublicUrl = ''
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'hub-common.ps1')
@@ -13,7 +15,7 @@ if (-not (Test-Path -LiteralPath $script)) { throw "run-hub.ps1 is not deployed 
 
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument (
     "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`" " +
-    "-DeployDir `"$DeployDir`" -Port $Port -DaemonUrl $DaemonUrl")
+    "-DeployDir `"$DeployDir`" -Port $Port -DaemonUrl $DaemonUrl" + $(if ($PublicUrl) { " -PublicUrl $PublicUrl" } else { '' }))
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden

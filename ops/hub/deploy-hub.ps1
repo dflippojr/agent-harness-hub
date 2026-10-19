@@ -24,6 +24,7 @@ param(
     [string]$Python = '',
     [int]$Port = 8120,
     [string]$DaemonUrl = 'http://127.0.0.1:8100',
+    [string]$PublicUrl = '',
     [switch]$AllowUnmerged,
     [switch]$Rollback,
     [switch]$DryRun
@@ -180,7 +181,7 @@ if ($DryRun) {
 }
 Copy-Ops
 $task = Get-ScheduledTask -TaskName $HubTaskName -ErrorAction SilentlyContinue
-if ($null -eq $task) { Write-Host "[deploy] $HubTaskName is not registered yet; registering it"; & (Join-Path $PSScriptRoot 'install-task.ps1') -DeployDir $DeployDir -Port $Port -DaemonUrl $DaemonUrl | Out-Null }
+if ($null -eq $task) { Write-Host "[deploy] $HubTaskName is not registered yet; registering it"; & (Join-Path $PSScriptRoot 'install-task.ps1') -DeployDir $DeployDir -Port $Port -DaemonUrl $DaemonUrl -PublicUrl $PublicUrl | Out-Null }
 $stopped = $false
 try {
     Stop-Hub $paths.State

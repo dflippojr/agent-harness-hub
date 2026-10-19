@@ -60,6 +60,10 @@ that only the proxy can reach. Non-loopback listeners require an HTTPS public UR
 to the upstream listener. Never expose that HTTP port directly to the LAN or internet.
 A remote `--daemon-url` must use HTTPS; HTTP is accepted only for loopback daemon addresses.
 
+To run the Hub as a service on the daemon's host, with an upgrade, rollback and health check, see
+[docs/deployment.md](docs/deployment.md); the read-only checks a sweep makes on it are in
+[docs/production-signals.md](docs/production-signals.md).
+
 Docker:
 
 ```bash
@@ -77,6 +81,7 @@ docker run -d --network host --mount type=bind,src="$HOME/.agent-harness-hub",ds
 | `--public-url` | none | the HTTPS URL browsers use, such as a `tailscale serve` address; allowed as a Host and makes cookies `Secure` |
 | `--allowed-host` | none | another exact `Host` header to answer (repeatable) |
 | `--name` | `Hub` | the name the daemon records for this Hub |
+| `--status-interval` | `0` (off) | every N seconds, poll the daemon's `/health` and rewrite `status.json` in the state directory (version, build, claim state, last daemon answer) for the [production-signals](docs/production-signals.md) sweep; reads `HUB_BUILD_COMMIT` for the build |
 | `--trust-unverified-identity-headers` | off | **unsafe**; outside Windows, trust `Tailscale-*` headers from any local process (see [Sign in](#sign-in)) |
 
 ## Sign in
