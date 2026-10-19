@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from harness_hub.claim import CLAIMED, OUTCOMES, PENDING, PERSISTING, UNCLAIMED
 from harness_hub.daemon import DaemonClient
@@ -74,11 +79,70 @@ def test_deploy_is_fail_closed_and_publishes_nothing():
 def test_rollback_restores_the_supervisor_scripts_and_stops_a_failed_target():
     deploy = scripts()["deploy-hub.ps1"]
     # ops and ops.previous travel with the environments: a deployment keeps the old scripts, a rollback swaps them back
-    assert "ops.previous" in deploy and deploy.count("Swap-Ops") >= 5
+    assert "ops.previous" in scripts()["hub-ops.ps1"] and deploy.count("Swap-Ops") >= 4
     rollback = deploy.split("# -- rollback", 1)[1].split("# -- guards", 1)[0]
     # a rollback that fails stops the supervisor before restoring, because it reads its environment only at start
     assert rollback.index("} catch {") < rollback.index("Stop-Hub $paths.State", rollback.index("} catch {"))
     assert "$opsSwapped" in rollback
+
+
+POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
+
+# deploy-hub.ps1's calls to hub-ops.ps1, replayed on a scratch directory: a deployment copies the scripts in
+# (Copy-Ops) and a failed one undoes that; a rollback swaps ops and ops.previous (Swap-Ops).
+OPS_SCENARIO = r"""
+param([string]$Deploy)
+$ErrorActionPreference = 'Stop'
+. (Join-Path $env:HUB_OPS 'hub-ops.ps1')
+$paths = @{ Deploy = $Deploy }
+function Version([string]$Name) {
+    $dir = Join-Path $Deploy $Name
+    if (Test-Path -LiteralPath $dir) { (Get-Content -Raw (Join-Path $dir 'run-hub.ps1')).Trim() } else { '-' }
+}
+function Source([string]$Name) {
+    $dir = Join-Path $Deploy "src-$Name"
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    Set-Content -NoNewline -Path (Join-Path $dir 'run-hub.ps1') -Value $Name
+    $dir
+}
+function Deploy([string]$Name) { Copy-Ops (Source $Name) }
+function Fail([string]$Name) { Copy-Ops (Source $Name); UNDO }
+function Shown([string]$Step) {
+    [pscustomobject]@{ step = $Step; ops = Version 'ops'; previous = Version 'ops.previous' }
+}
+$shown = @()
+Deploy 'A'; FINISH; $shown += Shown 'deploy A'
+Deploy 'C'; FINISH; $shown += Shown 'deploy C'
+Fail 'D'; $shown += Shown 'deploy D fails'
+Swap-Ops; $shown += Shown 'rollback'
+Swap-Ops; $shown += Shown 'rollback again'
+$shown | ConvertTo-Json -Compress
+"""
+
+
+def run_ops_scenario(tmp_path: Path, undo: str, finish: str) -> dict[str, tuple[str, str]]:
+    script = tmp_path / "scenario.ps1"
+    script.write_text(OPS_SCENARIO.replace("UNDO", undo).replace("FINISH", finish), encoding="utf-8")
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    result = subprocess.run(
+        [POWERSHELL, "-NoProfile", "-NonInteractive", "-File", str(script), str(deploy)],
+        capture_output=True, text=True, timeout=120, env={**os.environ, "HUB_OPS": str(OPS)}, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return {row["step"]: (row["ops"], row["previous"]) for row in json.loads(result.stdout)}
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="needs PowerShell")
+def test_a_failed_deployment_is_never_recorded_as_the_previous_scripts(tmp_path):
+    # A, then C, then D that fails and is undone: ops.previous must still be A's supervisor (the one that goes with
+    # .venv-previous), so the rollback to A runs A's scripts, and rolling forward again returns to C's.
+    steps = run_ops_scenario(tmp_path, undo="Swap-Ops", finish="")
+    assert steps["deploy A"] == ("A", "-")
+    assert steps["deploy C"] == ("C", "A")
+    assert steps["deploy D fails"] == ("C", "A")
+    assert steps["rollback"] == ("A", "C")
+    assert steps["rollback again"] == ("C", "A")
 
 
 def test_docs_name_the_scripts_and_each_script_exists():
