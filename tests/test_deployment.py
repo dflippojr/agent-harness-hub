@@ -10,8 +10,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from harness_hub.claim import CLAIMED, OUTCOMES, PENDING, PERSISTING, UNCLAIMED
 from harness_hub.daemon import DaemonClient
 from harness_hub.status import STATUS_FILE, StatusReporter
@@ -128,6 +126,7 @@ $shown | ConvertTo-Json -Compress
 
 
 def run_ops_scenario(tmp_path: Path, undo: str, finish: str) -> dict[str, tuple[str, str]]:
+    assert POWERSHELL, "this test runs the deploy scripts and needs PowerShell (powershell on Windows, pwsh elsewhere)"
     script = tmp_path / "scenario.ps1"
     script.write_text(OPS_SCENARIO.replace("UNDO", undo).replace("FINISH", finish), encoding="utf-8")
     deploy = tmp_path / "deploy"
@@ -140,7 +139,6 @@ def run_ops_scenario(tmp_path: Path, undo: str, finish: str) -> dict[str, tuple[
     return {row["step"]: (row["ops"], row["previous"]) for row in json.loads(result.stdout)}
 
 
-@pytest.mark.skipif(POWERSHELL is None, reason="needs PowerShell")
 def test_a_failed_deployment_is_never_recorded_as_the_previous_scripts(tmp_path):
     # A, then C, then D that fails and is undone: ops.previous must still be A's supervisor (the one that goes with
     # .venv-previous), so the rollback to A runs A's scripts, and rolling forward again returns to C's.
