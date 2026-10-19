@@ -65,6 +65,8 @@ class Settings:
     poll_seconds: float = 2.0
     extra_hosts: tuple[str, ...] = field(default=())
     trust_unverified_identity_headers: bool = False  # off Windows only: any local process may then send a login
+    status_seconds: float = 0.0  # seconds between status.json heartbeats (status.py); 0 writes none
+    build: str = "unknown"  # the deployed commit, for status.json
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "daemon_url", normalize_daemon_url(self.daemon_url))
