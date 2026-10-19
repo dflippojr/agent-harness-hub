@@ -175,11 +175,11 @@ if ($DryRun) {
     Write-Host '[dry run] stop the Hub; repoint .venv-path; write deployed.json; copy ops; start; check /healthz'
     exit 0
 }
-Copy-Ops
-$task = Get-ScheduledTask -TaskName $HubTaskName -ErrorAction SilentlyContinue
-if ($null -eq $task) { Write-Host "[deploy] $HubTaskName is not registered yet; registering it"; & (Join-Path $PSScriptRoot 'install-task.ps1') -DeployDir $DeployDir -Port $Port -DaemonUrl $DaemonUrl -PublicUrl $PublicUrl | Out-Null }
 $stopped = $false
 try {
+    Copy-Ops
+    $task = Get-ScheduledTask -TaskName $HubTaskName -ErrorAction SilentlyContinue
+    if ($null -eq $task) { Write-Host "[deploy] $HubTaskName is not registered yet; registering it"; & (Join-Path $PSScriptRoot 'install-task.ps1') -DeployDir $DeployDir -Port $Port -DaemonUrl $DaemonUrl -PublicUrl $PublicUrl | Out-Null }
     Stop-Hub $paths.State
     $stopped = $true
     if ($previousVenv) { Set-Pointer $paths.Previous $previousVenv }
@@ -201,10 +201,10 @@ try {
     Write-Host '[deploy] Hub started and healthy'
 } catch {
     $failure = $_.Exception.Message
-    if (-not $stopped) { Swap-Ops; Remove-Tree $stagedVenv; throw }
+    if (-not $stopped) { Undo-Ops; Remove-Tree $stagedVenv; throw }
     $rollbackErrors = @()
     try { Stop-Hub $paths.State } catch { $rollbackErrors += "stop: $($_.Exception.Message)" }
-    Swap-Ops
+    Undo-Ops
     if ($previousVenv) {
         Set-Pointer $paths.Pointer $previousVenv
         Set-Pointer $paths.Previous $previousOfPrevious
@@ -225,6 +225,8 @@ try {
     throw "deployment failed after the stop; the previous deployment is restored: $failure"
 }
 
+# The deployment stands: ops.previous goes with the environment it replaced, and the older copy is dropped.
+Complete-Ops
 # Keep the environment this replaced for -Rollback; delete the one before it.
 if ($previousOfPrevious -and $previousOfPrevious -ne $stagedVenv -and $previousOfPrevious -ne $previousVenv -and
         $previousOfPrevious.StartsWith($paths.Venvs, [System.StringComparison]::OrdinalIgnoreCase)) {

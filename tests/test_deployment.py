@@ -79,7 +79,13 @@ def test_deploy_is_fail_closed_and_publishes_nothing():
 def test_rollback_restores_the_supervisor_scripts_and_stops_a_failed_target():
     deploy = scripts()["deploy-hub.ps1"]
     # ops and ops.previous travel with the environments: a deployment keeps the old scripts, a rollback swaps them back
-    assert "ops.previous" in scripts()["hub-ops.ps1"] and deploy.count("Swap-Ops") >= 4
+    assert "ops.previous" in scripts()["hub-ops.ps1"] and deploy.count("Swap-Ops") == 2
+    # a failed deployment is undone with Undo-Ops, which puts back the ops.previous Copy-Ops displaced, and a good one
+    # drops that copy only after the Hub is healthy; the copy and the install-task step are inside the try
+    swap = deploy.split("# -- swap, start, check", 1)[1]
+    assert swap.count("Undo-Ops") == 2 and "Swap-Ops" not in swap and "Complete-Ops" in swap
+    assert swap.index("try {") < swap.index("Copy-Ops") < swap.index("install-task.ps1") < swap.index("Stop-Hub")
+    assert swap.index("Start-Hub") < swap.index("Complete-Ops")
     rollback = deploy.split("# -- rollback", 1)[1].split("# -- guards", 1)[0]
     # a rollback that fails stops the supervisor before restoring, because it reads its environment only at start
     assert rollback.index("} catch {") < rollback.index("Stop-Hub $paths.State", rollback.index("} catch {"))
@@ -89,7 +95,8 @@ def test_rollback_restores_the_supervisor_scripts_and_stops_a_failed_target():
 POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
 
 # deploy-hub.ps1's calls to hub-ops.ps1, replayed on a scratch directory: a deployment copies the scripts in
-# (Copy-Ops) and a failed one undoes that; a rollback swaps ops and ops.previous (Swap-Ops).
+# (Copy-Ops); a failed one undoes that (Undo-Ops) and a good one completes it (Complete-Ops); a rollback swaps ops
+# and ops.previous (Swap-Ops).
 OPS_SCENARIO = r"""
 param([string]$Deploy)
 $ErrorActionPreference = 'Stop'
@@ -137,7 +144,7 @@ def run_ops_scenario(tmp_path: Path, undo: str, finish: str) -> dict[str, tuple[
 def test_a_failed_deployment_is_never_recorded_as_the_previous_scripts(tmp_path):
     # A, then C, then D that fails and is undone: ops.previous must still be A's supervisor (the one that goes with
     # .venv-previous), so the rollback to A runs A's scripts, and rolling forward again returns to C's.
-    steps = run_ops_scenario(tmp_path, undo="Swap-Ops", finish="")
+    steps = run_ops_scenario(tmp_path, undo="Undo-Ops", finish="Complete-Ops")
     assert steps["deploy A"] == ("A", "-")
     assert steps["deploy C"] == ("C", "A")
     assert steps["deploy D fails"] == ("C", "A")

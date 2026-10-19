@@ -9,14 +9,39 @@ function Remove-Tree([string]$Path) {
 
 function Copy-Ops([string]$Source = $PSScriptRoot) {
     # The task runs the deployment's own copy of these scripts (install-task.ps1), so a checkout change can't alter it.
-    # The copy this replaces is kept as ops.previous, so a rollback restores the supervisor that went with the old Hub.
+    # The copy this replaces becomes ops.previous, so a rollback restores the supervisor that went with the old Hub. The
+    # ops.previous it displaces is parked as ops.previous.bak until Complete-Ops, so Undo-Ops can put every copy back
+    # when the deployment fails: a failed deployment is never left as "previous".
     $target = Join-Path $paths.Deploy 'ops'
     $old = Join-Path $paths.Deploy 'ops.previous'
+    $parked = Join-Path $paths.Deploy 'ops.previous.bak'
     if ($DryRun) { Write-Host "[dry run] ops -> ops.previous; copy $Source\*.ps1 -> $target"; return }
-    Remove-Tree $old
-    if (Test-Path -LiteralPath $target) { Move-Item -LiteralPath $target -Destination $old }
+    $script:OpsUndo = @{ Parked = $false; Moved = $false }
+    Remove-Tree $parked
+    if (Test-Path -LiteralPath $old) { Move-Item -LiteralPath $old -Destination $parked; $script:OpsUndo.Parked = $true }
+    if (Test-Path -LiteralPath $target) { Move-Item -LiteralPath $target -Destination $old; $script:OpsUndo.Moved = $true }
     New-Item -ItemType Directory -Force -Path $target | Out-Null
     Copy-Item -Path (Join-Path $Source '*.ps1') -Destination $target -Force
+}
+
+function Undo-Ops {
+    # Puts ops and ops.previous back as they were before Copy-Ops. Does nothing if Copy-Ops did not start.
+    if (-not $script:OpsUndo) { return }
+    $target = Join-Path $paths.Deploy 'ops'
+    $old = Join-Path $paths.Deploy 'ops.previous'
+    $parked = Join-Path $paths.Deploy 'ops.previous.bak'
+    if ($script:OpsUndo.Moved) {
+        Remove-Tree $target
+        Move-Item -LiteralPath $old -Destination $target
+    }
+    if ($script:OpsUndo.Parked) { Move-Item -LiteralPath $parked -Destination $old }
+    $script:OpsUndo = $null
+}
+
+function Complete-Ops {
+    # The deployment succeeded: the copy before ops.previous is no longer needed.
+    $script:OpsUndo = $null
+    Remove-Tree (Join-Path $paths.Deploy 'ops.previous.bak')
 }
 
 function Swap-Ops {

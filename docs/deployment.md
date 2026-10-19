@@ -25,7 +25,7 @@ The Hub runs on the tower next to the agent-harness daemon, as a logon task, so 
 | `venvs\<sha>\` | one virtual environment per deployed commit, built from that commit's `requirements.lock` with hashes |
 | `.venv-path`, `.venv-previous` | the active environment and the one it replaced (for rollback) |
 | `deployed.json`, `deployed.previous.json` | `commit`, `version`, `deployed_at`, `unmerged` of the active and previous deployment |
-| `ops\`, `ops.previous\` | the deployed copy of `ops/hub/*.ps1` (the logon task runs it) and the copy it replaced; a rollback swaps them with the environments |
+| `ops\`, `ops.previous\` | the deployed copy of `ops/hub/*.ps1` (the logon task runs it) and the copy it replaced; a rollback swaps them with the environments. A deployment that fails is undone and never becomes `ops.previous` (`ops.previous.bak` holds the older copy only while it runs) |
 | `state\` | the Hub's `--state-dir`: key, sign-in codes, `status.json` |
 | `logs\` | `hub.log`, `supervisor.log` |
 
