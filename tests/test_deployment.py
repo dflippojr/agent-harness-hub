@@ -71,6 +71,16 @@ def test_deploy_is_fail_closed_and_publishes_nothing():
         assert not re.search(r"twine|docker push|pypi|ghcr|gh release", text, re.I)
 
 
+def test_rollback_restores_the_supervisor_scripts_and_stops_a_failed_target():
+    deploy = scripts()["deploy-hub.ps1"]
+    # ops and ops.previous travel with the environments: a deployment keeps the old scripts, a rollback swaps them back
+    assert "ops.previous" in deploy and deploy.count("Swap-Ops") >= 5
+    rollback = deploy.split("# -- rollback", 1)[1].split("# -- guards", 1)[0]
+    # a rollback that fails stops the supervisor before restoring, because it reads its environment only at start
+    assert rollback.index("} catch {") < rollback.index("Stop-Hub $paths.State", rollback.index("} catch {"))
+    assert "$opsSwapped" in rollback
+
+
 def test_docs_name_the_scripts_and_each_script_exists():
     deployment = (ROOT / "docs" / "deployment.md").read_text(encoding="utf-8")
     for name in ("deploy-hub.ps1", "run-hub.ps1", "install-task.ps1"):

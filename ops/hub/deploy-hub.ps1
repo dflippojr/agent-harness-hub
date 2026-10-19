@@ -65,10 +65,26 @@ function Remove-Tree([string]$Path) {
 
 function Copy-Ops {
     # The task runs the deployment's own copy of these scripts (install-task.ps1), so a checkout change can't alter it.
+    # The copy this replaces is kept as ops.previous, so a rollback restores the supervisor that went with the old Hub.
     $target = Join-Path $paths.Deploy 'ops'
-    if ($DryRun) { Write-Host "[dry run] copy $PSScriptRoot\*.ps1 -> $target"; return }
+    $old = Join-Path $paths.Deploy 'ops.previous'
+    if ($DryRun) { Write-Host "[dry run] ops -> ops.previous; copy $PSScriptRoot\*.ps1 -> $target"; return }
+    Remove-Tree $old
+    if (Test-Path -LiteralPath $target) { Move-Item -LiteralPath $target -Destination $old }
     New-Item -ItemType Directory -Force -Path $target | Out-Null
     Copy-Item -Path (Join-Path $PSScriptRoot '*.ps1') -Destination $target -Force
+}
+
+function Swap-Ops {
+    # ops and ops.previous trade places (a rollback, or the undo of one).
+    $current = Join-Path $paths.Deploy 'ops'
+    $other = Join-Path $paths.Deploy 'ops.previous'
+    if (-not (Test-Path -LiteralPath $other)) { return }
+    $temporary = Join-Path $paths.Deploy 'ops.swap'
+    Remove-Tree $temporary
+    if (Test-Path -LiteralPath $current) { Move-Item -LiteralPath $current -Destination $temporary }
+    Move-Item -LiteralPath $other -Destination $current
+    if (Test-Path -LiteralPath $temporary) { Move-Item -LiteralPath $temporary -Destination $other }
 }
 
 function Write-Stamp([string]$Path, [string]$Sha, [string]$Version, [bool]$Unmerged) {
@@ -94,20 +110,28 @@ if ($Rollback) {
     $currentStamp = if (Test-Path -LiteralPath $paths.Stamp) { Get-Content -Raw -LiteralPath $paths.Stamp } else { $null }
     if ($DryRun) { Write-Host '[dry run] stop the Hub, swap .venv-path and deployed.json with their previous copies, start, check'; exit 0 }
     Stop-Hub $paths.State
+    $opsSwapped = $false
     try {
         Set-Pointer $paths.Pointer $previous
         Set-Pointer $paths.Previous $current
+        Swap-Ops
+        $opsSwapped = $true
         if ($null -ne $oldStamp) { [System.IO.File]::WriteAllText($paths.Stamp, $oldStamp) }
         if ($null -ne $currentStamp) { [System.IO.File]::WriteAllText($paths.StampOld, $currentStamp) }
         Start-Hub $Port
     } catch {
-        # Put the pointers back so the next start runs what ran before this attempt, then say so.
+        $failure = $_.Exception.Message
+        # Stop the supervisor first: it reads its environment once, so only a new start runs the restored one.
+        $recoveryErrors = @()
+        try { Stop-Hub $paths.State } catch { $recoveryErrors += "stop: $($_.Exception.Message)" }
+        if ($opsSwapped) { Swap-Ops }
         Set-Pointer $paths.Pointer $current
         Set-Pointer $paths.Previous $previous
         if ($null -ne $currentStamp) { [System.IO.File]::WriteAllText($paths.Stamp, $currentStamp) }
         if ($null -ne $oldStamp) { [System.IO.File]::WriteAllText($paths.StampOld, $oldStamp) }
-        try { Start-Hub $Port } catch { Write-Warning "the Hub that ran before the rollback did not restart either: $($_.Exception.Message)" }
-        throw "rollback failed; the previous state is restored: $($_.Exception.Message)"
+        try { Start-Hub $Port } catch { $recoveryErrors += "restart: $($_.Exception.Message)" }
+        if ($recoveryErrors.Count -gt 0) { throw "rollback failed ($failure); restoring what ran before also failed: $($recoveryErrors -join '; ')" }
+        throw "rollback failed; the previous state is restored: $failure"
     }
     Write-Host "Rolled back to $previous"
     exit 0
@@ -205,9 +229,10 @@ try {
     Write-Host '[deploy] Hub started and healthy'
 } catch {
     $failure = $_.Exception.Message
-    if (-not $stopped) { Remove-Tree $stagedVenv; throw }
+    if (-not $stopped) { Swap-Ops; Remove-Tree $stagedVenv; throw }
     $rollbackErrors = @()
     try { Stop-Hub $paths.State } catch { $rollbackErrors += "stop: $($_.Exception.Message)" }
+    Swap-Ops
     if ($previousVenv) {
         Set-Pointer $paths.Pointer $previousVenv
         Set-Pointer $paths.Previous $previousOfPrevious

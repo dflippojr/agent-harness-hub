@@ -25,7 +25,7 @@ The Hub runs on the tower next to the agent-harness daemon, as a logon task, so 
 | `venvs\<sha>\` | one virtual environment per deployed commit, built from that commit's `requirements.lock` with hashes |
 | `.venv-path`, `.venv-previous` | the active environment and the one it replaced (for rollback) |
 | `deployed.json`, `deployed.previous.json` | `commit`, `version`, `deployed_at`, `unmerged` of the active and previous deployment |
-| `ops\` | the deployed copy of `ops/hub/*.ps1`; the logon task runs this copy |
+| `ops\`, `ops.previous\` | the deployed copy of `ops/hub/*.ps1` (the logon task runs it) and the copy it replaced; a rollback swaps them with the environments |
 | `state\` | the Hub's `--state-dir`: key, sign-in codes, `status.json` |
 | `logs\` | `hub.log`, `supervisor.log` |
 
@@ -54,7 +54,7 @@ D:\Projects\agent-harness-hub\ops\hub\deploy-hub.ps1 `
    `deployed.json`, copy `ops\`.
 4. **Start and check.** Start the task; `/healthz` must answer `ok` with the new version, and `state\status.json`
    must name the new commit, each within 60 s.
-5. **Roll back on failure.** After the stop, any failure restores the previous pointers and stamp, restarts the
+5. **Roll back on failure.** After the stop, any failure restores the previous pointers, stamp and scripts, restarts the
    previous Hub and says so. If that restart also fails, the error says both.
 6. **Clean up.** The environment before the previous one is deleted.
 
@@ -106,10 +106,10 @@ survives because the key is in `state\`.
 D:\Projects\agent-harness-hub\ops\hub\deploy-hub.ps1 -Rollback
 ```
 
-Stops the Hub, swaps `.venv-path` with `.venv-previous` and `deployed.json` with `deployed.previous.json`, starts it
-and checks `/healthz`. Running it again rolls forward to the commit you rolled back from, while its environment is
+Stops the Hub, swaps `.venv-path` with `.venv-previous`, `deployed.json` with `deployed.previous.json` and `ops\` with
+`ops.previous\`, starts it and checks `/healthz`. Running it again rolls forward to the commit you rolled back from, while its environment is
 still on disk. Only one step back is kept; after a second deployment the older environment is deleted. If a rollback
-fails, it puts everything back and restarts what ran before it.
+fails, it stops the Hub again, puts everything back and restarts what ran before it.
 
 ## Stop and uninstall
 
