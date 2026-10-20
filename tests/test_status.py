@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 
 import pytest
@@ -25,10 +26,52 @@ def wait_for_status(hub, predicate, timeout: float = 5.0) -> dict:
             status = read_status(hub)
         except (FileNotFoundError, json.JSONDecodeError):
             status = {}
+        except PermissionError:
+            # Only Windows refuses a read while the writer is replacing the file (open() raises a bare
+            # [Errno 13] with no winerror); anywhere else a PermissionError is a real failure.
+            if sys.platform != "win32":
+                raise
+            status = {}
         if predicate(status) or time.monotonic() > deadline:
             assert predicate(status), status
             return status
         time.sleep(0.02)
+
+
+def sequence_of_reads(monkeypatch, *outcomes):
+    """Make read_status raise or return each outcome in turn, then keep returning the last."""
+    remaining = list(outcomes)
+
+    def fake(_hub):
+        outcome = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr("tests.test_status.read_status", fake)
+
+
+def test_the_wait_helper_retries_a_missing_file_and_on_windows_a_refused_read(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    refused = PermissionError(13, "Permission denied")  # open() sets no winerror
+    for transient in (FileNotFoundError(2, "gone"), json.JSONDecodeError("partial", "{", 1), refused):
+        sequence_of_reads(monkeypatch, transient, {"ok": True})
+        assert wait_for_status(None, lambda s: s.get("ok")) == {"ok": True}
+
+
+@pytest.mark.parametrize("fatal", [PermissionError(13, "Permission denied"), IsADirectoryError(21, "is a directory")])
+def test_the_wait_helper_does_not_retry_other_read_failures(monkeypatch, fatal):
+    monkeypatch.setattr(sys, "platform", "linux")
+    sequence_of_reads(monkeypatch, fatal, {"ok": True})
+    with pytest.raises(type(fatal)):
+        wait_for_status(None, lambda s: s.get("ok"))
+
+
+def test_the_wait_helper_does_not_retry_other_errors_on_windows(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    sequence_of_reads(monkeypatch, IsADirectoryError(21, "is a directory"), {"ok": True})
+    with pytest.raises(IsADirectoryError):
+        wait_for_status(None, lambda s: s.get("ok"))
 
 
 def test_no_status_file_unless_asked_for(hub):

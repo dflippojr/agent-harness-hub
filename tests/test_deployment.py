@@ -186,6 +186,12 @@ def test_signals_read_the_files_and_fields_the_hub_writes(tmp_path):
     assert published == {UNCLAIMED, PENDING, CLAIMED, PERSISTING, *OUTCOMES}
 
 
+def test_the_sweep_reading_computes_ages_in_utc():
+    # status.json times end in "Z"; a plain [datetime] cast makes them local, so on a UTC-4 host the age read 4 h high
+    assert "[datetime]$status" not in SIGNALS
+    assert SIGNALS.count("([datetimeoffset]$status.") == 2
+
+
 def test_freshness_bounds_exceed_the_heartbeat_interval():
     run = scripts()["run-hub.ps1"]
     default = re.search(r"\$StatusSeconds = (\d+)", run)

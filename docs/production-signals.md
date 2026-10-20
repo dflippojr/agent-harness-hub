@@ -52,8 +52,10 @@ Invoke-RestMethod http://127.0.0.1:8120/healthz
 Get-Content -Raw "$root\deployed.json" | ConvertFrom-Json
 $status = Get-Content -Raw "$root\state\status.json" | ConvertFrom-Json
 $status
-"heartbeat age:   $([int]((Get-Date).ToUniversalTime() - [datetime]$status.written_at).TotalSeconds) s"
-"daemon poll age: $([int]((Get-Date).ToUniversalTime() - [datetime]$status.daemon_last_ok_at).TotalSeconds) s"
+# [datetimeoffset] keeps the "Z"; a plain [datetime] cast turns it into local time and the age is off by the UTC offset
+$now = (Get-Date).ToUniversalTime()
+"heartbeat age:   $([int]($now - ([datetimeoffset]$status.written_at).UtcDateTime).TotalSeconds) s"
+"daemon poll age: $([int]($now - ([datetimeoffset]$status.daemon_last_ok_at).UtcDateTime).TotalSeconds) s"
 Get-Content "$root\logs\hub.log" -Tail 2000 | Select-String ' (ERROR|CRITICAL) '
 ```
 
