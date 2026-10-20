@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 
 import pytest
@@ -12,8 +13,6 @@ from harness_hub import __version__
 from harness_hub.status import STATUS_FILE, UNKNOWN_BUILD, build_commit
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
-# Windows refuses a read while the writer is replacing the file: ERROR_ACCESS_DENIED and ERROR_SHARING_VIOLATION.
-WINDOWS_REPLACE_ERRORS = {5, 32}
 
 
 def read_status(hub) -> dict:
@@ -27,8 +26,10 @@ def wait_for_status(hub, predicate, timeout: float = 5.0) -> dict:
             status = read_status(hub)
         except (FileNotFoundError, json.JSONDecodeError):
             status = {}
-        except PermissionError as error:
-            if getattr(error, "winerror", None) not in WINDOWS_REPLACE_ERRORS:
+        except PermissionError:
+            # Only Windows refuses a read while the writer is replacing the file (open() raises a bare
+            # [Errno 13] with no winerror); anywhere else a PermissionError is a real failure.
+            if sys.platform != "win32":
                 raise
             status = {}
         if predicate(status) or time.monotonic() > deadline:
@@ -50,22 +51,26 @@ def sequence_of_reads(monkeypatch, *outcomes):
     monkeypatch.setattr("tests.test_status.read_status", fake)
 
 
-def windows_replace_error(code: int) -> PermissionError:
-    error = PermissionError(13, "Access is denied")
-    error.winerror = code  # set by Windows itself; absent on POSIX
-    return error
-
-
-def test_the_wait_helper_retries_only_the_read_while_replace_error(monkeypatch):
-    for transient in (FileNotFoundError(2, "gone"), windows_replace_error(5), windows_replace_error(32)):
+def test_the_wait_helper_retries_a_missing_file_and_on_windows_a_refused_read(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    refused = PermissionError(13, "Permission denied")  # open() sets no winerror
+    for transient in (FileNotFoundError(2, "gone"), json.JSONDecodeError("partial", "{", 1), refused):
         sequence_of_reads(monkeypatch, transient, {"ok": True})
         assert wait_for_status(None, lambda s: s.get("ok")) == {"ok": True}
 
 
 @pytest.mark.parametrize("fatal", [PermissionError(13, "Permission denied"), IsADirectoryError(21, "is a directory")])
 def test_the_wait_helper_does_not_retry_other_read_failures(monkeypatch, fatal):
+    monkeypatch.setattr(sys, "platform", "linux")
     sequence_of_reads(monkeypatch, fatal, {"ok": True})
     with pytest.raises(type(fatal)):
+        wait_for_status(None, lambda s: s.get("ok"))
+
+
+def test_the_wait_helper_does_not_retry_other_errors_on_windows(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    sequence_of_reads(monkeypatch, IsADirectoryError(21, "is a directory"), {"ok": True})
+    with pytest.raises(IsADirectoryError):
         wait_for_status(None, lambda s: s.get("ok"))
 
 
