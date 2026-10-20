@@ -12,6 +12,8 @@ from harness_hub import __version__
 from harness_hub.status import STATUS_FILE, UNKNOWN_BUILD, build_commit
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
+# Windows refuses a read while the writer is replacing the file: ERROR_ACCESS_DENIED and ERROR_SHARING_VIOLATION.
+WINDOWS_REPLACE_ERRORS = {5, 32}
 
 
 def read_status(hub) -> dict:
@@ -23,12 +25,48 @@ def wait_for_status(hub, predicate, timeout: float = 5.0) -> dict:
     while True:
         try:
             status = read_status(hub)
-        except (OSError, json.JSONDecodeError):  # Windows refuses a read while the writer is replacing the file
+        except (FileNotFoundError, json.JSONDecodeError):
+            status = {}
+        except PermissionError as error:
+            if getattr(error, "winerror", None) not in WINDOWS_REPLACE_ERRORS:
+                raise
             status = {}
         if predicate(status) or time.monotonic() > deadline:
             assert predicate(status), status
             return status
         time.sleep(0.02)
+
+
+def sequence_of_reads(monkeypatch, *outcomes):
+    """Make read_status raise or return each outcome in turn, then keep returning the last."""
+    remaining = list(outcomes)
+
+    def fake(_hub):
+        outcome = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr("tests.test_status.read_status", fake)
+
+
+def windows_replace_error(code: int) -> PermissionError:
+    error = PermissionError(13, "Access is denied")
+    error.winerror = code  # set by Windows itself; absent on POSIX
+    return error
+
+
+def test_the_wait_helper_retries_only_the_read_while_replace_error(monkeypatch):
+    for transient in (FileNotFoundError(2, "gone"), windows_replace_error(5), windows_replace_error(32)):
+        sequence_of_reads(monkeypatch, transient, {"ok": True})
+        assert wait_for_status(None, lambda s: s.get("ok")) == {"ok": True}
+
+
+@pytest.mark.parametrize("fatal", [PermissionError(13, "Permission denied"), IsADirectoryError(21, "is a directory")])
+def test_the_wait_helper_does_not_retry_other_read_failures(monkeypatch, fatal):
+    sequence_of_reads(monkeypatch, fatal, {"ok": True})
+    with pytest.raises(type(fatal)):
+        wait_for_status(None, lambda s: s.get("ok"))
 
 
 def test_no_status_file_unless_asked_for(hub):
