@@ -4,8 +4,9 @@ name: Daemon drift
 # journeys against agent-harness main HEAD instead of the commit ci.yml pins. scripts/drift_report.py then opens or
 # refreshes one issue with the default GITHUB_TOKEN: "Bump agent-harness pin to <sha>" when everything passes, or one
 # `bug` naming the failing cases and the agent-harness commits since the last green. It also comments when the pin is
-# older than the 14 days AGENTS.md allows. A pull request that changes this workflow or the script runs it as a dry
-# run: the report prints what it would write and writes nothing.
+# older than the 14 days AGENTS.md allows, and then fails the run (scripts/drift_report.py pin-age). A pull request
+# that changes this workflow or the script runs it as a dry run: the report prints what it would write and writes
+# nothing, and the pin's age is only a warning.
 on:
   schedule:
     - cron: "23 6 * * *"
@@ -185,3 +186,10 @@ jobs:
           mkdir -p drift-results
           python3 scripts/drift_report.py report --daemon-sha "$DAEMON_SHA" --results drift-results \
             --outcome "daemon=$DAEMON_RESULT" --outcome "ui=$UI_RESULT" --run-url "$RUN_URL" $DRY_RUN
+      - name: The agent-harness pin is at most 14 days behind main
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAEMON_SHA: ${{ needs.resolve.outputs.sha }}
+          MODE: ${{ github.event_name == 'pull_request' && 'warn' || 'fail' }}
+        run: python3 scripts/drift_report.py pin-age --mode "$MODE" --daemon-sha "$DAEMON_SHA"

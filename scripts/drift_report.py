@@ -1,6 +1,7 @@
 """The nightly daemon drift report (.github/workflows/drift.yml): one issue that says what the run found.
 
     python scripts/drift_report.py pinned
+    python scripts/drift_report.py pin-age --mode warn|fail [--daemon-sha SHA]
     python scripts/drift_report.py report --daemon-sha SHA --results DIR --outcome daemon=success --outcome ui=success
                                           [--run-url URL] [--dry-run]
 
@@ -15,6 +16,11 @@ and the job outcomes, then, with the `gh` CLI and the workflow's GITHUB_TOKEN:
   per pinned commit.
 
 --dry-run writes nothing to GitHub: it prints each action (the pull request check of this workflow uses it).
+
+`pin-age` is AGENTS.md's pin rule as a check: when the pin is more than PIN_MAX_DAYS old and agent-harness main
+(--daemon-sha, else main's HEAD read from the API) has commits after it, it says so, naming the open bump issue.
+`--mode warn` (pull requests) prints a ::warning:: and exits 0, even when GitHub can't be read; `--mode fail` (pushes
+to main and the nightly run) prints an ::error:: and exits 1. It reads only public data, with the default token.
 """
 
 from __future__ import annotations
@@ -112,6 +118,9 @@ class GitHub:
     def compare(self, base: str, head: str) -> dict:
         return json.loads(self.read("api", f"repos/{DAEMON_REPO}/compare/{base}...{head}"))
 
+    def main_sha(self) -> str:
+        return self.commit("main")["sha"]
+
 
 def short(sha: str) -> str:
     return sha[:7]
@@ -203,10 +212,41 @@ def report(gh: GitHub, head: str, pinned: str, outcomes: dict[str, str], failed:
     return 0
 
 
+def check_pin(gh: GitHub, pinned: str, head: str, fail: bool) -> int:
+    """0 unless the pin breaks the rule and `fail` is set; a broken rule is a ::warning:: or an ::error:: annotation."""
+    age, ahead = pin_age(gh, pinned, head)
+    if not ahead or age <= PIN_MAX_DAYS:
+        print(f"The agent-harness pin {short(pinned)} is {age:.1f} days old and {ahead} commit(s) behind main: within "
+              f"the {PIN_MAX_DAYS}-day limit in AGENTS.md.")
+        return 0
+    bump = next(iter(gh.issues(BUMP_PREFIX)), None)
+    message = (f"The agent-harness pin {short(pinned)} breaks the {PIN_MAX_DAYS}-day limit in AGENTS.md: pin is "
+               f"{age:.1f} days behind agent-harness main ({ahead} commits). "
+               + (f"Bump it: #{bump.number} {bump.title}." if bump else
+                  f"Bump it to {head}; no \"{BUMP_PREFIX}<sha>\" issue is open (drift.yml opens one when main "
+                  "passes the daemon tests)."))
+    print(f"::{'error' if fail else 'warning'}::{message}", flush=True)
+    return 1 if fail else 0
+
+
+def pin_age_check(gh: GitHub, pinned: str, head: str | None, fail: bool) -> int:
+    """check_pin against main's HEAD. GitHub being unreadable fails the check only in fail mode."""
+    try:
+        return check_pin(gh, pinned, head or gh.main_sha(), fail)
+    except (subprocess.CalledProcessError, OSError, ValueError, KeyError) as exc:
+        detail = (getattr(exc, "stderr", None) or str(exc)).strip().replace("\n", " ")
+        print(f"::{'error' if fail else 'warning'}::Could not read the agent-harness pin's age: {detail}", flush=True)
+        return 1 if fail else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python scripts/drift_report.py", description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="command", required=True)
     sub.add_parser("pinned", help="print sha=<pinned agent-harness commit> for $GITHUB_OUTPUT")
+    a = sub.add_parser("pin-age", help="warn or fail when the pin is past the limit in AGENTS.md")
+    a.add_argument("--mode", choices=("warn", "fail"), required=True,
+                   help="warn: pull requests, always exit 0; fail: main and the nightly run, exit 1")
+    a.add_argument("--daemon-sha", help="agent-harness main's HEAD (default: read from the API)")
     r = sub.add_parser("report", help="open or refresh the drift issue")
     r.add_argument("--daemon-sha", required=True)
     r.add_argument("--results", type=Path, required=True, help="directory of JUnit XML files")
@@ -218,10 +258,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "pinned":
         print(f"sha={pinned}")
         return 0
+    gh = GitHub(os.environ.get("GITHUB_REPOSITORY", "dflippojr/agent-harness-hub"), getattr(args, "dry_run", False))
+    if args.command == "pin-age":
+        return pin_age_check(gh, pinned, args.daemon_sha, args.mode == "fail")
     if not SHA.fullmatch(args.daemon_sha):
         ap.error("--daemon-sha must be a full commit sha")
     outcomes = dict(item.split("=", 1) for item in args.outcome)
-    gh = GitHub(os.environ.get("GITHUB_REPOSITORY", "dflippojr/agent-harness-hub"), args.dry_run)
     return report(gh, args.daemon_sha, pinned, outcomes, failures(args.results), args.run_url)
 
 

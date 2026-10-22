@@ -41,7 +41,7 @@ class FakeGh:
             return json.dumps({"ahead_by": self.ahead})
         if args[0] == "api":
             stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - self.days_old * 86400))
-            return json.dumps({"commit": {"committer": {"date": stamp}}})
+            return json.dumps({"sha": HEAD, "commit": {"committer": {"date": stamp}}})
         return ""
 
     def writes(self):
@@ -142,3 +142,94 @@ def test_the_pin_is_read_from_ci_and_must_be_one_commit():
 def test_an_unreadable_results_file_is_reported_not_ignored(tmp_path):
     (tmp_path / "ui.xml").write_text("<testsuites", encoding="utf-8")
     assert drift.failures(tmp_path) == {"ui": ["(unreadable results file ui.xml)"]}
+
+
+def check(fake, mode, pinned=PIN, head=HEAD):
+    """The pin-age check against a fake `gh`: (exit code, the annotation it printed, or None)."""
+    return drift.pin_age_check(drift.GitHub("dflippojr/agent-harness-hub", False, run=fake), pinned, head,
+                               mode == "fail")
+
+
+@pytest.mark.parametrize("mode", ["warn", "fail"])
+def test_a_fresh_pin_passes_quietly(mode, capsys):
+    assert check(FakeGh(days_old=3, ahead=5), mode) == 0
+    out = capsys.readouterr().out
+    assert "::" not in out and "within the 14-day limit" in out
+
+
+@pytest.mark.parametrize("mode", ["warn", "fail"])
+def test_an_old_pin_that_is_still_main_passes(mode, capsys):
+    # The pin is old, but agent-harness main has nothing after it: nothing to bump to.
+    assert check(FakeGh(days_old=40, ahead=0), mode) == 0
+    assert "::" not in capsys.readouterr().out
+
+
+def test_a_stale_pin_warns_on_a_pull_request_and_fails_on_main(capsys):
+    fake = FakeGh(issues=[(drift.BUMP_PREFIX + HEAD, 12, "OPEN")], days_old=20, ahead=9)
+    assert check(fake, "warn") == 0
+    warned = capsys.readouterr().out
+    assert warned.startswith("::warning::") and "pin is 20.0 days behind agent-harness main (9 commits)" in warned
+    assert check(fake, "fail") == 1
+    failed = capsys.readouterr().out
+    assert failed.startswith("::error::") and "pin is 20.0 days behind agent-harness main (9 commits)" in failed
+    assert f"#12 {drift.BUMP_PREFIX}{HEAD}" in failed
+    assert not fake.writes()  # a check: it reads and never writes
+
+
+def test_a_stale_pin_without_a_bump_issue_names_main_instead(capsys):
+    assert check(FakeGh(days_old=15, ahead=2), "fail") == 1
+    out = capsys.readouterr().out
+    assert "pin is 15.0 days behind" in out and f"Bump it to {HEAD}" in out and "issue is open" in out
+
+
+@pytest.fixture
+def frozen_clock(monkeypatch):
+    """A whole-second clock that does not move, so a pin's age is exact."""
+    monkeypatch.setattr(time, "time", lambda: 1_800_000_000.0)
+
+
+@pytest.mark.parametrize("mode", ["warn", "fail"])
+def test_a_pin_exactly_at_the_limit_passes(mode, frozen_clock, capsys):
+    assert check(FakeGh(days_old=14, ahead=2), mode) == 0
+    out = capsys.readouterr().out
+    assert "::" not in out and "is 14.0 days old" in out
+
+
+@pytest.mark.parametrize(("mode", "code", "level"), [("warn", 0, "warning"), ("fail", 1, "error")])
+def test_a_pin_a_second_past_the_limit_breaks_it(mode, code, level, frozen_clock, capsys):
+    # The limit is "at most 14 days": a part day past it counts, as it does in report().
+    assert check(FakeGh(days_old=14 + 1 / 86400, ahead=2), mode) == code
+    assert capsys.readouterr().out.startswith(f"::{level}::The agent-harness pin {PIN[:7]} breaks the 14-day limit")
+
+
+def test_a_pull_request_that_bumps_the_pin_does_not_warn(capsys):
+    # The bump makes main's HEAD the pin: nothing is compared, and the commit is new.
+    fake = FakeGh(days_old=1, ahead=7)
+    assert check(fake, "warn", pinned=HEAD, head=HEAD) == 0
+    assert "::" not in capsys.readouterr().out
+    assert not any("/compare/" in args[1] for args, _ in fake.calls if args[0] == "api")
+
+
+def test_main_head_is_read_from_the_api_when_not_given(capsys):
+    fake = FakeGh(days_old=30, ahead=3)
+    assert check(fake, "fail", head=None) == 1
+    assert ["api", f"repos/{drift.DAEMON_REPO}/commits/main"] in [args for args, _ in fake.calls]
+
+
+@pytest.mark.parametrize(("mode", "code", "level"), [("warn", 0, "warning"), ("fail", 1, "error")])
+def test_github_being_unreadable_fails_only_on_main(mode, code, level, capsys):
+    def broken(args, stdin=None):
+        raise drift.subprocess.CalledProcessError(1, ["gh", *args], stderr="HTTP 502\n")
+
+    assert check(broken, mode) == code
+    assert capsys.readouterr().out.startswith(f"::{level}::Could not read the agent-harness pin's age: HTTP 502")
+
+
+@pytest.mark.parametrize(("mode", "code", "level"), [("warn", 0, "warning"), ("fail", 1, "error")])
+def test_the_command_line_reads_the_live_pin(mode, code, level, monkeypatch, capsys):
+    fake = FakeGh(days_old=21, ahead=4)
+    monkeypatch.setattr(drift.GitHub, "_gh", staticmethod(fake))
+    assert drift.main(["pin-age", "--mode", mode, "--daemon-sha", HEAD]) == code
+    pinned = drift.pinned_sha((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    assert ["api", f"repos/{drift.DAEMON_REPO}/compare/{pinned}...{HEAD}"] in [args for args, _ in fake.calls]
+    assert capsys.readouterr().out.startswith(f"::{level}::The agent-harness pin {pinned[:7]}")

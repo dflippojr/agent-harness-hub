@@ -27,6 +27,7 @@ e2e and ui jobs; a later commit also works (docs/ui-testing.md, "Scope and isola
 | `e2e` (Linux and Windows) | `HUB_E2E_DAEMON_SRC=../agent-harness python -m pytest -m e2e -v -p no:cacheprovider` |
 | `ui` | `npm --prefix tools/ui-tests ci`, `npm --prefix tools/ui-tests exec -- playwright install chromium webkit`, then `HUB_UI_DAEMON_SRC=../agent-harness npm --prefix tools/ui-tests test -- --workers=1` |
 | `package` | `python -m build --no-isolation`, install `dist/*.whl` into a fresh venv and run `python -m harness_hub --version` there, then `docker build -t agent-harness-hub:ci .` and `scripts/smoke-image.sh agent-harness-hub:ci` (needs a running Docker; never start one yourself) |
+| `pin-age` | `python scripts/drift_report.py pin-age --mode fail` (needs `gh` signed in; a pull request runs `--mode warn`) |
 | `sonar` | Nothing local: SonarCloud analyses the Linux `test` job's coverage, and its quality gate is its own check |
 
 Keep test parallelism at 4 workers or fewer. The commands are the same in PowerShell, except that environment
@@ -44,7 +45,9 @@ on loopback with synthetic data, doctor checks, a browser drive, screenshots and
 
 The agent-harness pin (`ref:` in `.github/workflows/ci.yml`) may be at most **14 days** old while agent-harness main
 has moved past it. The nightly `drift.yml` run opens a "Bump agent-harness pin to <sha>" issue when main passes, a
-`bug` issue when it fails, and comments when the pin is older than that.
+`bug` issue when it fails, and comments when the pin is older than that. `scripts/drift_report.py pin-age` enforces
+the rule: ci.yml's `pin-age` job warns on a pull request and never fails it, fails on a push to main (and `gate` with
+it), and the nightly `drift.yml` run fails too. Each names the open bump issue; bump the pin to clear it.
 
 **In the PR.** The PR body carries a `## Proof` table (the rule from dflippojr/.github#13), one row per acceptance
 criterion of the issue:
