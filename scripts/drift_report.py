@@ -215,14 +215,13 @@ def report(gh: GitHub, head: str, pinned: str, outcomes: dict[str, str], failed:
 def check_pin(gh: GitHub, pinned: str, head: str, fail: bool) -> int:
     """0 unless the pin breaks the rule and `fail` is set; a broken rule is a ::warning:: or an ::error:: annotation."""
     age, ahead = pin_age(gh, pinned, head)
-    days = int(age)
-    if not ahead or days <= PIN_MAX_DAYS:
-        print(f"The agent-harness pin {short(pinned)} is {days} days old and {ahead} commit(s) behind main: within "
+    if not ahead or age <= PIN_MAX_DAYS:
+        print(f"The agent-harness pin {short(pinned)} is {age:.1f} days old and {ahead} commit(s) behind main: within "
               f"the {PIN_MAX_DAYS}-day limit in AGENTS.md.")
         return 0
     bump = next(iter(gh.issues(BUMP_PREFIX)), None)
     message = (f"The agent-harness pin {short(pinned)} breaks the {PIN_MAX_DAYS}-day limit in AGENTS.md: pin is "
-               f"{days} days behind agent-harness main ({ahead} commits). "
+               f"{age:.1f} days behind agent-harness main ({ahead} commits). "
                + (f"Bump it: #{bump.number} {bump.title}." if bump else
                   f"Bump it to {head}; no \"{BUMP_PREFIX}<sha>\" issue is open (drift.yml opens one when main "
                   "passes the daemon tests)."))

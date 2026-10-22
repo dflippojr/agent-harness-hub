@@ -168,10 +168,10 @@ def test_a_stale_pin_warns_on_a_pull_request_and_fails_on_main(capsys):
     fake = FakeGh(issues=[(drift.BUMP_PREFIX + HEAD, 12, "OPEN")], days_old=20, ahead=9)
     assert check(fake, "warn") == 0
     warned = capsys.readouterr().out
-    assert warned.startswith("::warning::") and "pin is 20 days behind agent-harness main (9 commits)" in warned
+    assert warned.startswith("::warning::") and "pin is 20.0 days behind agent-harness main (9 commits)" in warned
     assert check(fake, "fail") == 1
     failed = capsys.readouterr().out
-    assert failed.startswith("::error::") and "pin is 20 days behind agent-harness main (9 commits)" in failed
+    assert failed.startswith("::error::") and "pin is 20.0 days behind agent-harness main (9 commits)" in failed
     assert f"#12 {drift.BUMP_PREFIX}{HEAD}" in failed
     assert not fake.writes()  # a check: it reads and never writes
 
@@ -179,12 +179,27 @@ def test_a_stale_pin_warns_on_a_pull_request_and_fails_on_main(capsys):
 def test_a_stale_pin_without_a_bump_issue_names_main_instead(capsys):
     assert check(FakeGh(days_old=15, ahead=2), "fail") == 1
     out = capsys.readouterr().out
-    assert "pin is 15 days behind" in out and f"Bump it to {HEAD}" in out and "issue is open" in out
+    assert "pin is 15.0 days behind" in out and f"Bump it to {HEAD}" in out and "issue is open" in out
 
 
-def test_the_limit_is_whole_days(capsys):
-    assert check(FakeGh(days_old=14.9, ahead=2), "fail") == 0  # still 14 days old
-    assert check(FakeGh(days_old=15.1, ahead=2), "fail") == 1
+@pytest.fixture
+def frozen_clock(monkeypatch):
+    """A whole-second clock that does not move, so a pin's age is exact."""
+    monkeypatch.setattr(time, "time", lambda: 1_800_000_000.0)
+
+
+@pytest.mark.parametrize("mode", ["warn", "fail"])
+def test_a_pin_exactly_at_the_limit_passes(mode, frozen_clock, capsys):
+    assert check(FakeGh(days_old=14, ahead=2), mode) == 0
+    out = capsys.readouterr().out
+    assert "::" not in out and "is 14.0 days old" in out
+
+
+@pytest.mark.parametrize(("mode", "code", "level"), [("warn", 0, "warning"), ("fail", 1, "error")])
+def test_a_pin_a_second_past_the_limit_breaks_it(mode, code, level, frozen_clock, capsys):
+    # The limit is "at most 14 days": a part day past it counts, as it does in report().
+    assert check(FakeGh(days_old=14 + 1 / 86400, ahead=2), mode) == code
+    assert capsys.readouterr().out.startswith(f"::{level}::The agent-harness pin {PIN[:7]} breaks the 14-day limit")
 
 
 def test_a_pull_request_that_bumps_the_pin_does_not_warn(capsys):
