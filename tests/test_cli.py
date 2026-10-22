@@ -58,3 +58,43 @@ def test_signin_link_refuses_remote_http(tmp_path):
     with pytest.raises(SystemExit):
         cli.main(["signin-link", "--state-dir", str(tmp_path), "--url", "http://192.168.1.20:8120"])
     assert not (tmp_path / "signin-codes.json").exists()
+
+
+def _running_hub(state_dir, url):
+    (state_dir / "server.json").write_text(json.dumps({"url": url}), encoding="utf-8")
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8120", "http://localhost:9000", "http://[::1]:8120",
+                                 "http://127.0.0.1:8120/"])
+def test_signin_link_refuses_loopback_http_on_an_https_hub(tmp_path, capsys, url):
+    # The Hub refuses every write from an http loopback origin once it has an https public URL (#133).
+    _running_hub(tmp_path, "https://hub.example.ts.net")
+    assert cli.main(["signin-link", "--state-dir", str(tmp_path), "--url", url]) != 0
+    out, err = capsys.readouterr()
+    assert "#signin=" not in out and out.strip() == ""
+    assert "https://hub.example.ts.net" in err and "cannot work" in err
+    assert "without --public-url" in err
+    assert not (tmp_path / "signin-codes.json").exists()
+
+
+@pytest.mark.parametrize(("server", "url", "expected"), [
+    ("https://hub.example.ts.net", "", "https://hub.example.ts.net/#signin="),
+    ("https://hub.example.ts.net", "https://hub.example.ts.net", "https://hub.example.ts.net/#signin="),
+    ("https://hub.example.ts.net", "https://other.example.ts.net", "https://other.example.ts.net/#signin="),
+    ("http://127.0.0.1:8120", "http://127.0.0.1:8120", "http://127.0.0.1:8120/#signin="),
+    ("http://127.0.0.1:8120", "http://localhost:9000", "http://localhost:9000/#signin="),
+    ("", "http://[::1]:8120", "http://[::1]:8120/#signin="),
+])
+def test_signin_link_still_prints_links_that_can_work(tmp_path, capsys, server, url, expected):
+    if server:
+        _running_hub(tmp_path, server)
+    assert cli.main(["signin-link", "--state-dir", str(tmp_path)] + (["--url", url] if url else [])) == 0
+    assert capsys.readouterr().out.startswith(expected)
+    assert (tmp_path / "signin-codes.json").exists()
+
+
+def test_signin_link_refuses_remote_http_on_an_https_hub(tmp_path):
+    _running_hub(tmp_path, "https://hub.example.ts.net")
+    with pytest.raises(SystemExit):
+        cli.main(["signin-link", "--state-dir", str(tmp_path), "--url", "http://192.168.1.20:8120"])
+    assert not (tmp_path / "signin-codes.json").exists()
