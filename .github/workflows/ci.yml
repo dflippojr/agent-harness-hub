@@ -153,7 +153,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: dflippojr/agent-harness
-          ref: 83c6aa8b7a88a973911015a6423975745b43664a
+          ref: 819d7abbbdb8225d61798143ea405ca145059882
           path: daemon
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -191,7 +191,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: dflippojr/agent-harness
-          ref: 83c6aa8b7a88a973911015a6423975745b43664a
+          ref: 819d7abbbdb8225d61798143ea405ca145059882
           path: daemon
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
