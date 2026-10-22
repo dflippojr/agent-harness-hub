@@ -230,3 +230,16 @@ def test_ci_gate_needs_every_job_but_sonar_and_main_runs_are_never_cancelled():
     assert "group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}" in ci
     assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in ci
     assert re.search(r"python -m pytest .*--cov-fail-under=92\b", jobs["test"])
+
+
+def test_a_stale_agent_harness_pin_warns_on_pull_requests_and_fails_main_and_the_nightly_run():
+    # AGENTS.md's 14-day pin rule (scripts/drift_report.py pin-age): gate needs the job, so a push to main fails with
+    # it; a pull request gets warn mode, which always exits 0.
+    mode = "MODE: ${{ github.event_name == 'pull_request' && 'warn' || 'fail' }}"
+    ci = _jobs((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["pin-age"]
+    assert 'python3 scripts/drift_report.py pin-age --mode "$MODE"' in ci and mode in ci
+    assert "GH_TOKEN: ${{ github.token }}" in ci and "continue-on-error" not in ci
+    report = _jobs((ROOT / ".github/workflows/drift.yml").read_text(encoding="utf-8"))["report"]
+    step = report.split("- name: The agent-harness pin is at most 14 days behind main\n", 1)[1]
+    assert "if: ${{ !cancelled() }}" in step and mode in step
+    assert 'pin-age --mode "$MODE" --daemon-sha "$DAEMON_SHA"' in step and "continue-on-error" not in step

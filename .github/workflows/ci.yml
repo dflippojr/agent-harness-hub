@@ -13,8 +13,10 @@ name: CI
 #              skips tests, adds retries, or edits workflows, coverage or Sonar config, unless the owner applied
 #              gate-change-approved. It runs from the pull request's head, so a pull request can rewrite it; the
 #              trusted copy is gate-guard-target.yml, which runs from main and posts the gate-guard check
-#   gate     - the check to require, with gate-guard: always runs, fails unless lint, test, e2e, ui, package and
-#              gate-guard all succeeded
+#   pin-age  - AGENTS.md's agent-harness pin rule (scripts/drift_report.py pin-age): more than 14 days old while
+#              agent-harness main has moved past it is a warning on a pull request and a failure on a push to main
+#   gate     - the check to require, with gate-guard: always runs, fails unless lint, test, e2e, ui, package, pin-age
+#              and gate-guard all succeeded
 on:
   push:
     branches: [main]
@@ -254,6 +256,20 @@ jobs:
           docker build -t agent-harness-hub:ci .
           scripts/smoke-image.sh agent-harness-hub:ci
 
+  pin-age:
+    # On a pull request the check only warns (exit 0), so a pull request never fails on it; a push to main fails, and
+    # gate with it. A pull request that bumps the pin reads its own, fresh ci.yml.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: The agent-harness pin is at most 14 days behind main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ github.event_name == 'pull_request' && 'warn' || 'fail' }}
+        run: python3 scripts/drift_report.py pin-age --mode "$MODE"
+
   gate-guard:
     # The shared gate guard, called at a full commit SHA that dflippojr/.github main contains; guard-ref names the same
     # SHA, as its README asks, so the script that judges the pull request is the one that was reviewed. It checks pull
@@ -271,7 +287,7 @@ jobs:
     # job failed or was cancelled, and fails unless every needed job succeeded. sonar is not here: its quality gate
     # is its own check.
     if: always()
-    needs: [lint, test, e2e, ui, package, gate-guard]
+    needs: [lint, test, e2e, ui, package, pin-age, gate-guard]
     runs-on: ubuntu-latest
     steps:
       - name: Every needed job succeeded
