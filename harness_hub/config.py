@@ -20,7 +20,7 @@ def normalize_daemon_url(value: str) -> str:
         raise ValueError("daemon URL must be http:// or https:// with a host")
     if parts.username or parts.password or parts.query or parts.fragment or parts.path not in ("", "/"):
         raise ValueError("daemon URL must be an origin only (no credentials, path, query or fragment)")
-    if parts.scheme == "http" and not _is_loopback(parts.hostname):
+    if parts.scheme == "http" and not is_loopback(parts.hostname):
         raise ValueError("daemon URL must be https unless it is a loopback address")
     _check_port(parts)
     return f"{parts.scheme}://{parts.netloc}"
@@ -39,12 +39,12 @@ def _check_port(parts: SplitResult) -> None:
 def normalize_public_url(value: str) -> str:
     """The URL the owner's browser uses for the Hub, such as a `tailscale serve` HTTPS address."""
     url = normalize_daemon_url(value)
-    if urlsplit(url).scheme != "https" and not _is_loopback(urlsplit(url).hostname or ""):
+    if urlsplit(url).scheme != "https" and not is_loopback(urlsplit(url).hostname or ""):
         raise ValueError("public URL must be https unless it is a loopback address")
     return url
 
 
-def _is_loopback(host: str) -> bool:
+def is_loopback(host: str) -> bool:
     if host == "localhost":
         return True
     try:
@@ -72,7 +72,7 @@ class Settings:
         object.__setattr__(self, "daemon_url", normalize_daemon_url(self.daemon_url))
         if self.public_url:
             object.__setattr__(self, "public_url", normalize_public_url(self.public_url))
-        if not _is_loopback(self.host) and not self.secure_cookies:
+        if not is_loopback(self.host) and not self.secure_cookies:
             raise ValueError("non-loopback listen addresses require an https --public-url and an HTTPS proxy")
         normalized = []
         for host in self.extra_hosts:

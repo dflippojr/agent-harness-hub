@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from . import __version__
 from .auth import create_signin_code
@@ -20,6 +21,7 @@ from .config import (
     DEFAULT_PORT,
     DEFAULT_STATE_DIR,
     Settings,
+    is_loopback,
     normalize_daemon_url,
     normalize_public_url,
 )
@@ -65,12 +67,19 @@ def signin_parser() -> argparse.ArgumentParser:
 def signin_link(argv: list[str]) -> int:
     parser = signin_parser()
     args = parser.parse_args(argv)
-    url = args.url or (read_json(args.state_dir / SERVER_FILE, {}) or {}).get("url") or (
-        f"http://127.0.0.1:{DEFAULT_PORT}")
+    hub_url = (read_json(args.state_dir / SERVER_FILE, {}) or {}).get("url") or ""
+    url = args.url or hub_url or f"http://127.0.0.1:{DEFAULT_PORT}"
     try:
         url = normalize_public_url(url)
     except ValueError as exc:
         parser.error(str(exc))
+    if _loopback_link_on_https_hub(url, hub_url):
+        # The Hub only accepts writes from its https origin and sets a Secure cookie, so this link could not sign in.
+        print(f"signin-link: this Hub runs at {hub_url.rstrip('/')}, so a sign-in link to {url} cannot work: the Hub "
+              "accepts sign-in only from its public https origin. Omit --url to use that address; if it can't be "
+              "reached (Tailscale is down), restart the Hub without --public-url and run signin-link again.",
+              file=sys.stderr)
+        return 1
     try:
         code = create_signin_code(args.state_dir)
     except SigninBusy:
@@ -78,6 +87,12 @@ def signin_link(argv: list[str]) -> int:
         return 1
     print(f"{url.rstrip('/')}/#signin={code}")
     return 0
+
+
+def _loopback_link_on_https_hub(url: str, hub_url: str) -> bool:
+    link = urlsplit(url)
+    return (urlsplit(hub_url).scheme == "https" and link.scheme == "http"
+            and is_loopback(link.hostname or ""))
 
 
 def serve(argv: list[str]) -> int:
