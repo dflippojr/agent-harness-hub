@@ -104,6 +104,14 @@ out in one signs out all of them. HTTPS uses a `__Host-hub_session` cookie
 with `Secure`, `HttpOnly`, `SameSite=Strict` and no Domain attribute.
 Proving you can read the Hub's owner-only state directory is the same proof the daemon uses for local callers.
 
+On a Hub started with an https `--public-url`, the link uses that address, and it is the only one that can sign you
+in: the Hub accepts sign-in and every change only from that origin, and its cookie is `Secure`. So `signin-link`
+refuses an `http://` loopback `--url` (`127.0.0.1`, `localhost`, `[::1]`) there, exits non-zero and creates no code.
+When Tailscale is down and the public URL can't be reached, restart the Hub without `--public-url`, listening on
+loopback (the default `--host`), then run `signin-link` on the host and open the printed `http://127.0.0.1:<port>`
+link in a browser there. Restart the Hub with `--public-url` once Tailscale is back, and sign in again at that address.
+There is no other way in: no second cookie, origin or sign-in path is kept for loopback.
+
 ### With your tailnet identity
 
 Through `tailscale serve`, the sign-in page also offers **Continue as `<your login>`**. This is the other owner proof
