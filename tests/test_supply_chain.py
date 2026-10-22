@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # a reusable workflow pinned to the same full SHA as its guard-ref (asserted below).
 ALLOWED_THIRD_PARTY_ACTIONS = {
     "SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9",
-    "dflippojr/.github/.github/workflows/gate-guard.yml@882623c67a5c3bab64da2136e6070a5325440b47",
+    "dflippojr/.github/.github/workflows/gate-guard.yml@27bdb76481888567a6c524ebbb19bf4a6c7e7e20",
 }
 
 
@@ -44,7 +44,7 @@ def test_docker_and_ci_install_only_locked_external_inputs():
     )
     assert ci.count("persist-credentials: false") == sum(action.startswith("actions/checkout@") for action in actions)
     assert "ref: 83c6aa8b7a88a973911015a6423975745b43664a" in ci
-    assert "guard-ref: 882623c67a5c3bab64da2136e6070a5325440b47" in ci
+    assert "guard-ref: 27bdb76481888567a6c524ebbb19bf4a6c7e7e20" in ci
     assert "pip install -r daemon/requirements.txt" not in ci
     assert "--require-hashes -r requirements-e2e.lock" in ci
     assert "python -m build --no-isolation" in ci
@@ -194,7 +194,7 @@ def test_trusted_gate_guard_runs_from_the_default_branch_and_runs_no_pull_reques
     assert "cancel-in-progress: true" in header
     jobs = _jobs(target)
     assert set(jobs) == {"judge"}
-    sha = "882623c67a5c3bab64da2136e6070a5325440b47"
+    sha = "27bdb76481888567a6c524ebbb19bf4a6c7e7e20"
     assert f"    uses: dflippojr/.github/.github/workflows/gate-guard-target.yml@{sha}\n" in jobs["judge"]
     assert f"      guard-ref: {sha}\n" in jobs["judge"]
     for unsafe in ("steps:", "run:", "actions/checkout", "secrets", "self-hosted", "github.event.pull_request.title",
