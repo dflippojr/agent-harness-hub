@@ -902,7 +902,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 if keys.status == 401:
                     return await refused(key["token"])
                 if not keys.ok:
-                    return _error(keys.status, f"App detail could not be read (HTTP {keys.status}).", reachable=True)
+                    return _error(_error_status(keys.status), f"App detail could not be read (HTTP {keys.status}).",
+                                  reachable=True)
                 if not isinstance(keys.body, list):
                     return _error(502, "The daemon returned invalid App detail.")
                 row = next((row for row in keys.body if isinstance(row, dict) and row.get("id") == app_id), None)
