@@ -2,6 +2,8 @@
 import json
 
 import pytest
+from fastapi.responses import Response
+from starlette.routing import Route
 
 from harness_hub.inventory import INVENTORY_FILE
 from harness_hub.views import app_view
@@ -211,3 +213,15 @@ def test_invalid_limits_reply_is_an_error_before_loading_caps(claimed, fake_daem
     assert reply.status_code == 502 and "configured" not in reply.json()
     # The detail reads the key list alongside the limits (#56), but nothing repeats after the invalid answer.
     assert len(fake_daemon.apps_calls) == (2 if method == "GET" else 1)
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308, 403, 500])
+def test_a_refused_key_list_read_is_an_app_detail_error(claimed, fake_daemon, status):
+    """The detail reads the key list alongside the limits. A redirect there is the daemon misbehaving, so the browser
+    gets 502 and never a 3xx of the Hub's own (#171); a 4xx or 5xx reaches it as the daemon's status."""
+    headers = {"location": "http://elsewhere.test/api/admin/v1/keys"} if status < 400 else {}
+    fake_daemon.app.router.routes.insert(0, Route(
+        "/api/admin/v1/keys", lambda request: Response(status_code=status, headers=headers), methods=["GET"]))
+    reply = claimed.get("/api/apps/k-minute/limits")
+    assert (reply.status_code, "location" in reply.headers) == (502 if status < 400 else status, False)
+    assert reply.json() == {"detail": f"App detail could not be read (HTTP {status}).", "reachable": True}
