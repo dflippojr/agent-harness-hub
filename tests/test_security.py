@@ -90,20 +90,23 @@ def test_a_tailnet_binding_records_when_its_login_was_last_listed(tmp_path):
     now[0] -= 3600  # the wall clock steps back; the session's expiry is still ahead of it
     assert sessions.binding(cookie, tab) == ("owner@example.test", 30.0)  # the sign-in was a listing
     assert sessions.binding(cookie, link) == (None, 30.0)
-    sessions.confirm(cookie, tab)
+    assert sessions.confirm(cookie, tab) is True
     mono[0] += 5
     assert sessions.binding(cookie, tab) == ("owner@example.test", 5.0)
     assert sessions.binding(cookie, link) == (None, 35.0)
     sessions.confirm(cookie, tab, mono[0] - 2)  # a read two seconds ago, whose yes a request reused
     assert sessions.binding(cookie, tab) == ("owner@example.test", 2.0)
-    sessions.confirm(cookie, tab, mono[0] - 20)  # an earlier read than the one recorded changes nothing
+    assert sessions.confirm(cookie, tab, mono[0] - 20) is True  # an earlier read than the one recorded changes nothing
     assert sessions.binding(cookie, tab) == ("owner@example.test", 2.0)
     _, late = sessions.create(cookie, "owner@example.test", mono[0] - 4)  # a sign-in that reused a kept list
     assert sessions.binding(cookie, late) == ("owner@example.test", 4.0)
     assert sessions.binding(cookie, "not-a-binding") is None and sessions.binding(None, tab) is None
     sessions.revoke(cookie, tab)
-    sessions.confirm(cookie, tab)  # a binding that ended stays ended
+    assert sessions.confirm(cookie, tab) is False  # a binding that ended stays ended, and says so
     assert sessions.binding(cookie, tab) is None and sessions.valid(cookie, link)
+    now[0] = sessions._sessions[auth._digest(cookie)][0]
+    assert sessions.confirm(cookie, late) is False  # so does one whose session expired
+    assert sessions.binding(cookie, late) is None and sessions.confirm(None, late) is False
 
 
 def test_codes_are_stored_hashed(tmp_path):

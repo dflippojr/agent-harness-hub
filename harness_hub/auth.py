@@ -164,15 +164,18 @@ class Sessions:
             entry = self._find(session, binding)
             return (entry[1], self.monotonic() - entry[2]) if entry else None
 
-    def confirm(self, session: str | None, binding: str | None, listed: float | None = None) -> None:
-        """Record that a daemon read at `listed` (on `monotonic`; now if not given) lists a live binding's login. An
-        earlier read than the one recorded changes nothing, and a binding that ended stays ended."""
+    def confirm(self, session: str | None, binding: str | None, listed: float | None = None) -> bool:
+        """Record that a daemon read at `listed` (on `monotonic`; now if not given) lists a live binding's login, and
+        say whether it was still live. An earlier read than the one recorded changes nothing, and a binding that ended
+        while the read ran (it expired or was revoked) stays ended: False, and the read authorizes nothing."""
         with self._lock:
             entry = self._find(session, binding)
-            if entry is not None:
-                listed = self.monotonic() if listed is None else listed
-                bindings = self._sessions[_digest(session)][1]
-                bindings[bindings.index(entry)] = (entry[0], entry[1], max(entry[2], listed))
+            if entry is None:
+                return False
+            listed = self.monotonic() if listed is None else listed
+            bindings = self._sessions[_digest(session)][1]
+            bindings[bindings.index(entry)] = (entry[0], entry[1], max(entry[2], listed))
+            return True
 
     def revoke(self, session: str | None, binding: str | None) -> None:
         """End one binding, for good; the session's other bindings and its expiry stay as they were."""

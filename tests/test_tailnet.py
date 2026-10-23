@@ -853,3 +853,28 @@ def test_a_binding_that_ends_during_the_login_check_authorizes_nothing(tailnet_h
     assert tailnet_hub.get("/api/overview").status_code == 401
     assert tailnet_hub.get("/api/session").json()["signed_in"] is False
     assert not sessions.valid(cookie, tab)
+
+
+@pytest.mark.parametrize("how", ["signed out", "expired"])
+def test_a_tailnet_sign_in_never_joins_a_session_that_ends_during_its_check(tailnet_hub, fake_daemon, monkeypatch,
+                                                                              how):
+    """Tailnet sign-in awaits the same read; a session that ends meanwhile is not joined, and a new one starts."""
+    sessions = tailnet_hub.client.app.fastapi.state.sessions
+    wall = [time.time()]
+    sessions.clock = lambda: wall[0]
+    link = tailnet_hub.sign_in().headers["x-hub-session"]
+    cookie = tailnet_hub.client.cookies["hub_session"]
+
+    def end():
+        if how == "signed out":
+            sessions.end(cookie)
+        else:
+            wall[0] += auth.SESSION_TTL_SECONDS + 1
+
+    ran = end_during_discovery_read(monkeypatch, end)
+    joined = tailnet_sign_in(tailnet_hub)
+    assert ran == [1] and joined.status_code == 204
+    assert "set-cookie" in joined.headers and tailnet_hub.client.cookies["hub_session"] != cookie  # a new session
+    assert not sessions.valid(cookie, link) and not sessions.valid(cookie, joined.headers["x-hub-session"])
+    assert tailnet_hub.get("/api/overview", headers={"X-Hub-Session": joined.headers["x-hub-session"]}).status_code \
+        == 200

@@ -328,7 +328,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         that is not ends for good, and the session's other tabs keep working. A daemon that does not say, while it
         restarts, keeps the binding (#169) only for OUTAGE_GRACE_SECONDS after a read last listed the login, so a tab
         cannot outlast its removal by timing its checks into outages, ones it asked for included (#177); after
-        that the binding answers 401 until a check finds the login listed again."""
+        that the binding answers 401 until a check finds the login listed again. Every answer is taken against the
+        binding as it is once the read is back: one that expired or was revoked during the read authorizes nothing."""
         session, binding = request.cookies.get(settings.cookie_name), request.headers.get(SESSION_HEADER)
         found = sessions.binding(session, binding)
         if found is None:
@@ -338,8 +339,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return True
         listed = await still_owner(owner)
         if listed:
-            sessions.confirm(session, binding, owner_logins["at"])  # the read still_owner took, with no await between
-            return True
+            # The read still_owner took, with no await between; False if the binding ended while it ran (#177).
+            return sessions.confirm(session, binding, owner_logins["at"])
         if listed is None:
             found = sessions.binding(session, binding)  # the time since the last listing, after the read's wait
             return found is not None and found[1] < OUTAGE_GRACE_SECONDS
