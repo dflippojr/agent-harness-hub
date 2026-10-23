@@ -16,8 +16,10 @@ The owner's tailnet identity is the other proof the daemon accepts: on a request
 (tailnet.py), the page can ask for a session with `{"method": "tailnet"}`, and the server grants it only for a login
 the daemon lists in `allowed_logins` (server.py). Its binding keeps that login, and the server checks it against the
 daemon's list again on later requests: once the daemon stops listing it, `revoke` ends that binding alone, and
-`confirm` records each check that found it listed, so the server can bound how long an outage keeps the binding. A
-binding from a sign-in link has no login and is never checked.
+`confirm` records each daemon read that found it listed, so the server can bound how long an outage keeps the binding.
+That bound runs on a monotonic clock, which a wall-clock step back cannot stretch; codes and session expiry use the wall
+clock, since codes are on disk and shared with signin-link. A binding from a sign-in link has no login and is never
+checked.
 """
 
 from __future__ import annotations
@@ -66,11 +68,12 @@ def create_signin_code(state_dir: Path, *, now: float | None = None) -> str:
 
 
 class Sessions:
-    def __init__(self, state_dir: Path, clock=time.time):
+    def __init__(self, state_dir: Path, clock=time.time, monotonic=time.monotonic):
         self.path = state_dir / SIGNIN_FILE
         self.clock = clock
+        self.monotonic = monotonic
         # digest -> (expiry, [(binding digest, the tailnet login that opened it or None for a sign-in link, when the
-        # daemon last listed that login: the sign-in, or the server's last check that found it)])
+        # daemon last listed that login on `monotonic`: the read behind the sign-in, or the last read that found it)])
         self._sessions: dict[str, tuple[float, list[tuple[str, str | None, float]]]] = {}
         self._failures: list[float] = []
         self._tailnet: dict[str, list[float]] = {}
@@ -116,21 +119,25 @@ class Sessions:
                 return None
             return self._start(now, joining)
 
-    def create(self, joining: str | None = None, login: str | None = None) -> tuple[str, str]:
+    def create(self, joining: str | None = None, login: str | None = None,
+               listed: float | None = None) -> tuple[str, str]:
         """A session for a caller proved some other way: a tailnet `login` the daemon lists as the owner's, which the
-        new binding keeps so the server can check it again. `joining` works as in `redeem_code`."""
+        new binding keeps so the server can check it again, and `listed`, when the daemon read that listed it ran (on
+        `monotonic`; now if not given). `joining` works as in `redeem_code`."""
         with self._lock:
-            return self._start(self.clock(), joining, login)
+            return self._start(self.clock(), joining, login, listed)
 
-    def _start(self, now: float, joining: str | None, login: str | None = None) -> tuple[str, str]:
+    def _start(self, now: float, joining: str | None, login: str | None = None,
+               listed: float | None = None) -> tuple[str, str]:
         binding = secrets.token_urlsafe(32)
+        entry = (_digest(binding), login, self.monotonic() if listed is None else listed)
         record = self._sessions.get(_digest(joining)) if joining else None
         if record is not None and record[0] > now:
-            record[1].append((_digest(binding), login, now))
+            record[1].append(entry)
             del record[1][:-MAX_BINDINGS]
             return joining, binding
         session = secrets.token_urlsafe(32)
-        self._sessions[_digest(session)] = (now + SESSION_TTL_SECONDS, [(_digest(binding), login, now)])
+        self._sessions[_digest(session)] = (now + SESSION_TTL_SECONDS, [entry])
         return session, binding
 
     def _find(self, session: str | None, binding: str | None) -> tuple[str, str | None, float] | None:
@@ -155,15 +162,17 @@ class Sessions:
         None when it is not live. One call, so a binding that ends between two reads is never taken for a link's."""
         with self._lock:
             entry = self._find(session, binding)
-            return (entry[1], self.clock() - entry[2]) if entry else None
+            return (entry[1], self.monotonic() - entry[2]) if entry else None
 
-    def confirm(self, session: str | None, binding: str | None) -> None:
-        """Record that the daemon lists a live binding's login now; a binding that ended stays ended."""
+    def confirm(self, session: str | None, binding: str | None, listed: float | None = None) -> None:
+        """Record that a daemon read at `listed` (on `monotonic`; now if not given) lists a live binding's login. An
+        earlier read than the one recorded changes nothing, and a binding that ended stays ended."""
         with self._lock:
             entry = self._find(session, binding)
             if entry is not None:
+                listed = self.monotonic() if listed is None else listed
                 bindings = self._sessions[_digest(session)][1]
-                bindings[bindings.index(entry)] = (entry[0], entry[1], self.clock())
+                bindings[bindings.index(entry)] = (entry[0], entry[1], max(entry[2], listed))
 
     def revoke(self, session: str | None, binding: str | None) -> None:
         """End one binding, for good; the session's other bindings and its expiry stay as they were."""

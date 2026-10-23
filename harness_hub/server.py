@@ -267,7 +267,9 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         return {"signed_in": await signed_in(request), "signin_command": SIGNIN_COMMAND,
                 "tailnet_login": caller or None, "version": __version__}
 
-    owner_logins: dict[str, Any] = {}  # the daemon's last allowed_logins answer, kept briefly: {"until", "answer"}
+    # The daemon's last allowed_logins answer, kept briefly: {"at", "until", "answer"}, on the sessions' monotonic clock
+    # so the outage grace counts from the read that said yes, not from a request that reused it (#177).
+    owner_logins: dict[str, Any] = {}
     owner_logins_read = asyncio.Lock()  # one read at a time; requests that waited for it take its answer
 
     async def read_logins(token: str, *, failures: bool) -> list[str] | int | None:
@@ -276,7 +278,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         list; with `failures`, the session check reuses any answer, so a down daemon is asked once per window, not
         once per request."""
         async with owner_logins_read:
-            if owner_logins and time.monotonic() < owner_logins["until"] and (
+            if owner_logins and sessions.monotonic() < owner_logins["until"] and (
                     failures or isinstance(owner_logins["answer"], list)):
                 return owner_logins["answer"]
             try:
@@ -291,7 +293,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                     answer = list(allowed)
                 else:
                     answer = None
-            owner_logins.update(until=time.monotonic() + ALLOWED_LOGINS_SECONDS, answer=answer)
+            at = sessions.monotonic()
+            owner_logins.update(at=at, until=at + ALLOWED_LOGINS_SECONDS, answer=answer)
             return answer
 
     async def allowed_logins(token: str) -> list[str] | JSONResponse:
@@ -323,7 +326,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         """Whether the request's cookie and binding name a live session. A binding a tailnet sign-in opened also
         needs its login still listed by the daemon, the login stored at sign-in, never this request's headers; one
         that is not ends for good, and the session's other tabs keep working. A daemon that does not say, while it
-        restarts, keeps the binding (#169) only for OUTAGE_GRACE_SECONDS after it last listed the login, so a tab
+        restarts, keeps the binding (#169) only for OUTAGE_GRACE_SECONDS after a read last listed the login, so a tab
         cannot outlast its removal by timing its checks into outages, ones it asked for included (#177); after
         that the binding answers 401 until a check finds the login listed again."""
         session, binding = request.cookies.get(settings.cookie_name), request.headers.get(SESSION_HEADER)
@@ -335,7 +338,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return True
         listed = await still_owner(owner)
         if listed:
-            sessions.confirm(session, binding)
+            sessions.confirm(session, binding, owner_logins["at"])  # the read still_owner took, with no await between
             return True
         if listed is None:
             found = sessions.binding(session, binding)  # the time since the last listing, after the read's wait
@@ -403,7 +406,9 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             refusal = await tailnet_sign_in(request)
             if refusal is not None:
                 return refusal
-            credentials = sessions.create(request.cookies.get(settings.cookie_name), login(request.headers))
+            # The read tailnet_sign_in took, with no await between, so the grace counts from the daemon's yes.
+            credentials = sessions.create(request.cookies.get(settings.cookie_name), login(request.headers),
+                                          owner_logins["at"])
         else:
             code = body.get("code") if isinstance(body, dict) else None
             was_throttled = sessions.throttled()
