@@ -98,3 +98,56 @@ def test_signin_link_refuses_remote_http_on_an_https_hub(tmp_path):
     with pytest.raises(SystemExit):
         cli.main(["signin-link", "--state-dir", str(tmp_path), "--url", "http://192.168.1.20:8120"])
     assert not (tmp_path / "signin-codes.json").exists()
+
+
+def _home(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    return home, cwd
+
+
+@pytest.mark.parametrize("argv", [["--state-dir", "~/hub"], ["--state-dir=~/hub"]])
+def test_signin_link_expands_a_tilde_state_dir(tmp_path, monkeypatch, capsys, argv):
+    # `--state-dir=~/...` reaches the program unexpanded in bash and sh; serve expands it, so signin-link must (#172).
+    home, cwd = _home(monkeypatch, tmp_path)
+    assert cli.main(["signin-link", *argv]) == 0
+    assert capsys.readouterr().out.startswith("http://127.0.0.1:8120/#signin=")
+    assert (home / "hub" / "signin-codes.json").exists()
+    assert list(cwd.iterdir()) == []
+
+
+def test_signin_link_reads_the_running_hub_from_a_tilde_state_dir(tmp_path, monkeypatch, capsys):
+    home, cwd = _home(monkeypatch, tmp_path)
+    (home / "hub").mkdir()
+    _running_hub(home / "hub", "https://hub.example.ts.net")
+    assert cli.main(["signin-link", "--state-dir", "~/hub", "--url", "http://127.0.0.1:8120"]) != 0
+    assert "#signin=" not in capsys.readouterr().out
+    assert not (home / "hub" / "signin-codes.json").exists()
+    assert list(cwd.iterdir()) == []
+
+
+@pytest.mark.parametrize("raw", ["~/hub", "~/hub/../hub", "hub", "./sub/../hub"])
+def test_signin_link_writes_where_serve_reads(tmp_path, monkeypatch, capsys, raw):
+    _home(monkeypatch, tmp_path)
+    served = []
+    monkeypatch.setattr("harness_hub.server.create_app", lambda settings: settings)
+    monkeypatch.setattr("uvicorn.run", lambda app, **kwargs: served.append(app.state_dir))
+    assert cli.main(["--state-dir", raw]) == 0
+    assert cli.main(["signin-link", "--state-dir", raw]) == 0
+    capsys.readouterr()
+    assert (served[0] / "signin-codes.json").exists()
+
+
+def test_signin_link_default_state_dir(tmp_path, monkeypatch, capsys):
+    _, cwd = _home(monkeypatch, tmp_path)
+    default = tmp_path / "default"
+    monkeypatch.setattr(cli, "DEFAULT_STATE_DIR", default)
+    assert cli.main(["signin-link"]) == 0
+    assert capsys.readouterr().out.startswith("http://127.0.0.1:8120/#signin=")
+    assert (default / "signin-codes.json").exists()
+    assert list(cwd.iterdir()) == []
