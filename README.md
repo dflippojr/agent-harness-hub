@@ -163,6 +163,15 @@ the daemon accepts, with the same rules:
 The session is the same as a link's: twelve hours, an HttpOnly cookie plus a per-tab `X-Hub-Session` value. Sign-in
 links keep working, and remain the only way in before the Hub has claimed its daemon.
 
+A tailnet tab stays signed in only while the daemon lists its login. The Hub checks the login the tab signed in with
+(never a later request's headers) against `allowed_logins` on each request, through the same five-second reuse, so
+after you remove a login from `allowed_logins` its tailnet tabs end within about five seconds, on their next request.
+The same happens when the list becomes empty, the daemon refuses the Hub key, or the Hub releases its claim. An
+ended tab stays ended, even if you list the login again; it signs in afresh. A daemon that cannot be reached, or
+answers 5xx while it restarts, ends nothing. Tabs signed in with a link are not affected, including ones that share a
+browser session with a tailnet tab: ending the tailnet tab leaves them and the session's expiry as they were, so a
+tailnet sign-in never prolongs a link session past its own end.
+
 ## First run: claiming the daemon
 
 A daemon has at most one Hub ([agent-harness #543](https://github.com/dflippojr/agent-harness/issues/543)).

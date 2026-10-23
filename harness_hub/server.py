@@ -71,7 +71,8 @@ SIGNIN_COMMAND = "python -m harness_hub signin-link"
 REQUEST_HEADER = "x-hub-request"
 SESSION_HEADER = "x-hub-session"
 MAX_SIGNIN_BODY = 1024
-ALLOWED_LOGINS_SECONDS = 5.0  # how long a tailnet sign-in reuses the daemon's allowed_logins answer
+ALLOWED_LOGINS_SECONDS = 5.0  # how long the Hub reuses the daemon's allowed_logins answer
+UNREACHABLE = 0  # read_logins' answer when the daemon did not answer at all
 PAIRING_COUNT_SECONDS = 5.0  # how long Overview waits for its optional pairing count, consent lock included
 SPEND_CAP_READS = 8  # App session-cap reads in flight at once; every live App is read
 RESTART_GRACE_SECONDS = 1.0  # how long after a restart request the Hub ignores health that predates it
@@ -248,7 +249,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return _error(403, "cross-origin request refused")
         if path == "/api/session" and request.method in ("GET", "POST"):
             return await call_next(request)
-        if not sessions.valid(request.cookies.get(settings.cookie_name), request.headers.get(SESSION_HEADER)):
+        if not await signed_in(request):
             return _error(401, "sign in first", signin_command=SIGNIN_COMMAND)
         return await call_next(request)
 
@@ -262,29 +263,74 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         # it is the owner's is decided at sign-in, against the daemon's list. A token-shaped login is redacted here, so
         # the response guard never withholds this route: the page reads it first on every load.
         caller = TOKEN_SHAPE.sub(REDACTED, login(request.headers))
-        return {"signed_in": sessions.valid(request.cookies.get(settings.cookie_name),
-                                            request.headers.get(SESSION_HEADER)), "signin_command": SIGNIN_COMMAND,
+        return {"signed_in": await signed_in(request), "signin_command": SIGNIN_COMMAND,
                 "tailnet_login": caller or None, "version": __version__}
 
-    owner_logins: dict[str, Any] = {}  # the daemon's allowed_logins, kept briefly: {"until": ..., "logins": [...]}
+    owner_logins: dict[str, Any] = {}  # the daemon's last allowed_logins answer, kept briefly: {"until", "answer"}
+    owner_logins_read = asyncio.Lock()  # one read at a time; requests that waited for it take its answer
+
+    async def read_logins(token: str, *, failures: bool) -> list[str] | int | None:
+        """The daemon's allowed_logins: the list, the HTTP status of a non-2xx reply, UNREACHABLE, or None for a 2xx
+        reply without a list of strings. Every answer is kept for ALLOWED_LOGINS_SECONDS. A sign-in reuses only a
+        list; with `failures`, the session check reuses any answer, so a down daemon is asked once per window, not
+        once per request."""
+        async with owner_logins_read:
+            if owner_logins and time.monotonic() < owner_logins["until"] and (
+                    failures or isinstance(owner_logins["answer"], list)):
+                return owner_logins["answer"]
+            try:
+                reply = await daemon.admin(token)
+            except DaemonUnreachable:
+                answer: list[str] | int | None = UNREACHABLE
+            else:
+                allowed = reply.body.get("allowed_logins") if isinstance(reply.body, dict) else None
+                if not reply.ok:
+                    answer = reply.status
+                elif isinstance(allowed, list) and all(isinstance(item, str) for item in allowed):
+                    answer = list(allowed)
+                else:
+                    answer = None
+            owner_logins.update(until=time.monotonic() + ALLOWED_LOGINS_SECONDS, answer=answer)
+            return answer
 
     async def allowed_logins(token: str) -> list[str] | JSONResponse:
-        if owner_logins and time.monotonic() < owner_logins["until"]:
-            return owner_logins["logins"]
-        try:
-            reply = await daemon.admin(token)
-        except DaemonUnreachable:
+        answer = await read_logins(token, failures=False)
+        if answer == UNREACHABLE:
             return _unreachable(f"the daemon at {settings.daemon_url} did not answer; use a sign-in link",
                                 signin_command=SIGNIN_COMMAND)
-        if not reply.ok:
-            return _error(502, f"the owner API answered HTTP {reply.status}; use a sign-in link",
+        if isinstance(answer, int):
+            return _error(502, f"the owner API answered HTTP {answer}; use a sign-in link",
                           signin_command=SIGNIN_COMMAND)
-        allowed = reply.body.get("allowed_logins") if isinstance(reply.body, dict) else None
-        if not isinstance(allowed, list) or not all(isinstance(item, str) for item in allowed):
+        if answer is None:
             return _error(502, "the daemon does not list the owner's tailnet logins (it needs Owner API 1.26 or "
                           "later); use a sign-in link", signin_command=SIGNIN_COMMAND)
-        owner_logins.update(until=time.monotonic() + ALLOWED_LOGINS_SECONDS, logins=list(allowed))
-        return owner_logins["logins"]
+        return answer
+
+    async def still_owner(owner: str) -> bool:
+        """Whether the daemon still lists a tailnet session's login. Only a definite no counts: an unlisted login,
+        an empty list, a refused Hub key, a reply without a list or no Hub key at all. A daemon that does not
+        answer, or answers 5xx while it restarts, signs no one out (#169)."""
+        key = claims.key()
+        if not key:
+            return False
+        answer = await read_logins(key["token"], failures=True)
+        if isinstance(answer, int):
+            return answer == UNREACHABLE or answer >= 500
+        return answer is not None and owner in answer
+
+    async def signed_in(request: Request) -> bool:
+        """Whether the request's cookie and binding name a live session. A binding a tailnet sign-in opened also
+        needs its login still listed by the daemon, the login stored at sign-in, never this request's headers; one
+        that is not ends for good, and the session's other tabs keep working."""
+        session, binding = request.cookies.get(settings.cookie_name), request.headers.get(SESSION_HEADER)
+        if not sessions.valid(session, binding):
+            return False
+        owner = sessions.login(session, binding)
+        if owner is None or await still_owner(owner):
+            return True
+        sessions.revoke(session, binding)
+        log.warning("ended a tailnet session: the daemon no longer lists its login as the owner's")
+        return False
 
     async def tailnet_sign_in(request: Request) -> JSONResponse | None:
         """Refuse a tailnet sign-in unless the daemon lists this request's trusted login; None means accept. An
@@ -345,7 +391,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             refusal = await tailnet_sign_in(request)
             if refusal is not None:
                 return refusal
-            credentials = sessions.create(request.cookies.get(settings.cookie_name))
+            credentials = sessions.create(request.cookies.get(settings.cookie_name), login(request.headers))
         else:
             code = body.get("code") if isinstance(body, dict) else None
             was_throttled = sessions.throttled()

@@ -49,6 +49,36 @@ def test_expired_code_and_session(tmp_path):
     assert not sessions.valid(*session)
 
 
+def test_a_tailnet_binding_keeps_its_login_and_ends_alone(tmp_path):
+    """#169: the login lives on the binding, so revoking a tailnet tab leaves the session's link tabs alone."""
+    now = [1000.0]
+    sessions = Sessions(tmp_path, clock=lambda: now[0])
+    cookie, link = sessions.redeem_code(create_signin_code(tmp_path, now=now[0]))
+    expiry = sessions._sessions[auth._digest(cookie)][0]
+    now[0] += 60
+    joined, tab = sessions.create(cookie, "owner@example.test")
+    assert joined == cookie and sessions.valid(cookie, tab)
+    assert sessions.login(cookie, tab) == "owner@example.test"
+    assert sessions.login(cookie, link) is None  # a link's binding is never checked against the daemon
+    assert sessions.login(cookie, "not-a-binding") is None and sessions.login(None, tab) is None
+    sessions.revoke(cookie, tab)
+    assert not sessions.valid(cookie, tab) and sessions.login(cookie, tab) is None
+    assert sessions.valid(cookie, link) and sessions._sessions[auth._digest(cookie)][0] == expiry
+    sessions.revoke(cookie, tab)  # already gone: nothing else changes
+    sessions.revoke(None, link)
+    assert sessions.valid(cookie, link)
+
+
+def test_revoking_a_sessions_last_binding_ends_the_session(tmp_path):
+    sessions = Sessions(tmp_path)
+    cookie, tab = sessions.create(login="owner@example.test")
+    sessions.revoke(cookie, tab)
+    assert auth._digest(cookie) not in sessions._sessions
+    # The cookie names no session now, so a link redeemed with it starts a new one.
+    fresh, link = sessions.redeem_code(create_signin_code(tmp_path), cookie)
+    assert fresh != cookie and sessions.valid(fresh, link) and sessions.login(fresh, link) is None
+
+
 def test_codes_are_stored_hashed(tmp_path):
     code = create_signin_code(tmp_path)
     assert code not in (tmp_path / "signin-codes.json").read_text(encoding="utf-8")

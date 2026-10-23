@@ -14,7 +14,9 @@ works until the session expires or signs out (which ends them all). A binding au
 
 The owner's tailnet identity is the other proof the daemon accepts: on a request that tailscaled forwarded
 (tailnet.py), the page can ask for a session with `{"method": "tailnet"}`, and the server grants it only for a login
-the daemon lists in `allowed_logins` (server.py).
+the daemon lists in `allowed_logins` (server.py). Its binding keeps that login, and the server checks it against the
+daemon's list again on later requests: once the daemon stops listing it, `revoke` ends that binding alone. A binding
+from a sign-in link has no login and is never checked.
 """
 
 from __future__ import annotations
@@ -66,7 +68,8 @@ class Sessions:
     def __init__(self, state_dir: Path, clock=time.time):
         self.path = state_dir / SIGNIN_FILE
         self.clock = clock
-        self._sessions: dict[str, tuple[float, list[str]]] = {}  # digest -> (expiry, binding digests)
+        # digest -> (expiry, [(binding digest, the tailnet login that opened it, or None for a sign-in link)])
+        self._sessions: dict[str, tuple[float, list[tuple[str, str | None]]]] = {}
         self._failures: list[float] = []
         self._tailnet: dict[str, list[float]] = {}
         self._lock = threading.Lock()
@@ -111,35 +114,56 @@ class Sessions:
                 return None
             return self._start(now, joining)
 
-    def create(self, joining: str | None = None) -> tuple[str, str]:
-        """A session for a caller proved some other way (a tailnet login the daemon lists as the owner's); `joining`
-        works as in `redeem_code`."""
+    def create(self, joining: str | None = None, login: str | None = None) -> tuple[str, str]:
+        """A session for a caller proved some other way: a tailnet `login` the daemon lists as the owner's, which the
+        new binding keeps so the server can check it again. `joining` works as in `redeem_code`."""
         with self._lock:
-            return self._start(self.clock(), joining)
+            return self._start(self.clock(), joining, login)
 
-    def _start(self, now: float, joining: str | None) -> tuple[str, str]:
+    def _start(self, now: float, joining: str | None, login: str | None = None) -> tuple[str, str]:
         binding = secrets.token_urlsafe(32)
         record = self._sessions.get(_digest(joining)) if joining else None
         if record is not None and record[0] > now:
-            record[1].append(_digest(binding))
+            record[1].append((_digest(binding), login))
             del record[1][:-MAX_BINDINGS]
             return joining, binding
         session = secrets.token_urlsafe(32)
-        self._sessions[_digest(session)] = (now + SESSION_TTL_SECONDS, [_digest(binding)])
+        self._sessions[_digest(session)] = (now + SESSION_TTL_SECONDS, [(_digest(binding), login)])
         return session, binding
 
-    def valid(self, session: str | None, binding: str | None = None) -> bool:
+    def _find(self, session: str | None, binding: str | None) -> tuple[str, str | None] | None:
+        """The live binding these name, as (digest, login); call with the lock held."""
         if not session or not binding:
-            return False
-        now = self.clock()
+            return None
+        key = _digest(session)
+        record = self._sessions.get(key)
+        if record is None or record[0] <= self.clock():
+            self._sessions.pop(key, None)
+            return None
+        given = _digest(binding)
+        matches = [entry for entry in record[1] if hmac.compare_digest(entry[0], given)]  # no early exit
+        return matches[0] if matches else None
+
+    def valid(self, session: str | None, binding: str | None = None) -> bool:
         with self._lock:
+            return self._find(session, binding) is not None
+
+    def login(self, session: str | None, binding: str | None) -> str | None:
+        """The tailnet login a live binding was opened with; None for a link's binding or one that is not live."""
+        with self._lock:
+            entry = self._find(session, binding)
+            return entry[1] if entry else None
+
+    def revoke(self, session: str | None, binding: str | None) -> None:
+        """End one binding, for good; the session's other bindings and its expiry stay as they were."""
+        with self._lock:
+            entry = self._find(session, binding)
+            if entry is None:
+                return
             key = _digest(session)
-            record = self._sessions.get(key)
-            if record is None or record[0] <= now:
-                self._sessions.pop(key, None)
-                return False
-            given = _digest(binding)
-            return any([hmac.compare_digest(known, given) for known in record[1]])  # no early exit
+            self._sessions[key][1].remove(entry)
+            if not self._sessions[key][1]:
+                del self._sessions[key]
 
     def end(self, session: str | None) -> None:
         if session:
