@@ -4,6 +4,7 @@ import test from "node:test";
 import "./apps-controls.test.mjs";
 import "./claim-signin.test.mjs";
 import "./dom-components.test.mjs";
+import "./marketplace-command.test.mjs";
 import "./modules-notice.test.mjs";
 import "./overview-attention.test.mjs";
 import "./overview-polling.test.mjs";

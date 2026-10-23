@@ -118,3 +118,12 @@ def test_every_module_is_preloaded_and_exists():
     for module in STATIC.rglob("*.mjs"):
         if module.name != "app.mjs":
             assert f"/static/{module.relative_to(STATIC).as_posix()}" in html, module
+
+
+def test_ci_node_entrypoint_imports_every_node_test():
+    tests = Path(__file__).resolve().parent
+    entry = text(tests / "browser-session.test.mjs")
+    imported = set(re.findall(r'^import "\./([^"]+\.test\.mjs)";$', entry, re.MULTILINE))
+    for path in sorted(tests.glob("*.test.mjs")):
+        if path.name != "browser-session.test.mjs":
+            assert path.name in imported, f"CI's node --test entrypoint browser-session.test.mjs skips {path.name}"
