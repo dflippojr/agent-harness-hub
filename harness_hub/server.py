@@ -73,6 +73,7 @@ SESSION_HEADER = "x-hub-session"
 MAX_SIGNIN_BODY = 1024
 ALLOWED_LOGINS_SECONDS = 5.0  # how long the Hub reuses the daemon's allowed_logins answer
 UNREACHABLE = 0  # read_logins' answer when the daemon did not answer at all
+OUTAGE_GRACE_SECONDS = 120.0  # how long after the daemon last listed a tailnet tab's login an outage keeps the tab
 PAIRING_COUNT_SECONDS = 5.0  # how long Overview waits for its optional pairing count, consent lock included
 SPEND_CAP_READS = 8  # App session-cap reads in flight at once; every live App is read
 RESTART_GRACE_SECONDS = 1.0  # how long after a restart request the Hub ignores health that predates it
@@ -306,28 +307,39 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                           "later); use a sign-in link", signin_command=SIGNIN_COMMAND)
         return answer
 
-    async def still_owner(owner: str) -> bool:
-        """Whether the daemon still lists a tailnet session's login. Only a definite no counts: an unlisted login,
-        an empty list, a refused Hub key, a reply without a list or no Hub key at all. A daemon that does not
-        answer, or answers 5xx while it restarts, signs no one out (#169)."""
+    async def still_owner(owner: str) -> bool | None:
+        """Whether the daemon still lists a tailnet session's login, or None when it did not say: it did not answer,
+        or answered 5xx while it restarts. A definite no is an unlisted login, an empty list, a refused Hub key, a
+        reply without a list or no Hub key at all."""
         key = claims.key()
         if not key:
             return False
         answer = await read_logins(key["token"], failures=True)
         if isinstance(answer, int):
-            return answer == UNREACHABLE or answer >= 500
+            return None if answer == UNREACHABLE or answer >= 500 else False
         return answer is not None and owner in answer
 
     async def signed_in(request: Request) -> bool:
         """Whether the request's cookie and binding name a live session. A binding a tailnet sign-in opened also
         needs its login still listed by the daemon, the login stored at sign-in, never this request's headers; one
-        that is not ends for good, and the session's other tabs keep working."""
+        that is not ends for good, and the session's other tabs keep working. A daemon that does not say, while it
+        restarts, keeps the binding (#169) only for OUTAGE_GRACE_SECONDS after it last listed the login, so a tab
+        cannot outlast its removal by timing its checks into outages, ones it asked for included (#177); after
+        that the binding answers 401 until a check finds the login listed again."""
         session, binding = request.cookies.get(settings.cookie_name), request.headers.get(SESSION_HEADER)
-        if not sessions.valid(session, binding):
+        found = sessions.binding(session, binding)
+        if found is None:
             return False
-        owner = sessions.login(session, binding)
-        if owner is None or await still_owner(owner):
+        owner, _ = found
+        if owner is None:
             return True
+        listed = await still_owner(owner)
+        if listed:
+            sessions.confirm(session, binding)
+            return True
+        if listed is None:
+            found = sessions.binding(session, binding)  # the time since the last listing, after the read's wait
+            return found is not None and found[1] < OUTAGE_GRACE_SECONDS
         sessions.revoke(session, binding)
         log.warning("ended a tailnet session: the daemon no longer lists its login as the owner's")
         return False

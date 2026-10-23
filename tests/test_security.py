@@ -58,11 +58,11 @@ def test_a_tailnet_binding_keeps_its_login_and_ends_alone(tmp_path):
     now[0] += 60
     joined, tab = sessions.create(cookie, "owner@example.test")
     assert joined == cookie and sessions.valid(cookie, tab)
-    assert sessions.login(cookie, tab) == "owner@example.test"
-    assert sessions.login(cookie, link) is None  # a link's binding is never checked against the daemon
-    assert sessions.login(cookie, "not-a-binding") is None and sessions.login(None, tab) is None
+    assert sessions.binding(cookie, tab) == ("owner@example.test", 0.0)
+    assert sessions.binding(cookie, link)[0] is None  # a link's binding is never checked against the daemon
+    assert sessions.binding(cookie, "not-a-binding") is None and sessions.binding(None, tab) is None
     sessions.revoke(cookie, tab)
-    assert not sessions.valid(cookie, tab) and sessions.login(cookie, tab) is None
+    assert not sessions.valid(cookie, tab) and sessions.binding(cookie, tab) is None
     assert sessions.valid(cookie, link) and sessions._sessions[auth._digest(cookie)][0] == expiry
     sessions.revoke(cookie, tab)  # already gone: nothing else changes
     sessions.revoke(None, link)
@@ -76,7 +76,7 @@ def test_revoking_a_sessions_last_binding_ends_the_session(tmp_path):
     assert auth._digest(cookie) not in sessions._sessions
     # The cookie names no session now, so a link redeemed with it starts a new one.
     fresh, link = sessions.redeem_code(create_signin_code(tmp_path), cookie)
-    assert fresh != cookie and sessions.valid(fresh, link) and sessions.login(fresh, link) is None
+    assert fresh != cookie and sessions.valid(fresh, link) and sessions.binding(fresh, link)[0] is None
 
 
 def test_a_tailnet_binding_records_when_its_login_was_last_listed(tmp_path):

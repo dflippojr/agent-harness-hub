@@ -168,9 +168,12 @@ A tailnet tab stays signed in only while the daemon lists its login. The Hub che
 after you remove a login from `allowed_logins` its tailnet tabs end within about five seconds, on their next request.
 The same happens when the list becomes empty, the daemon refuses the Hub key, or the Hub releases its claim. An
 ended tab stays ended, even if you list the login again; it signs in afresh. A daemon that cannot be reached, or
-answers 5xx while it restarts, ends nothing. Tabs signed in with a link are not affected, including ones that share a
-browser session with a tailnet tab: ending the tailnet tab leaves them and the session's expiry as they were, so a
-tailnet sign-in never prolongs a link session past its own end.
+answers 5xx while it restarts, ends nothing, but only for a grace of two minutes after the daemon last listed the tab's
+login, longer than a restart takes. A daemon that stays down past that, or a tab that keeps asking for restarts so its
+checks never reach a running daemon, gets 401 until a check finds the login listed again. Tabs signed in with a link
+are not affected, including ones that share a browser session with a tailnet tab: ending the tailnet tab leaves them
+and the session's expiry as they were, so a tailnet sign-in never prolongs a link session past its own end. Restarting
+the Hub ends every session at once.
 
 ## First run: claiming the daemon
 

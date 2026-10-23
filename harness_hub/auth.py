@@ -15,8 +15,9 @@ works until the session expires or signs out (which ends them all). A binding au
 The owner's tailnet identity is the other proof the daemon accepts: on a request that tailscaled forwarded
 (tailnet.py), the page can ask for a session with `{"method": "tailnet"}`, and the server grants it only for a login
 the daemon lists in `allowed_logins` (server.py). Its binding keeps that login, and the server checks it against the
-daemon's list again on later requests: once the daemon stops listing it, `revoke` ends that binding alone. A binding
-from a sign-in link has no login and is never checked.
+daemon's list again on later requests: once the daemon stops listing it, `revoke` ends that binding alone, and
+`confirm` records each check that found it listed, so the server can bound how long an outage keeps the binding. A
+binding from a sign-in link has no login and is never checked.
 """
 
 from __future__ import annotations
@@ -68,8 +69,9 @@ class Sessions:
     def __init__(self, state_dir: Path, clock=time.time):
         self.path = state_dir / SIGNIN_FILE
         self.clock = clock
-        # digest -> (expiry, [(binding digest, the tailnet login that opened it, or None for a sign-in link)])
-        self._sessions: dict[str, tuple[float, list[tuple[str, str | None]]]] = {}
+        # digest -> (expiry, [(binding digest, the tailnet login that opened it or None for a sign-in link, when the
+        # daemon last listed that login: the sign-in, or the server's last check that found it)])
+        self._sessions: dict[str, tuple[float, list[tuple[str, str | None, float]]]] = {}
         self._failures: list[float] = []
         self._tailnet: dict[str, list[float]] = {}
         self._lock = threading.Lock()
@@ -124,15 +126,15 @@ class Sessions:
         binding = secrets.token_urlsafe(32)
         record = self._sessions.get(_digest(joining)) if joining else None
         if record is not None and record[0] > now:
-            record[1].append((_digest(binding), login))
+            record[1].append((_digest(binding), login, now))
             del record[1][:-MAX_BINDINGS]
             return joining, binding
         session = secrets.token_urlsafe(32)
-        self._sessions[_digest(session)] = (now + SESSION_TTL_SECONDS, [(_digest(binding), login)])
+        self._sessions[_digest(session)] = (now + SESSION_TTL_SECONDS, [(_digest(binding), login, now)])
         return session, binding
 
-    def _find(self, session: str | None, binding: str | None) -> tuple[str, str | None] | None:
-        """The live binding these name, as (digest, login); call with the lock held."""
+    def _find(self, session: str | None, binding: str | None) -> tuple[str, str | None, float] | None:
+        """The live binding these name, as (digest, login, listed); call with the lock held."""
         if not session or not binding:
             return None
         key = _digest(session)
@@ -148,11 +150,20 @@ class Sessions:
         with self._lock:
             return self._find(session, binding) is not None
 
-    def login(self, session: str | None, binding: str | None) -> str | None:
-        """The tailnet login a live binding was opened with; None for a link's binding or one that is not live."""
+    def binding(self, session: str | None, binding: str | None) -> tuple[str | None, float] | None:
+        """A live binding as (its tailnet login or None for a link's, seconds since the daemon last listed that login);
+        None when it is not live. One call, so a binding that ends between two reads is never taken for a link's."""
         with self._lock:
             entry = self._find(session, binding)
-            return entry[1] if entry else None
+            return (entry[1], self.clock() - entry[2]) if entry else None
+
+    def confirm(self, session: str | None, binding: str | None) -> None:
+        """Record that the daemon lists a live binding's login now; a binding that ended stays ended."""
+        with self._lock:
+            entry = self._find(session, binding)
+            if entry is not None:
+                bindings = self._sessions[_digest(session)][1]
+                bindings[bindings.index(entry)] = (entry[0], entry[1], self.clock())
 
     def revoke(self, session: str | None, binding: str | None) -> None:
         """End one binding, for good; the session's other bindings and its expiry stay as they were."""
