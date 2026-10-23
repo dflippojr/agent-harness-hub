@@ -806,3 +806,50 @@ def test_the_grace_counts_from_the_daemon_read_that_listed_the_login(tailnet_hub
     assert discovery_reads(fake_daemon) == before + 1
     now[0] += 2
     assert tailnet_hub.get("/api/claim").status_code == 401  # past the grace from the read, not from the request
+
+
+# #177: the binding a discovery read was asked for can end while the read is pending; the daemon's yes then says
+# nothing about it.
+def end_during_discovery_read(monkeypatch, end) -> list[int]:
+    """Run `end` once, inside the next discovery read, before the daemon answers; returns the list that counts the
+    reads it ran in."""
+    admin, ran = DaemonClient.admin, [0]
+
+    async def pending(self, token, path=""):
+        if not path and not ran[0]:
+            ran[0] += 1
+            end()
+        return await admin(self, token, path)
+
+    monkeypatch.setattr(DaemonClient, "admin", pending)
+    return ran
+
+
+@pytest.mark.parametrize("how", ["revoked", "expired"])
+@pytest.mark.parametrize("route", ["/api/overview", "/api/session"])
+def test_a_binding_that_ends_during_the_login_check_authorizes_nothing(tailnet_hub, fake_daemon, monkeypatch, how,
+                                                                       route):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    sessions = tailnet_hub.client.app.fastapi.state.sessions
+    wall = [time.time()]
+    sessions.clock = lambda: wall[0]
+    tab = owner_tab(tailnet_hub)
+    cookie = tailnet_hub.client.cookies["hub_session"]
+    assert tailnet_hub.get("/api/overview").status_code == 200
+
+    def end():
+        if how == "revoked":
+            sessions.revoke(cookie, tab)
+        else:
+            wall[0] += auth.SESSION_TTL_SECONDS + 1
+
+    ran = end_during_discovery_read(monkeypatch, end)
+    reply = tailnet_hub.get(route)
+    assert ran == [1]  # the daemon still lists the login: its yes came after the binding ended
+    if route == "/api/session":
+        assert reply.status_code == 200 and reply.json()["signed_in"] is False
+    else:
+        assert reply.status_code == 401 and reply.json()["detail"] == "sign in first"
+    assert tailnet_hub.get("/api/overview").status_code == 401
+    assert tailnet_hub.get("/api/session").json()["signed_in"] is False
+    assert not sessions.valid(cookie, tab)
