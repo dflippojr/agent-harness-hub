@@ -68,6 +68,7 @@ class FakeDaemon:
         self.lose_redeem_replies = 0  # redeems whose 201 is committed here but never reaches the Hub
         self.allowed_logins: object = ["owner@example.test"]  # None: a daemon before Owner API 1.26
         self.owner_api = "1.26"  # the discovery root's api_version
+        self.discovery_status: int | None = None  # an error the discovery root answers instead, e.g. 503 in a restart
         self.contract_problems: list[str] = []  # requests the Hub sent outside tests/contract/endpoints.py
         self.app = self._build()
 
@@ -172,6 +173,8 @@ class FakeDaemon:
         async def discovery(request: Request):
             if not owner(request):
                 return JSONResponse({"detail": "requests from this machine need the local owner token"}, 401)
+            if self.discovery_status is not None:
+                return JSONResponse({"detail": "synthetic discovery error"}, self.discovery_status)
             # A field the Hub must not pass through: the key list's display prefix.
             body = {"api_version": self.owner_api, "hub": {"claimed": self.hub is not None},
                     "operations": [{"method": "GET", "path": "/api/admin/v1/keys"}],

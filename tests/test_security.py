@@ -49,6 +49,66 @@ def test_expired_code_and_session(tmp_path):
     assert not sessions.valid(*session)
 
 
+def test_a_tailnet_binding_keeps_its_login_and_ends_alone(tmp_path):
+    """#169: the login lives on the binding, so revoking a tailnet tab leaves the session's link tabs alone."""
+    now = [1000.0]
+    sessions = Sessions(tmp_path, clock=lambda: now[0], monotonic=lambda: now[0])
+    cookie, link = sessions.redeem_code(create_signin_code(tmp_path, now=now[0]))
+    expiry = sessions._sessions[auth._digest(cookie)][0]
+    now[0] += 60
+    joined, tab = sessions.create(cookie, "owner@example.test")
+    assert joined == cookie and sessions.valid(cookie, tab)
+    assert sessions.binding(cookie, tab) == ("owner@example.test", 0.0)
+    assert sessions.binding(cookie, link)[0] is None  # a link's binding is never checked against the daemon
+    assert sessions.binding(cookie, "not-a-binding") is None and sessions.binding(None, tab) is None
+    sessions.revoke(cookie, tab)
+    assert not sessions.valid(cookie, tab) and sessions.binding(cookie, tab) is None
+    assert sessions.valid(cookie, link) and sessions._sessions[auth._digest(cookie)][0] == expiry
+    sessions.revoke(cookie, tab)  # already gone: nothing else changes
+    sessions.revoke(None, link)
+    assert sessions.valid(cookie, link)
+
+
+def test_revoking_a_sessions_last_binding_ends_the_session(tmp_path):
+    sessions = Sessions(tmp_path)
+    cookie, tab = sessions.create(login="owner@example.test")
+    sessions.revoke(cookie, tab)
+    assert auth._digest(cookie) not in sessions._sessions
+    # The cookie names no session now, so a link redeemed with it starts a new one.
+    fresh, link = sessions.redeem_code(create_signin_code(tmp_path), cookie)
+    assert fresh != cookie and sessions.valid(fresh, link) and sessions.binding(fresh, link)[0] is None
+
+
+def test_a_tailnet_binding_records_when_its_login_was_last_listed(tmp_path):
+    """#177: the server bounds an outage's grace from the last daemon read that listed the binding's login, on the
+    monotonic clock, so a wall-clock step back does not stretch it."""
+    now, mono = [1000.0], [50.0]
+    sessions = Sessions(tmp_path, clock=lambda: now[0], monotonic=lambda: mono[0])
+    cookie, link = sessions.redeem_code(create_signin_code(tmp_path, now=now[0]))
+    joined, tab = sessions.create(cookie, "owner@example.test")
+    mono[0] += 30
+    now[0] -= 3600  # the wall clock steps back; the session's expiry is still ahead of it
+    assert sessions.binding(cookie, tab) == ("owner@example.test", 30.0)  # the sign-in was a listing
+    assert sessions.binding(cookie, link) == (None, 30.0)
+    assert sessions.confirm(cookie, tab) is True
+    mono[0] += 5
+    assert sessions.binding(cookie, tab) == ("owner@example.test", 5.0)
+    assert sessions.binding(cookie, link) == (None, 35.0)
+    sessions.confirm(cookie, tab, mono[0] - 2)  # a read two seconds ago, whose yes a request reused
+    assert sessions.binding(cookie, tab) == ("owner@example.test", 2.0)
+    assert sessions.confirm(cookie, tab, mono[0] - 20) is True  # an earlier read than the one recorded changes nothing
+    assert sessions.binding(cookie, tab) == ("owner@example.test", 2.0)
+    _, late = sessions.create(cookie, "owner@example.test", mono[0] - 4)  # a sign-in that reused a kept list
+    assert sessions.binding(cookie, late) == ("owner@example.test", 4.0)
+    assert sessions.binding(cookie, "not-a-binding") is None and sessions.binding(None, tab) is None
+    sessions.revoke(cookie, tab)
+    assert sessions.confirm(cookie, tab) is False  # a binding that ended stays ended, and says so
+    assert sessions.binding(cookie, tab) is None and sessions.valid(cookie, link)
+    now[0] = sessions._sessions[auth._digest(cookie)][0]
+    assert sessions.confirm(cookie, late) is False  # so does one whose session expired
+    assert sessions.binding(cookie, late) is None and sessions.confirm(None, late) is False
+
+
 def test_codes_are_stored_hashed(tmp_path):
     code = create_signin_code(tmp_path)
     assert code not in (tmp_path / "signin-codes.json").read_text(encoding="utf-8")

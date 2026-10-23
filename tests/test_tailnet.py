@@ -7,6 +7,8 @@ import os
 import socket
 import subprocess
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,8 @@ from starlette.testclient import TestClient
 
 from harness_hub import __main__ as cli
 from harness_hub import auth
+from harness_hub import server as hub_server
+from harness_hub.daemon import DaemonClient
 from harness_hub.tailnet import (
     CACHE_SECONDS,
     PeerCheck,
@@ -26,6 +30,7 @@ from harness_hub.tailnet import (
     tcp_forwards,
 )
 
+from .conftest import HUB_HOST
 from .test_token_words import FULL_TOKENS
 
 OWNER = "owner@example.test"
@@ -529,3 +534,347 @@ def test_a_token_shaped_login_is_redacted_not_withheld(tailnet_hub, token):
     reply = tailnet_hub.get("/api/session", headers=identity(token + "@example.test"))
     assert reply.status_code == 200
     assert reply.json()["tailnet_login"] == "[withheld: token-shaped]@example.test"
+
+
+# #169: a tailnet session lasts only while the daemon still lists the login that opened it.
+def owner_tab(hub, login: str = OWNER) -> str:
+    """Sign this client's tab in with its tailnet identity; returns the tab's binding."""
+    response = tailnet_sign_in(hub, login)
+    assert response.status_code == 204, response.text
+    hub.client.headers["X-Hub-Session"] = response.headers["x-hub-session"]
+    return response.headers["x-hub-session"]
+
+
+def discovery_reads(fake_daemon) -> int:
+    return sum(url.rstrip("/").endswith("/api/admin/v1") for url in fake_daemon.sent)
+
+
+def removal(hub, fake_daemon, how: str):
+    """Take a signed-in login's ownership away in one of the ways the daemon can say no; returns an undo."""
+    claims = hub.client.app.fastapi.state.claims
+    tokens = set(fake_daemon.live_tokens)
+    if how == "unlisted":
+        fake_daemon.allowed_logins = ["partner@example.test"]
+    elif how == "empty":
+        fake_daemon.allowed_logins = []
+    elif how == "no list":
+        fake_daemon.allowed_logins = None
+    elif how == "key refused":
+        fake_daemon.live_tokens.clear()
+    elif how == "unclaimed":
+        claims.key = lambda: None
+
+    def undo():
+        fake_daemon.allowed_logins = [OWNER]
+        fake_daemon.live_tokens.update(tokens)
+        vars(claims).pop("key", None)
+
+    return undo
+
+
+@pytest.mark.parametrize("how", ["unlisted", "empty", "no list", "key refused", "unclaimed"])
+def test_removing_a_login_ends_its_tailnet_sessions(tailnet_hub, fake_daemon, monkeypatch, how):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    owner_tab(tailnet_hub)
+    assert tailnet_hub.get("/api/overview").status_code == 200
+    restore = removal(tailnet_hub, fake_daemon, how)
+    ended = tailnet_hub.get("/api/overview")
+    assert ended.status_code == 401 and ended.json()["detail"] == "sign in first"
+    assert tailnet_hub.get("/api/settings/config").status_code == 401
+    assert tailnet_hub.get("/api/session").json()["signed_in"] is False
+    restore()  # listed again: the ended tab stays ended, and a new tailnet sign-in works
+    assert tailnet_hub.get("/api/overview").status_code == 401
+    assert tailnet_hub.get("/api/session").json()["signed_in"] is False
+    owner_tab(tailnet_hub)
+    assert tailnet_hub.get("/api/overview").status_code == 200
+
+
+def test_a_link_session_does_not_depend_on_allowed_logins(tailnet_hub, fake_daemon, monkeypatch):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tailnet_hub.sign_in()
+    fake_daemon.allowed_logins = []
+    before = discovery_reads(fake_daemon)
+    assert tailnet_hub.get("/api/claim").status_code == 200
+    assert tailnet_hub.get("/api/session").json()["signed_in"] is True
+    assert discovery_reads(fake_daemon) == before  # a link tab costs no allowed_logins read
+    assert tailnet_hub.get("/api/overview").status_code == 200
+
+
+@pytest.mark.parametrize("outage", ["unreachable", "restarting"])
+def test_a_daemon_that_cannot_answer_signs_no_one_out(tailnet_hub, fake_daemon, monkeypatch, outage):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    owner_tab(tailnet_hub)
+    if outage == "unreachable":
+        fake_daemon.down = True
+    else:
+        fake_daemon.discovery_status = 503
+    before = discovery_reads(fake_daemon)
+    assert tailnet_hub.get("/api/claim").status_code == 200
+    assert tailnet_hub.get("/api/session").json()["signed_in"] is True
+    assert discovery_reads(fake_daemon) > before  # the login was checked, and the outage did not end the tab
+    fake_daemon.down = False
+    fake_daemon.discovery_status = None
+    assert tailnet_hub.get("/api/overview").status_code == 200
+
+
+def test_a_tailnet_tab_that_joined_a_link_session_ends_alone(tailnet_hub, fake_daemon, monkeypatch):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    link = tailnet_hub.sign_in().headers["x-hub-session"]
+    cookie = tailnet_hub.client.cookies["hub_session"]
+    sessions = tailnet_hub.client.app.fastapi.state.sessions
+    expiry = sessions._sessions[auth._digest(cookie)][0]
+    joined = tailnet_sign_in(tailnet_hub)
+    assert joined.status_code == 204 and "set-cookie" not in joined.headers  # the same session, a new tab
+    tab = joined.headers["x-hub-session"]
+    assert tailnet_hub.get("/api/overview", headers={"X-Hub-Session": tab}).status_code == 200
+    fake_daemon.allowed_logins = []
+    assert tailnet_hub.get("/api/overview", headers={"X-Hub-Session": tab}).status_code == 401
+    assert tailnet_hub.get("/api/overview", headers={"X-Hub-Session": link}).status_code == 200
+    assert sessions._sessions[auth._digest(cookie)][0] == expiry
+    fake_daemon.allowed_logins = [OWNER]
+    assert tailnet_hub.get("/api/overview", headers={"X-Hub-Session": tab}).status_code == 401
+
+
+def test_a_link_tab_that_joined_a_tailnet_session_is_never_checked(tailnet_hub, fake_daemon, monkeypatch):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tab = owner_tab(tailnet_hub)
+    link = tailnet_hub.sign_in().headers["x-hub-session"]
+    fake_daemon.allowed_logins = []
+    assert tailnet_hub.get("/api/claim", headers={"X-Hub-Session": tab}).status_code == 401
+    assert tailnet_hub.get("/api/claim", headers={"X-Hub-Session": link}).status_code == 200
+
+
+@pytest.mark.parametrize("outage", [False, True])
+def test_tailnet_tabs_share_one_allowed_logins_read(tailnet_hub, fake_daemon, monkeypatch, outage):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    owner_tab(tailnet_hub)
+    other = owner_tab(tailnet_hub)  # a second tailnet tab, so the burst is not one binding's
+    fake_daemon.down = outage
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 60.0)  # the sign-in's answer is stale; the next is kept
+    before = discovery_reads(fake_daemon)
+    for binding in [other, *[tailnet_hub.client.headers["X-Hub-Session"]] * 10]:
+        assert tailnet_hub.get("/api/claim", headers={"X-Hub-Session": binding}).status_code == 200
+    assert discovery_reads(fake_daemon) == before + 1
+
+
+def test_concurrent_requests_share_one_allowed_logins_read(tailnet_hub, fake_daemon, monkeypatch):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    owner_tab(tailnet_hub)
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 60.0)
+    call = DaemonClient._call
+
+    async def slow(self, method, path, **kw):
+        await asyncio.sleep(0.1)  # every request arrives while the first read is still in flight
+        return await call(self, method, path, **kw)
+
+    monkeypatch.setattr(DaemonClient, "_call", slow)
+    before = discovery_reads(fake_daemon)
+    with ThreadPoolExecutor(4) as pool:
+        statuses = list(pool.map(lambda _: tailnet_hub.get("/api/claim").status_code, range(8)))
+    assert statuses == [200] * 8
+    assert discovery_reads(fake_daemon) == before + 1
+
+
+# The owner's call on #177: an outage keeps a tailnet tab only for a short grace after the daemon last listed its login.
+SAME_ORIGIN = {"Origin": f"http://{HUB_HOST}"}  # Settings writes need it
+
+
+def grace_clock(hub) -> list[float]:
+    """Drive the Hub's monotonic session clock, which times the grace, by hand; returns the list whose one value is
+    now."""
+    now = [time.monotonic()]
+    hub.client.app.fastapi.state.sessions.monotonic = lambda: now[0]
+    return now
+
+
+def test_an_outage_within_the_grace_keeps_a_tailnet_tab(tailnet_hub, fake_daemon, monkeypatch):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    now = grace_clock(tailnet_hub)
+    owner_tab(tailnet_hub)
+    now[0] += 60
+    assert tailnet_hub.get("/api/claim").status_code == 200  # listed: the grace starts again from here
+    fake_daemon.down = True
+    now[0] += hub_server.OUTAGE_GRACE_SECONDS - 1
+    assert tailnet_hub.get("/api/claim").status_code == 200
+    assert tailnet_hub.get("/api/session").json()["signed_in"] is True
+
+
+@pytest.mark.parametrize("outage", ["unreachable", "restarting"])
+def test_an_outage_past_the_grace_answers_401_until_the_login_is_checked(tailnet_hub, fake_daemon, monkeypatch,
+                                                                          outage):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    now = grace_clock(tailnet_hub)
+    owner_tab(tailnet_hub)
+    if outage == "unreachable":
+        fake_daemon.down = True
+    else:
+        fake_daemon.discovery_status = 503
+    now[0] += hub_server.OUTAGE_GRACE_SECONDS + 1
+    ended = tailnet_hub.get("/api/overview")
+    assert ended.status_code == 401 and ended.json()["detail"] == "sign in first"
+    assert tailnet_hub.get("/api/session").json()["signed_in"] is False
+    fake_daemon.down = False
+    fake_daemon.discovery_status = None
+    # The daemon answers again and still lists the login: the same tab works, and the grace starts again.
+    assert tailnet_hub.get("/api/overview").status_code == 200
+    fake_daemon.down = True
+    now[0] += hub_server.OUTAGE_GRACE_SECONDS - 1
+    assert tailnet_hub.get("/api/claim").status_code == 200
+
+
+def test_a_restart_the_tab_asks_for_ends_it_once_the_grace_runs_out(tailnet_hub, fake_daemon, monkeypatch):
+    """The review's case: the owner removed the login from harness.local.yaml, which the daemon applies on a restart,
+    and the removed tab asks for that restart itself, through the Hub's Settings route, hoping to stay in while every
+    check lands in the outage."""
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    now = grace_clock(tailnet_hub)
+    owner_tab(tailnet_hub)
+    now[0] += 30
+    asked = tailnet_hub.post("/api/settings/restart", json={"revision": fake_daemon.revision, "confirm": True},
+                           headers=SAME_ORIGIN)
+    assert asked.status_code == 202, asked.text
+    fake_daemon.down = True  # the restart takes the daemon down, and it stays down
+    fake_daemon.allowed_logins = ["partner@example.test"]  # what it will list once it is back
+    now[0] += hub_server.OUTAGE_GRACE_SECONDS - 1
+    assert tailnet_hub.get("/api/claim").status_code == 200  # a short restart signs no one out
+    now[0] += 2
+    assert tailnet_hub.get("/api/claim").status_code == 401
+    again = tailnet_hub.post("/api/settings/restart", json={"revision": fake_daemon.revision, "confirm": True},
+                           headers=SAME_ORIGIN)
+    assert again.status_code == 401  # it cannot ask for another restart either
+    fake_daemon.down = False  # back, without the login: the tab ends for good
+    assert tailnet_hub.get("/api/claim").status_code == 401
+    fake_daemon.allowed_logins = [OWNER]
+    assert tailnet_hub.get("/api/claim").status_code == 401
+
+
+def test_a_burst_past_the_grace_makes_one_attempt(tailnet_hub, fake_daemon, monkeypatch):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    now = grace_clock(tailnet_hub)
+    owner_tab(tailnet_hub)
+    fake_daemon.down = True
+    now[0] += hub_server.OUTAGE_GRACE_SECONDS + 1
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 60.0)
+    before = discovery_reads(fake_daemon)
+    assert [tailnet_hub.get("/api/claim").status_code for _ in range(10)] == [401] * 10
+    assert discovery_reads(fake_daemon) == before + 1
+
+
+def test_a_definite_no_within_the_grace_still_ends_the_tab_at_once(tailnet_hub, fake_daemon, monkeypatch):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    now = grace_clock(tailnet_hub)
+    owner_tab(tailnet_hub)
+    fake_daemon.down = True
+    now[0] += 10
+    assert tailnet_hub.get("/api/claim").status_code == 200
+    fake_daemon.down = False
+    fake_daemon.allowed_logins = []
+    now[0] += 1
+    assert tailnet_hub.get("/api/claim").status_code == 401
+    fake_daemon.allowed_logins = [OWNER]
+    assert tailnet_hub.get("/api/claim").status_code == 401  # ended for good, not held back for the grace
+
+
+def test_a_wall_clock_step_back_does_not_lengthen_the_grace(tailnet_hub, fake_daemon, monkeypatch):
+    """An NTP correction, a restored snapshot or a manual `date` during the outage moves the wall clock back; the grace
+    runs on the monotonic clock, so the tab still ends once it is over."""
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    now = grace_clock(tailnet_hub)
+    wall = [time.time()]
+    tailnet_hub.client.app.fastapi.state.sessions.clock = lambda: wall[0]
+    owner_tab(tailnet_hub)
+    fake_daemon.down = True
+    now[0] += hub_server.OUTAGE_GRACE_SECONDS + 1
+    wall[0] -= 3600
+    assert tailnet_hub.get("/api/claim").status_code == 401
+
+
+def test_the_grace_counts_from_the_daemon_read_that_listed_the_login(tailnet_hub, fake_daemon, monkeypatch):
+    """A request that reuses a kept yes does not move the grace's start: it is the time of the read that said yes."""
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    now = grace_clock(tailnet_hub)
+    owner_tab(tailnet_hub)
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 60.0)
+    assert tailnet_hub.get("/api/claim").status_code == 200  # the daemon's yes, kept for a minute
+    before = discovery_reads(fake_daemon)
+    now[0] += 50
+    assert tailnet_hub.get("/api/claim").status_code == 200  # the kept yes, from 50 seconds ago
+    assert discovery_reads(fake_daemon) == before
+    fake_daemon.down = True
+    now[0] += hub_server.OUTAGE_GRACE_SECONDS - 51
+    assert tailnet_hub.get("/api/claim").status_code == 200  # a fresh read: the daemon is down
+    assert discovery_reads(fake_daemon) == before + 1
+    now[0] += 2
+    assert tailnet_hub.get("/api/claim").status_code == 401  # past the grace from the read, not from the request
+
+
+# #177: the binding a discovery read was asked for can end while the read is pending; the daemon's yes then says
+# nothing about it.
+def end_during_discovery_read(monkeypatch, end) -> list[int]:
+    """Run `end` once, inside the next discovery read, before the daemon answers; returns the list that counts the
+    reads it ran in."""
+    admin, ran = DaemonClient.admin, [0]
+
+    async def pending(self, token, path=""):
+        if not path and not ran[0]:
+            ran[0] += 1
+            end()
+        return await admin(self, token, path)
+
+    monkeypatch.setattr(DaemonClient, "admin", pending)
+    return ran
+
+
+@pytest.mark.parametrize("how", ["revoked", "expired"])
+@pytest.mark.parametrize("route", ["/api/overview", "/api/session"])
+def test_a_binding_that_ends_during_the_login_check_authorizes_nothing(tailnet_hub, fake_daemon, monkeypatch, how,
+                                                                       route):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    sessions = tailnet_hub.client.app.fastapi.state.sessions
+    wall = [time.time()]
+    sessions.clock = lambda: wall[0]
+    tab = owner_tab(tailnet_hub)
+    cookie = tailnet_hub.client.cookies["hub_session"]
+    assert tailnet_hub.get("/api/overview").status_code == 200
+
+    def end():
+        if how == "revoked":
+            sessions.revoke(cookie, tab)
+        else:
+            wall[0] += auth.SESSION_TTL_SECONDS + 1
+
+    ran = end_during_discovery_read(monkeypatch, end)
+    reply = tailnet_hub.get(route)
+    assert ran == [1]  # the daemon still lists the login: its yes came after the binding ended
+    if route == "/api/session":
+        assert reply.status_code == 200 and reply.json()["signed_in"] is False
+    else:
+        assert reply.status_code == 401 and reply.json()["detail"] == "sign in first"
+    assert tailnet_hub.get("/api/overview").status_code == 401
+    assert tailnet_hub.get("/api/session").json()["signed_in"] is False
+    assert not sessions.valid(cookie, tab)
+
+
+@pytest.mark.parametrize("how", ["signed out", "expired"])
+def test_a_tailnet_sign_in_never_joins_a_session_that_ends_during_its_check(tailnet_hub, fake_daemon, monkeypatch,
+                                                                              how):
+    """Tailnet sign-in awaits the same read; a session that ends meanwhile is not joined, and a new one starts."""
+    sessions = tailnet_hub.client.app.fastapi.state.sessions
+    wall = [time.time()]
+    sessions.clock = lambda: wall[0]
+    link = tailnet_hub.sign_in().headers["x-hub-session"]
+    cookie = tailnet_hub.client.cookies["hub_session"]
+
+    def end():
+        if how == "signed out":
+            sessions.end(cookie)
+        else:
+            wall[0] += auth.SESSION_TTL_SECONDS + 1
+
+    ran = end_during_discovery_read(monkeypatch, end)
+    joined = tailnet_sign_in(tailnet_hub)
+    assert ran == [1] and joined.status_code == 204
+    assert "set-cookie" in joined.headers and tailnet_hub.client.cookies["hub_session"] != cookie  # a new session
+    assert not sessions.valid(cookie, link) and not sessions.valid(cookie, joined.headers["x-hub-session"])
+    assert tailnet_hub.get("/api/overview", headers={"X-Hub-Session": joined.headers["x-hub-session"]}).status_code \
+        == 200
