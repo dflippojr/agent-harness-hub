@@ -64,10 +64,16 @@ def signin_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def resolve_state_dir(path: Path) -> Path:
+    """The state directory both commands use: a `~` can arrive unexpanded (`--state-dir=~/...` in bash, a launcher)."""
+    return path.expanduser().resolve()
+
+
 def signin_link(argv: list[str]) -> int:
     parser = signin_parser()
     args = parser.parse_args(argv)
-    hub_url = (read_json(args.state_dir / SERVER_FILE, {}) or {}).get("url") or ""
+    state_dir = resolve_state_dir(args.state_dir)
+    hub_url = (read_json(state_dir / SERVER_FILE, {}) or {}).get("url") or ""
     url = args.url or hub_url or f"http://127.0.0.1:{DEFAULT_PORT}"
     try:
         url = normalize_public_url(url)
@@ -81,7 +87,7 @@ def signin_link(argv: list[str]) -> int:
               file=sys.stderr)
         return 1
     try:
-        code = create_signin_code(args.state_dir)
+        code = create_signin_code(state_dir)
     except SigninBusy:
         print("signin-link: another process is updating the sign-in codes; try again in a moment", file=sys.stderr)
         return 1
@@ -101,7 +107,7 @@ def serve(argv: list[str]) -> int:
     try:
         settings = Settings(
             daemon_url=normalize_daemon_url(args.daemon_url),
-            state_dir=args.state_dir.expanduser().resolve(),
+            state_dir=resolve_state_dir(args.state_dir),
             host=args.host,
             port=args.port,
             claim_file=args.claim_file.expanduser().resolve() if args.claim_file else None,
