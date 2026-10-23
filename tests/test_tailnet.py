@@ -680,9 +680,10 @@ SAME_ORIGIN = {"Origin": f"http://{HUB_HOST}"}  # Settings writes need it
 
 
 def grace_clock(hub) -> list[float]:
-    """Drive the Hub's session clock by hand; returns the list whose one value is now."""
-    now = [time.time()]
-    hub.client.app.fastapi.state.sessions.clock = lambda: now[0]
+    """Drive the Hub's monotonic session clock, which times the grace, by hand; returns the list whose one value is
+    now."""
+    now = [time.monotonic()]
+    hub.client.app.fastapi.state.sessions.monotonic = lambda: now[0]
     return now
 
 
@@ -772,3 +773,36 @@ def test_a_definite_no_within_the_grace_still_ends_the_tab_at_once(tailnet_hub, 
     assert tailnet_hub.get("/api/claim").status_code == 401
     fake_daemon.allowed_logins = [OWNER]
     assert tailnet_hub.get("/api/claim").status_code == 401  # ended for good, not held back for the grace
+
+
+def test_a_wall_clock_step_back_does_not_lengthen_the_grace(tailnet_hub, fake_daemon, monkeypatch):
+    """An NTP correction, a restored snapshot or a manual `date` during the outage moves the wall clock back; the grace
+    runs on the monotonic clock, so the tab still ends once it is over."""
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    now = grace_clock(tailnet_hub)
+    wall = [time.time()]
+    tailnet_hub.client.app.fastapi.state.sessions.clock = lambda: wall[0]
+    owner_tab(tailnet_hub)
+    fake_daemon.down = True
+    now[0] += hub_server.OUTAGE_GRACE_SECONDS + 1
+    wall[0] -= 3600
+    assert tailnet_hub.get("/api/claim").status_code == 401
+
+
+def test_the_grace_counts_from_the_daemon_read_that_listed_the_login(tailnet_hub, fake_daemon, monkeypatch):
+    """A request that reuses a kept yes does not move the grace's start: it is the time of the read that said yes."""
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    now = grace_clock(tailnet_hub)
+    owner_tab(tailnet_hub)
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 60.0)
+    assert tailnet_hub.get("/api/claim").status_code == 200  # the daemon's yes, kept for a minute
+    before = discovery_reads(fake_daemon)
+    now[0] += 50
+    assert tailnet_hub.get("/api/claim").status_code == 200  # the kept yes, from 50 seconds ago
+    assert discovery_reads(fake_daemon) == before
+    fake_daemon.down = True
+    now[0] += hub_server.OUTAGE_GRACE_SECONDS - 51
+    assert tailnet_hub.get("/api/claim").status_code == 200  # a fresh read: the daemon is down
+    assert discovery_reads(fake_daemon) == before + 1
+    now[0] += 2
+    assert tailnet_hub.get("/api/claim").status_code == 401  # past the grace from the read, not from the request
