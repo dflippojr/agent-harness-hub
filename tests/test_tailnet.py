@@ -7,6 +7,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from harness_hub.tailnet import (
     tcp_forwards,
 )
 
+from .conftest import HUB_HOST
 from .test_token_words import FULL_TOKENS
 
 OWNER = "owner@example.test"
@@ -671,3 +673,102 @@ def test_concurrent_requests_share_one_allowed_logins_read(tailnet_hub, fake_dae
         statuses = list(pool.map(lambda _: tailnet_hub.get("/api/claim").status_code, range(8)))
     assert statuses == [200] * 8
     assert discovery_reads(fake_daemon) == before + 1
+
+
+# The owner's call on #177: an outage keeps a tailnet tab only for a short grace after the daemon last listed its login.
+SAME_ORIGIN = {"Origin": f"http://{HUB_HOST}"}  # Settings writes need it
+
+
+def grace_clock(hub) -> list[float]:
+    """Drive the Hub's session clock by hand; returns the list whose one value is now."""
+    now = [time.time()]
+    hub.client.app.fastapi.state.sessions.clock = lambda: now[0]
+    return now
+
+
+def test_an_outage_within_the_grace_keeps_a_tailnet_tab(tailnet_hub, fake_daemon, monkeypatch):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    now = grace_clock(tailnet_hub)
+    owner_tab(tailnet_hub)
+    now[0] += 60
+    assert tailnet_hub.get("/api/claim").status_code == 200  # listed: the grace starts again from here
+    fake_daemon.down = True
+    now[0] += hub_server.OUTAGE_GRACE_SECONDS - 1
+    assert tailnet_hub.get("/api/claim").status_code == 200
+    assert tailnet_hub.get("/api/session").json()["signed_in"] is True
+
+
+@pytest.mark.parametrize("outage", ["unreachable", "restarting"])
+def test_an_outage_past_the_grace_answers_401_until_the_login_is_checked(tailnet_hub, fake_daemon, monkeypatch,
+                                                                          outage):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    now = grace_clock(tailnet_hub)
+    owner_tab(tailnet_hub)
+    if outage == "unreachable":
+        fake_daemon.down = True
+    else:
+        fake_daemon.discovery_status = 503
+    now[0] += hub_server.OUTAGE_GRACE_SECONDS + 1
+    ended = tailnet_hub.get("/api/overview")
+    assert ended.status_code == 401 and ended.json()["detail"] == "sign in first"
+    assert tailnet_hub.get("/api/session").json()["signed_in"] is False
+    fake_daemon.down = False
+    fake_daemon.discovery_status = None
+    # The daemon answers again and still lists the login: the same tab works, and the grace starts again.
+    assert tailnet_hub.get("/api/overview").status_code == 200
+    fake_daemon.down = True
+    now[0] += hub_server.OUTAGE_GRACE_SECONDS - 1
+    assert tailnet_hub.get("/api/claim").status_code == 200
+
+
+def test_a_restart_the_tab_asks_for_ends_it_once_the_grace_runs_out(tailnet_hub, fake_daemon, monkeypatch):
+    """The review's case: the owner removed the login from harness.local.yaml, which the daemon applies on a restart,
+    and the removed tab asks for that restart itself, through the Hub's Settings route, hoping to stay in while every
+    check lands in the outage."""
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    now = grace_clock(tailnet_hub)
+    owner_tab(tailnet_hub)
+    now[0] += 30
+    asked = tailnet_hub.post("/api/settings/restart", json={"revision": fake_daemon.revision, "confirm": True},
+                           headers=SAME_ORIGIN)
+    assert asked.status_code == 202, asked.text
+    fake_daemon.down = True  # the restart takes the daemon down, and it stays down
+    fake_daemon.allowed_logins = ["partner@example.test"]  # what it will list once it is back
+    now[0] += hub_server.OUTAGE_GRACE_SECONDS - 1
+    assert tailnet_hub.get("/api/claim").status_code == 200  # a short restart signs no one out
+    now[0] += 2
+    assert tailnet_hub.get("/api/claim").status_code == 401
+    again = tailnet_hub.post("/api/settings/restart", json={"revision": fake_daemon.revision, "confirm": True},
+                           headers=SAME_ORIGIN)
+    assert again.status_code == 401  # it cannot ask for another restart either
+    fake_daemon.down = False  # back, without the login: the tab ends for good
+    assert tailnet_hub.get("/api/claim").status_code == 401
+    fake_daemon.allowed_logins = [OWNER]
+    assert tailnet_hub.get("/api/claim").status_code == 401
+
+
+def test_a_burst_past_the_grace_makes_one_attempt(tailnet_hub, fake_daemon, monkeypatch):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    now = grace_clock(tailnet_hub)
+    owner_tab(tailnet_hub)
+    fake_daemon.down = True
+    now[0] += hub_server.OUTAGE_GRACE_SECONDS + 1
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 60.0)
+    before = discovery_reads(fake_daemon)
+    assert [tailnet_hub.get("/api/claim").status_code for _ in range(10)] == [401] * 10
+    assert discovery_reads(fake_daemon) == before + 1
+
+
+def test_a_definite_no_within_the_grace_still_ends_the_tab_at_once(tailnet_hub, fake_daemon, monkeypatch):
+    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    now = grace_clock(tailnet_hub)
+    owner_tab(tailnet_hub)
+    fake_daemon.down = True
+    now[0] += 10
+    assert tailnet_hub.get("/api/claim").status_code == 200
+    fake_daemon.down = False
+    fake_daemon.allowed_logins = []
+    now[0] += 1
+    assert tailnet_hub.get("/api/claim").status_code == 401
+    fake_daemon.allowed_logins = [OWNER]
+    assert tailnet_hub.get("/api/claim").status_code == 401  # ended for good, not held back for the grace

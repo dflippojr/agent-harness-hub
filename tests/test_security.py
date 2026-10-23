@@ -79,6 +79,25 @@ def test_revoking_a_sessions_last_binding_ends_the_session(tmp_path):
     assert fresh != cookie and sessions.valid(fresh, link) and sessions.login(fresh, link) is None
 
 
+def test_a_tailnet_binding_records_when_its_login_was_last_listed(tmp_path):
+    """#177: the server bounds an outage's grace from the last time the daemon listed the binding's login."""
+    now = [1000.0]
+    sessions = Sessions(tmp_path, clock=lambda: now[0])
+    cookie, link = sessions.redeem_code(create_signin_code(tmp_path, now=now[0]))
+    joined, tab = sessions.create(cookie, "owner@example.test")
+    now[0] += 30
+    assert sessions.binding(cookie, tab) == ("owner@example.test", 30.0)  # the sign-in was a listing
+    assert sessions.binding(cookie, link) == (None, 30.0)
+    sessions.confirm(cookie, tab)
+    now[0] += 5
+    assert sessions.binding(cookie, tab) == ("owner@example.test", 5.0)
+    assert sessions.binding(cookie, link) == (None, 35.0)
+    assert sessions.binding(cookie, "not-a-binding") is None and sessions.binding(None, tab) is None
+    sessions.revoke(cookie, tab)
+    sessions.confirm(cookie, tab)  # a binding that ended stays ended
+    assert sessions.binding(cookie, tab) is None and sessions.valid(cookie, link)
+
+
 def test_codes_are_stored_hashed(tmp_path):
     code = create_signin_code(tmp_path)
     assert code not in (tmp_path / "signin-codes.json").read_text(encoding="utf-8")
