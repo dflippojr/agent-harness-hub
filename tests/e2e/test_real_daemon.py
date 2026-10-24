@@ -76,7 +76,13 @@ def daemon(tmp_path_factory):
         f"listen:\n  port: {port}\ndata_dir: {data.as_posix()}\nrepos_dir: {repos.as_posix()}\n"
         "notify:\n  enabled: false\nallowed_logins: [owner@example.test]\n", encoding="utf-8")
     (config / "profile.yaml").write_text("profile: service\nmodules:\n  hub: true\n", encoding="utf-8")
-    daemon_env = dict(os.environ, HARNESS_SUPERVISED="1")
+    # The copied harness.yaml has hosted CLI backends, and the daemon checks their sign-in with `docker run <image>`.
+    # A runner has no such image, so each check would pull from a registry while a Settings read waits (#138). With
+    # no engine they fail at once, as they would after a refused pull, and the daemon answers the same.
+    no_engine = ("npipe:////./pipe/agent-harness-hub-e2e-no-docker" if os.name == "nt"
+                 else f"unix://{(root / 'no-docker.sock').as_posix()}")
+    daemon_env = dict(os.environ, HARNESS_SUPERVISED="1", DOCKER_HOST=no_engine)
+    daemon_env.pop("DOCKER_CONTEXT", None)
     log = (root / "daemon.log").open("w")
     def launch():
         return subprocess.Popen([DAEMON_PYTHON, "-m", "harness", "--config-dir", str(config)], cwd=src,
