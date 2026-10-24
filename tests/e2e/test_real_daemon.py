@@ -33,6 +33,7 @@ from harness_hub.views import ELEVATED_SCOPES, SCOPE_DISCLOSURES, owner_api_comp
 
 from ..conftest import assert_no_secrets
 from ..response_capture import capture_response
+from .conftest import started_logs
 
 pytestmark = pytest.mark.e2e
 
@@ -142,7 +143,9 @@ class Hub:
         self.bodies: list[str] = []
         self._cleanup = ExitStack()
         try:
-            self.log = self._cleanup.enter_context((state_dir.parent / f"hub-{self.port}.log").open("w"))
+            log_path = state_dir.parent / f"hub-{self.port}.log"
+            self.log = self._cleanup.enter_context(log_path.open("w"))
+            started_logs.append(log_path)
             self.proc = subprocess.Popen(args, stdout=self.log, stderr=subprocess.STDOUT)
             self._cleanup.callback(self._stop_process)
             self.http = httpx.Client(base_url=self.url, timeout=10, headers={"X-Hub-Request": "1"})
@@ -156,7 +159,12 @@ class Hub:
             raise
 
     def call(self, method: str, path: str, **kw) -> httpx.Response:
-        response = self.http.request(method, path, **kw)
+        started = time.monotonic()
+        try:
+            response = self.http.request(method, path, **kw)
+        except httpx.HTTPError as error:
+            error.add_note(f"{method} {path} on hub-{self.port} after {time.monotonic() - started:.1f} s")
+            raise
         return capture_response(self.bodies, response)
 
     def sign_in(self):
@@ -309,7 +317,8 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         # disabled state without ever exposing provider credentials.
         for resource in ("smart-approvals", "backends", "memory", "github", "google"):
             response = first.call("GET", "/api/settings/" + resource)
-            assert response.status_code in (200, 404), response.text
+            assert response.status_code in (200, 404), (
+                f"{resource}: {response.status_code} after {response.elapsed.total_seconds():.1f} s: {response.text}")
 
         # Owner administration: only aggregate household metadata is visible.
         member = first.call("POST", "/api/manage/account_add", headers=origin,
