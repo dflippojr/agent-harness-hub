@@ -43,7 +43,7 @@ def pytest_terminal_summary(terminalreporter):
     if not read_timings:
         return
     tw.section("TEMP #138 timings")
-    for line in read_timings:
+    for line in startup_timings + read_timings:
         tw.write_line(line)
     for args in (["docker", "version", "--format", "{{.Server.Os}} {{.Server.Version}}"],
                  ["docker", "image", "ls"],
@@ -56,3 +56,29 @@ def pytest_terminal_summary(terminalreporter):
         except (OSError, subprocess.TimeoutExpired) as error:
             result = repr(error)
         tw.write_line(f"{' '.join(args[:3])}: {time.monotonic() - started:.1f} s {result}")
+
+
+startup_timings: list[str] = []  # TEMP #138
+
+
+def pytest_sessionstart(session):  # TEMP #138: is the first docker start of the job slow on its own?
+    import os
+    import subprocess
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    if not os.environ.get("HUB_E2E_DAEMON_SRC"):
+        return
+    env = dict(os.environ, DOCKER_HOST="npipe:////./pipe/agent-harness-hub-e2e-no-docker" if os.name == "nt"
+               else "unix:///nonexistent/no-docker.sock")
+
+    def once(_):
+        started = time.monotonic()
+        try:
+            subprocess.run(["docker", "version"], env=env, capture_output=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return f"{error!r}"
+        return f"{time.monotonic() - started:.2f}"
+
+    for label in ("cold, 1", "warm, 3 parallel", "warm, 3 parallel"):
+        with ThreadPoolExecutor(3) as pool:
+            startup_timings.append(f"{label}: {list(pool.map(once, range(1 if label.startswith('cold') else 3)))}")
