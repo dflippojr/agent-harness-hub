@@ -33,7 +33,7 @@ from harness_hub.views import ELEVATED_SCOPES, SCOPE_DISCLOSURES, owner_api_comp
 
 from ..conftest import assert_no_secrets
 from ..response_capture import capture_response
-from .conftest import started_logs
+from .conftest import read_timings, started_logs  # TEMP #138
 
 pytestmark = pytest.mark.e2e
 
@@ -317,6 +317,7 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         # disabled state without ever exposing provider credentials.
         for resource in ("smart-approvals", "backends", "memory", "github", "google"):
             response = first.call("GET", "/api/settings/" + resource)
+            read_timings.append(f"{resource} {response.status_code} {response.elapsed.total_seconds():.2f}")  # TEMP
             assert response.status_code in (200, 404), (
                 f"{resource}: {response.status_code} after {response.elapsed.total_seconds():.1f} s: {response.text}")
 

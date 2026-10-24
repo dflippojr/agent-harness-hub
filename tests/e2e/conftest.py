@@ -30,3 +30,29 @@ def pytest_runtest_makereport(item, call):
     paths = ([daemon["root"] / "daemon.log"] if isinstance(daemon, dict) else []) + list(started_logs)
     for path in dict.fromkeys(paths):
         report.sections.append((f"{path.name} (last {LOG_TAIL} characters)", log_tail(path)))
+
+
+# TEMP #138 instrumentation: removed before the PR is ready.
+read_timings: list[str] = []
+
+
+def pytest_terminal_summary(terminalreporter):
+    import subprocess
+    import time
+    tw = terminalreporter
+    if not read_timings:
+        return
+    tw.section("TEMP #138 timings")
+    for line in read_timings:
+        tw.write_line(line)
+    for args in (["docker", "version", "--format", "{{.Server.Os}} {{.Server.Version}}"],
+                 ["docker", "image", "ls"],
+                 ["docker", "run", "--rm", "--network", "harness-cli-claude", "-e",
+                  "HTTPS_PROXY=http://harness-egress-claude:8888", "agent-harness-cli:1", "claude", "auth", "status"]):
+        started = time.monotonic()
+        try:
+            done = subprocess.run(args, capture_output=True, text=True, timeout=90)
+            result = f"rc={done.returncode} out={done.stdout[-300:]!r} err={done.stderr[-300:]!r}"
+        except (OSError, subprocess.TimeoutExpired) as error:
+            result = repr(error)
+        tw.write_line(f"{' '.join(args[:3])}: {time.monotonic() - started:.1f} s {result}")
