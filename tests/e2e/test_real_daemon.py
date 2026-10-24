@@ -33,6 +33,7 @@ from harness_hub.views import ELEVATED_SCOPES, SCOPE_DISCLOSURES, owner_api_comp
 
 from ..conftest import assert_no_secrets
 from ..response_capture import capture_response
+from .conftest import daemon_logs, started_logs
 
 pytestmark = pytest.mark.e2e
 
@@ -75,11 +76,17 @@ def daemon(tmp_path_factory):
         f"listen:\n  port: {port}\ndata_dir: {data.as_posix()}\nrepos_dir: {repos.as_posix()}\n"
         "notify:\n  enabled: false\nallowed_logins: [owner@example.test]\n", encoding="utf-8")
     (config / "profile.yaml").write_text("profile: service\nmodules:\n  hub: true\n", encoding="utf-8")
+    # The copied harness.yaml has hosted CLI backends, and the daemon checks their sign-in with `docker run <image>`.
+    # A runner has no such image, so each check would pull from a registry while a Settings read waits (#138). With
+    # no engine they fail at once, as they would after a refused pull, and the daemon answers the same.
+    no_engine = ("npipe:////./pipe/agent-harness-hub-e2e-no-docker" if os.name == "nt"
+                 else f"unix://{(root / 'no-docker.sock').as_posix()}")
+    daemon_env = dict(os.environ, HARNESS_SUPERVISED="1", DOCKER_HOST=no_engine)
+    daemon_env.pop("DOCKER_CONTEXT", None)
     log = (root / "daemon.log").open("w")
     def launch():
         return subprocess.Popen([DAEMON_PYTHON, "-m", "harness", "--config-dir", str(config)], cwd=src,
-                                env=dict(os.environ, HARNESS_SUPERVISED="1"),
-                                stdout=log, stderr=subprocess.STDOUT)
+                                env=daemon_env, stdout=log, stderr=subprocess.STDOUT)
 
     processes = [launch()]
     proc = processes[0]
@@ -106,7 +113,9 @@ def daemon(tmp_path_factory):
     env = dict(os.environ, HARNESS_CONFIG_DIR=str(config), HARNESS_URL=url)
     env.pop("HARNESS_TOKEN", None)
     env.pop("HARNESS_LOCAL_TOKEN", None)
-    yield {"url": url, "src": src, "env": env, "root": root, "processes": processes}
+    daemon_logs.append(root / "daemon.log")
+    yield {"url": url, "src": src, "env": env, "daemon_env": daemon_env, "root": root, "processes": processes}
+    daemon_logs.remove(root / "daemon.log")
     stopping.set()
     proc = processes[-1]
     proc.terminate()
@@ -142,7 +151,9 @@ class Hub:
         self.bodies: list[str] = []
         self._cleanup = ExitStack()
         try:
-            self.log = self._cleanup.enter_context((state_dir.parent / f"hub-{self.port}.log").open("w"))
+            log_path = state_dir.parent / f"hub-{self.port}.log"
+            self.log = self._cleanup.enter_context(log_path.open("w"))
+            started_logs.append(log_path)
             self.proc = subprocess.Popen(args, stdout=self.log, stderr=subprocess.STDOUT)
             self._cleanup.callback(self._stop_process)
             self.http = httpx.Client(base_url=self.url, timeout=10, headers={"X-Hub-Request": "1"})
@@ -156,7 +167,12 @@ class Hub:
             raise
 
     def call(self, method: str, path: str, **kw) -> httpx.Response:
-        response = self.http.request(method, path, **kw)
+        started = time.monotonic()
+        try:
+            response = self.http.request(method, path, **kw)
+        except httpx.HTTPError as error:
+            error.add_note(f"{method} {path} on hub-{self.port} after {time.monotonic() - started:.1f} s")
+            raise
         return capture_response(self.bodies, response)
 
     def sign_in(self):
@@ -309,7 +325,8 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         # disabled state without ever exposing provider credentials.
         for resource in ("smart-approvals", "backends", "memory", "github", "google"):
             response = first.call("GET", "/api/settings/" + resource)
-            assert response.status_code in (200, 404), response.text
+            assert response.status_code in (200, 404), (
+                f"{resource}: {response.status_code} after {response.elapsed.total_seconds():.1f} s: {response.text}")
 
         # Owner administration: only aggregate household metadata is visible.
         member = first.call("POST", "/api/manage/account_add", headers=origin,
@@ -637,3 +654,15 @@ def test_heartbeat_reads_the_real_daemons_health(daemon, tmp_path):
         assert status["build"] == "unknown" and status["started_at"] <= status["written_at"]
     finally:
         hub.stop()
+
+
+def test_the_daemon_has_no_docker_engine_to_wait_on(daemon):
+    """A Settings → Backends read runs one `docker run <CLI image> ... auth status` per hosted CLI backend, each allowed
+    30 s. A runner has no such image, so each one becomes a registry pull, which can outlast the Hub's and this
+    module's 10 s read timeout (#138). The daemon under test must find no engine, so every probe fails at once."""
+    try:
+        reply = subprocess.run(["docker", "version"], env=daemon["daemon_env"], capture_output=True, text=True,
+                               timeout=30)
+    except FileNotFoundError:
+        return  # no Docker CLI on this host: nothing to wait on
+    assert reply.returncode != 0, f"the daemon's Docker CLI reached an engine: {reply.stdout.strip()}"
