@@ -76,11 +76,11 @@ def daemon(tmp_path_factory):
         f"listen:\n  port: {port}\ndata_dir: {data.as_posix()}\nrepos_dir: {repos.as_posix()}\n"
         "notify:\n  enabled: false\nallowed_logins: [owner@example.test]\n", encoding="utf-8")
     (config / "profile.yaml").write_text("profile: service\nmodules:\n  hub: true\n", encoding="utf-8")
+    daemon_env = dict(os.environ, HARNESS_SUPERVISED="1")
     log = (root / "daemon.log").open("w")
     def launch():
         return subprocess.Popen([DAEMON_PYTHON, "-m", "harness", "--config-dir", str(config)], cwd=src,
-                                env=dict(os.environ, HARNESS_SUPERVISED="1"),
-                                stdout=log, stderr=subprocess.STDOUT)
+                                env=daemon_env, stdout=log, stderr=subprocess.STDOUT)
 
     processes = [launch()]
     proc = processes[0]
@@ -107,7 +107,7 @@ def daemon(tmp_path_factory):
     env = dict(os.environ, HARNESS_CONFIG_DIR=str(config), HARNESS_URL=url)
     env.pop("HARNESS_TOKEN", None)
     env.pop("HARNESS_LOCAL_TOKEN", None)
-    yield {"url": url, "src": src, "env": env, "root": root, "processes": processes}
+    yield {"url": url, "src": src, "env": env, "daemon_env": daemon_env, "root": root, "processes": processes}
     stopping.set()
     proc = processes[-1]
     proc.terminate()
@@ -647,3 +647,15 @@ def test_heartbeat_reads_the_real_daemons_health(daemon, tmp_path):
         assert status["build"] == "unknown" and status["started_at"] <= status["written_at"]
     finally:
         hub.stop()
+
+
+def test_the_daemon_has_no_docker_engine_to_wait_on(daemon):
+    """A Settings → Backends read runs one `docker run <CLI image> ... auth status` per hosted CLI backend, each allowed
+    30 s. A runner has no such image, so each one becomes a registry pull, which can outlast the Hub's and this
+    module's 10 s read timeout (#138). The daemon under test must find no engine, so every probe fails at once."""
+    try:
+        reply = subprocess.run(["docker", "version"], env=daemon["daemon_env"], capture_output=True, text=True,
+                               timeout=30)
+    except FileNotFoundError:
+        return  # no Docker CLI on this host: nothing to wait on
+    assert reply.returncode != 0, f"the daemon's Docker CLI reached an engine: {reply.stdout.strip()}"
