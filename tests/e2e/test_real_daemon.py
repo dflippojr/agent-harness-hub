@@ -33,7 +33,7 @@ from harness_hub.views import ELEVATED_SCOPES, SCOPE_DISCLOSURES, owner_api_comp
 
 from ..conftest import assert_no_secrets
 from ..response_capture import capture_response
-from .conftest import started_logs
+from .conftest import daemon_logs, started_logs
 
 pytestmark = pytest.mark.e2e
 
@@ -113,7 +113,9 @@ def daemon(tmp_path_factory):
     env = dict(os.environ, HARNESS_CONFIG_DIR=str(config), HARNESS_URL=url)
     env.pop("HARNESS_TOKEN", None)
     env.pop("HARNESS_LOCAL_TOKEN", None)
+    daemon_logs.append(root / "daemon.log")
     yield {"url": url, "src": src, "env": env, "daemon_env": daemon_env, "root": root, "processes": processes}
+    daemon_logs.remove(root / "daemon.log")
     stopping.set()
     proc = processes[-1]
     proc.terminate()

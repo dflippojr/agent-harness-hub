@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 
 LOG_TAIL = 4000
-# The logs the running test started; the daemon's is added per test from its fixture.
+# The running daemon's log (for every test while the module's daemon is up, whether or not the test uses it), and
+# the Hub logs the running test started.
+daemon_logs: list[Path] = []
 started_logs: list[Path] = []
 
 
@@ -26,7 +28,5 @@ def pytest_runtest_makereport(item, call):
     report = outcome.get_result()
     if not report.failed:
         return
-    daemon = item.funcargs.get("daemon")
-    paths = ([daemon["root"] / "daemon.log"] if isinstance(daemon, dict) else []) + list(started_logs)
-    for path in dict.fromkeys(paths):
+    for path in dict.fromkeys(daemon_logs + started_logs):
         report.sections.append((f"{path.name} (last {LOG_TAIL} characters)", log_tail(path)))
