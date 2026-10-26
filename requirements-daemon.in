@@ -1,15 +1,15 @@
-# Daemon requirements at 3d3b806a4445254423af52d753171bc497ca1be9 (CI fixture only).
+# Daemon requirements at f9d3a1af045cfd8da93b0f85269ac44b64bc9769 (CI fixture only).
 httpx>=0.28.1
-pyyaml>=6
+pyyaml>=6.0.3
 fastapi>=0.143.0
 uvicorn>=0.54.0
 pytest>=9.1.1
 jsonschema>=4.26.0
-trafilatura>=2.3.0
+trafilatura>=2.3.1
 lxml_html_clean>=0.4.5
-pypdf>=6.19.0
-psutil>=5.9
-pillow>=12.3.0
+pypdf>=6.21.2
+psutil>=7.2.2
+pillow>=13.0.0
 python-multipart>=0.0.32
 PyJWT[crypto]>=2.15.1
 cryptography>=50.0.2
