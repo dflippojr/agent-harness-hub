@@ -37,18 +37,13 @@ MESSAGES = {
 }
 
 
-def _str(value: Any, limit: int = 200) -> str:
-    if not isinstance(value, str):
-        return ""
-    for token in TOKEN_SHAPE.finditer(value):
-        if token.start() >= limit:
-            break
-        if limit < token.end():
-            return value[:token.end()]  # Cut short, it would pass the guard: keep it whole so the view is withheld.
-    return value[:limit]
-
-
 REDACTED = "[withheld: token-shaped]"
+# How display_text hides a key's display prefix (`ho-LW5TqUX`) or anything shaped like one (#189).
+FIELD = "field"  # One anywhere in the value, a full token too, replaces the entire field. The strongest: the default.
+WORD = "word"  # Daemon diagnostics, which can echo a prefix: each one is redacted in place, a full token left in place.
+GUARD = "guard"  # Text whose ordinary words (`hp-instruct-7b`) must stay readable (#84): only the guard checks it.
+REDACT_MODES = (FIELD, WORD, GUARD)
+CONTROL_CATEGORIES = {"Cc", "Cf"}
 
 
 def _prefix(match: re.Match) -> str:
@@ -56,10 +51,33 @@ def _prefix(match: re.Match) -> str:
     return match[0] if TOKEN_SHAPE.match(match[0]) else REDACTED
 
 
-def _diagnostic_text(value: Any, limit: int = 200) -> str:
-    """Daemon diagnostic text, which can echo a key's display prefix: each token-shaped word is redacted in place."""
-    # Cut first: a token cut short at the limit is then redacted, not passed under the guard's full-length shape.
-    return KEY_PREFIX_SHAPE.sub(_prefix, value[:limit]) if isinstance(value, str) else ""
+def display_text(value: Any, limit: int = 200, *, secrets: tuple[str, ...] = (), strip_controls: bool = False,
+                 redact: str = FIELD) -> str:
+    """Daemon or publisher text as the browser may see it, cut to `limit`: the one place display text is redacted.
+
+    An exact known secret is returned whole, so the response guard withholds the entire view. `strip_controls` first
+    drops control and format characters, so publisher text cannot reorder surrounding labels or carry invisible
+    controls. `redact` is FIELD, WORD or GUARD, above."""
+    if redact not in REDACT_MODES:
+        raise ValueError(f"unknown redaction mode {redact!r}")
+    if not isinstance(value, str):
+        return ""
+    if strip_controls:
+        value = "".join(char for char in value if unicodedata.category(char) not in CONTROL_CATEGORIES)
+    for secret in secrets:
+        if secret and secret in value:
+            return secret  # The response guard must withhold the entire view.
+    if redact == WORD:
+        # Cut first: a token cut short at the limit is then redacted, not passed under the guard's full-length shape.
+        return KEY_PREFIX_SHAPE.sub(_prefix, value[:limit])
+    if redact == FIELD and KEY_PREFIX_SHAPE.search(value):
+        return REDACTED
+    for token in TOKEN_SHAPE.finditer(value):
+        if token.start() >= limit:
+            break
+        if limit < token.end():
+            return value[:token.end()]  # Cut short, it would pass the guard: keep it whole so the view is withheld.
+    return value[:limit]
 
 
 def _bool(value: Any) -> bool | None:
@@ -77,11 +95,13 @@ def _int(value: Any) -> int | None:
 def _flags(value: Any) -> dict[str, bool]:
     if not isinstance(value, dict):
         return {}
-    return {_str(k, 64): v for k, v in list(value.items())[:64] if isinstance(k, str) and isinstance(v, bool)}
+    return {display_text(k, 64, redact=GUARD): v for k, v in list(value.items())[:64]
+            if isinstance(k, str) and isinstance(v, bool)}
 
 
 def _names(value: Any) -> list[str]:
-    return [_str(v, 64) for v in value[:32] if isinstance(v, str)] if isinstance(value, list) else []
+    return [display_text(v, 64, redact=GUARD) for v in value[:32]
+            if isinstance(v, str)] if isinstance(value, list) else []
 
 
 def _protocols(value: Any) -> dict[str, dict[str, int]]:
@@ -90,7 +110,8 @@ def _protocols(value: Any) -> dict[str, dict[str, int]]:
     out = {}
     for name, span in list(value.items())[:8]:
         if isinstance(name, str) and isinstance(span, dict):
-            out[_str(name, 32)] = {k: span[k] for k in ("min", "max") if isinstance(span.get(k), int)}
+            out[display_text(name, 32, redact=GUARD)] = {k: span[k] for k in ("min", "max")
+                                                         if isinstance(span.get(k), int)}
     return out
 
 
@@ -103,7 +124,7 @@ def claim_view(claims: ClaimManager) -> dict:
                     expires_at=claim["expires_at"], approve_command=claims.approve_command(claim))
     elif state == CLAIMED:
         key = claims.key() or {}
-        view.update(key_id=_str(key.get("key_id"), 64), claimed_at=_num(key.get("claimed_at")))
+        view.update(key_id=display_text(key.get("key_id"), 64, redact=GUARD), claimed_at=_num(key.get("claimed_at")))
     return view
 
 
@@ -113,9 +134,9 @@ def health_view(body: Any) -> dict:
     config = body.get("config") if isinstance(body.get("config"), dict) else {}
     return {
         "daemon": {
-            "release": _str(body.get("release"), 64),
-            "build_id": _str(body.get("build_id"), 64),
-            "profile": _str(body.get("profile") or caps.get("profile"), 32),
+            "release": display_text(body.get("release"), 64, redact=GUARD),
+            "build_id": display_text(body.get("build_id"), 64, redact=GUARD),
+            "profile": display_text(body.get("profile") or caps.get("profile"), 32, redact=GUARD),
             "protocols": _protocols(body.get("protocols")),
         },
         "health": {
@@ -126,7 +147,7 @@ def health_view(body: Any) -> dict:
             "recovery": recovery_view(config.get("recovery")),
         },
         "capabilities": {
-            "profile": _str(caps.get("profile"), 32),
+            "profile": display_text(caps.get("profile"), 32, redact=GUARD),
             "required": _flags(caps.get("required")),
             "modules": _flags(caps.get("modules")),
             "hosted_backends": _names(caps.get("hosted_backends")),
@@ -160,9 +181,11 @@ def ownership_view(discovery: Any, hub_claim: Any, key_id: str) -> dict:
     record = hub_claim.get("hub") if isinstance(hub_claim.get("hub"), dict) else None
     shown = None
     if record:
-        shown = {"name": _str(record.get("name"), 120), "kind": _str(record.get("kind"), 16),
-                 "key_id": _str(record.get("key_id"), 64), "claimed_at": _num(record.get("claimed_at"))}
-    api_version = _str(discovery.get("api_version"), 16)
+        shown = {"name": display_text(record.get("name"), 120, redact=GUARD),
+                 "kind": display_text(record.get("kind"), 16, redact=GUARD),
+                 "key_id": display_text(record.get("key_id"), 64, redact=GUARD),
+                 "claimed_at": _num(record.get("claimed_at"))}
+    api_version = display_text(discovery.get("api_version"), 16, redact=GUARD)
     return {
         "api_version": api_version,
         "compatibility": owner_api_compatibility(api_version),
@@ -198,7 +221,8 @@ def setting_value(value: Any) -> Any:
 def field_errors(value: Any) -> dict:
     if not isinstance(value, dict):
         return {}
-    return {key: {"code": _str(row.get("code"), 64), "message": _diagnostic_text(row.get("message"), 2000)}
+    return {key: {"code": display_text(row.get("code"), 64, redact=GUARD),
+                  "message": display_text(row.get("message"), 2000, redact=WORD)}
             for key, row in value.items() if isinstance(key, str) and isinstance(row, dict)}
 
 
@@ -206,16 +230,17 @@ def settings_error(body: Any, status: int) -> dict:
     body = body if isinstance(body, dict) else {}
     error = body.get("error") if isinstance(body.get("error"), dict) else {}
     details = error.get("details") if isinstance(error.get("details"), dict) else {}
-    return {"detail": _diagnostic_text(body.get("detail"), 2000) or f"The daemon answered HTTP {status}",
-            "error": {"code": _str(error.get("code"), 64), "keys": field_errors(error.get("keys")),
+    return {"detail": display_text(body.get("detail"), 2000, redact=WORD) or f"The daemon answered HTTP {status}",
+            "error": {"code": display_text(error.get("code"), 64, redact=GUARD),
+                      "keys": field_errors(error.get("keys")),
                       "details": {"expected_revision": _num(details.get("expected_revision")),
                                   "current_revision": _num(details.get("current_revision")),
-                                  "manual": _diagnostic_text(details.get("manual"), 1000)}}}
+                                  "manual": display_text(details.get("manual"), 1000, redact=WORD)}}}
 
 
 def registry_entry(body: Any) -> dict:
     body = body if isinstance(body, dict) else {}
-    out = {key: _str(body.get(key), 4000) for key in
+    out = {key: display_text(body.get(key), 4000, redact=GUARD) for key in
            ("key", "label", "help", "category", "type", "scope", "apply", "sensitivity", "guidance", "source")}
     out.update({key: _bool(body.get(key)) for key in ("readable", "writable", "available", "file_only")})
     out.update({key: _num(body.get(key)) for key in ("minimum", "maximum")})
@@ -236,22 +261,24 @@ def registry_view(body: Any) -> dict:
            ("schema_version", "revision", "pending_revision", "target_revision")},
         **{key: _bool(body.get(key)) for key in
            ("confirmed", "supervised_restart", "restart_required", "accepted")},
-        "status": _str(body.get("status"), 64),
+        "status": display_text(body.get("status"), 64, redact=GUARD),
         "recovery": recovery_view(body.get("recovery")),
-        "warning": _diagnostic_text(body.get("warning"), 2000),
+        "warning": display_text(body.get("warning"), 2000, redact=WORD),
         "settings": [registry_entry(row) for row in rows],
-        "changes": [{"key": _str(row.get("key"), 200), "from": setting_value(row.get("from")),
-                     "to": setting_value(row.get("to")), "apply": _str(row.get("apply"), 32),
-                     "action": _str(row.get("action"), 32)} for row in changes if isinstance(row, dict)],
+        "changes": [{"key": display_text(row.get("key"), 200, redact=GUARD), "from": setting_value(row.get("from")),
+                     "to": setting_value(row.get("to")), "apply": display_text(row.get("apply"), 32, redact=GUARD),
+                     "action": display_text(row.get("action"), 32, redact=GUARD)}
+                    for row in changes if isinstance(row, dict)],
         "errors": field_errors(body.get("errors")),
     }
 
 
 def recovery_view(value: Any) -> dict | None:
     if not isinstance(value, dict):
-        return {"recovery": _str(value, 64)} if isinstance(value, str) and value else None
-    return {"recovery": _str(value.get("recovery"), 64), "reason": _diagnostic_text(value.get("reason"), 2000),
-            "warning": _diagnostic_text(value.get("warning"), 2000), "at": _num(value.get("at"))}
+        return {"recovery": display_text(value, 64, redact=GUARD)} if isinstance(value, str) and value else None
+    return {"recovery": display_text(value.get("recovery"), 64, redact=GUARD),
+            "reason": display_text(value.get("reason"), 2000, redact=WORD),
+            "warning": display_text(value.get("warning"), 2000, redact=WORD), "at": _num(value.get("at"))}
 
 
 def preflight_view(value: Any) -> dict | None:
@@ -259,16 +286,18 @@ def preflight_view(value: Any) -> dict | None:
         return None
     problems = value.get("problems") if isinstance(value.get("problems"), list) else []
     return {"ok": _bool(value.get("ok")),
-            "problems": [_diagnostic_text(v, 64) for v in problems[:32] if isinstance(v, str)],
+            "problems": [display_text(v, 64, redact=WORD) for v in problems[:32] if isinstance(v, str)],
             "checked_at": _num(value.get("checked_at"))}
 
 
 def backend_view(value: Any) -> dict:
     value = value if isinstance(value, dict) else {}
     models = value.get("popular_models") if isinstance(value.get("popular_models"), list) else []
-    return {"name": _str(value.get("name"), 80), "model": _str(value.get("model"), 200),
-            "effort": _str(value.get("effort"), 32), "available": _bool(value.get("available")),
-            "popular_models": [{"id": _str(row.get("id"), 200), "label": _str(row.get("label"), 200)}
+    return {"name": display_text(value.get("name"), 80, redact=GUARD),
+            "model": display_text(value.get("model"), 200, redact=GUARD),
+            "effort": display_text(value.get("effort"), 32, redact=GUARD), "available": _bool(value.get("available")),
+            "popular_models": [{"id": display_text(row.get("id"), 200, redact=GUARD),
+                                "label": display_text(row.get("label"), 200, redact=GUARD)}
                                for row in models if isinstance(row, dict)]}
 
 
@@ -285,18 +314,20 @@ def control_view(operation: str, body: Any, installed: bool = True) -> Any:
         return backend_view(body)
     body = body if isinstance(body, dict) else {}
     if operation in ("smart", "smart_save"):
-        return {"mode": _str(body.get("mode"), 32), "enabled": _bool(body.get("enabled")),
+        return {"mode": display_text(body.get("mode"), 32, redact=GUARD), "enabled": _bool(body.get("enabled")),
                 "configured": _bool(body.get("configured")),
-                "secret_ref": _diagnostic_text(body.get("secret_ref"), 4000)}
+                "secret_ref": display_text(body.get("secret_ref"), 4000, redact=WORD)}
     if operation in ("memory", "memory_save"):
         commit = body.get("last_commit") if isinstance(body.get("last_commit"), dict) else {}
         return {"installed": installed, "enabled": _bool(body.get("enabled")),
                 "profile": body.get("profile") if isinstance(body.get("profile"), str) else "",
                 "profile_max_chars": _num(body.get("profile_max_chars")),
-                "last_commit": {"head": _str(commit.get("head"), 64), "path": _str(commit.get("path"), 4000),
-                                "summary": _str(commit.get("summary"), 200), "at": _num(commit.get("at")),
+                "last_commit": {"head": display_text(commit.get("head"), 64, redact=GUARD),
+                                "path": display_text(commit.get("path"), 4000, redact=GUARD),
+                                "summary": display_text(commit.get("summary"), 200, redact=GUARD),
+                                "at": _num(commit.get("at")),
                                 "pushed": _bool(commit.get("pushed"))},
-                "refresh_error": _diagnostic_text(body.get("refresh_error"), 2000)}
+                "refresh_error": display_text(body.get("refresh_error"), 2000, redact=WORD)}
     if operation in ("github", "github_save"):
         return {"enabled": _bool(body.get("enabled")), "configured": _bool(body.get("configured")),
                 "preflight": preflight_view(body.get("preflight"))}
@@ -311,7 +342,7 @@ def module_view(body: Any) -> list[dict]:
     rows = body.get("modules", []) if isinstance(body, dict) else []
     out = []
     for row in rows:
-        shown = {"name": _str(row.get("name"), 200), "state": row.get("state")}
+        shown = {"name": display_text(row.get("name"), 200, redact=GUARD), "state": row.get("state")}
         detail = row.get("status")
         if isinstance(detail, dict):
             fields = {}
@@ -319,7 +350,7 @@ def module_view(body: Any) -> list[dict]:
                 if not isinstance(key, str) or len(key) > 200:
                     continue
                 if isinstance(value, str):
-                    fields[key] = _diagnostic_text(value, 200)
+                    fields[key] = display_text(value, 200, redact=WORD)
                 elif value is None or type(value) is bool or type(value) is int and value.bit_length() <= 64 or (
                         type(value) is float and math.isfinite(value)):
                     fields[key] = value
@@ -347,31 +378,21 @@ def _app_id(value: Any) -> str:
     return value if isinstance(value, str) and ID_SEGMENT.fullmatch(value) else ""
 
 
-def _app_text(value: Any, limit: int = 200, secrets: tuple[str, ...] = ()) -> str:
-    """Redact token-shaped display text without masking an exact credential leak from the guard."""
-    if isinstance(value, str):
-        for secret in secrets:
-            if secret and secret in value:
-                return secret  # The response guard must withhold the entire view.
-        if KEY_PREFIX_SHAPE.search(value):
-            return REDACTED
-    return _str(value, limit)
-
-
 def app_view(row: Any, key_id: str = "", secrets: tuple[str, ...] = ()) -> dict:
     row = row if isinstance(row, dict) else {}
     store = row.get("store") if isinstance(row.get("store"), dict) else {}
     usage = store.get("usage")
     sessions = store.get("sessions") if isinstance(store.get("sessions"), dict) else {}
-    out = {key: _str(row.get(key), 200) for key in ("id", "name", "kind", "role", "catalog_app_id")}
+    out = {key: display_text(row.get(key), 200, redact=GUARD)
+           for key in ("id", "name", "kind", "role", "catalog_app_id")}
     out["id"] = _app_id(row.get("id"))
     for field in ("name", "catalog_app_id"):
-        out[field] = _app_text(row.get(field), secrets=secrets)
+        out[field] = display_text(row.get(field), secrets=secrets)
     out.update({key: _finite(row.get(key)) for key in
                 ("created_at", "last_used_at", "token_age_seconds", "revoked_at", "erase_after", "erased_at",
                  "retention_days")})
-    out["scopes"] = _app_text(row.get("scopes"), 2000, secrets)
-    out["origins"] = [_app_text(origin, 2000, secrets) for origin in row.get("origins", [])[:32]
+    out["scopes"] = display_text(row.get("scopes"), 2000, secrets=secrets)
+    out["origins"] = [display_text(origin, 2000, secrets=secrets) for origin in row.get("origins", [])[:32]
                       if isinstance(origin, str)] if isinstance(row.get("origins"), list) else []
     state = row.get("state")
     out["state"] = state if isinstance(state, str) and state in APP_STATES else "unknown"
@@ -381,7 +402,7 @@ def app_view(row: Any, key_id: str = "", secrets: tuple[str, ...] = ()) -> dict:
     out["store"] = {
         "sessions": {key: _int(sessions[key]) for key in SESSION_STATES if key in sessions},
         "usage": usage_tally(usage),
-        "errors": _int(store.get("errors")), "last_error": _app_text(store.get("last_error"), 200, secrets),
+        "errors": _int(store.get("errors")), "last_error": display_text(store.get("last_error"), 200, secrets=secrets),
         "last_error_at": _finite(store.get("last_error_at")),
     }
     return out
@@ -395,16 +416,17 @@ def apps_view(body: Any, key_id: str, secrets: tuple[str, ...] = ()) -> dict:
             continue
         manifest = row.get("manifest") if isinstance(row.get("manifest"), dict) else {}
         app = manifest.get("app") if isinstance(manifest.get("app"), dict) else {}
-        entries.append({"catalog_app_id": _app_text(row.get("catalog_app_id"), 200, secrets),
-                        "name": _app_text(app.get("display_name"), 200, secrets),
-                        "state": _str(row.get("state"), 32), "paired": _names(row.get("paired")),
+        entries.append({"catalog_app_id": display_text(row.get("catalog_app_id"), 200, secrets=secrets),
+                        "name": display_text(app.get("display_name"), 200, secrets=secrets),
+                        "state": display_text(row.get("state"), 32, redact=GUARD), "paired": _names(row.get("paired")),
                         "verified": row.get("verified") is True})
     return {"apps": [app_view(row, key_id, secrets) for row in body.get("apps", []) if isinstance(row, dict)],
             "entries": entries}
 
 
 def erasures_view(body: Any, secrets: tuple[str, ...] = ()) -> list[dict]:
-    return [{"id": _app_id(row.get("id")), **{key: _app_text(row.get(key), 200, secrets) for key in ("name", "kind")},
+    return [{"id": _app_id(row.get("id")),
+             **{key: display_text(row.get(key), 200, secrets=secrets) for key in ("name", "kind")},
              **{key: _finite(row.get(key)) for key in ("revoked_at", "erase_after")}}
             for row in body if isinstance(row, dict) and _app_id(row.get("id"))] if isinstance(body, list) else []
 
@@ -430,7 +452,7 @@ def valid_limits(body: Any) -> bool:
 
 def limits_view(body: Any) -> dict:
     body = body if isinstance(body, dict) else {}
-    out = {"app_id": _str(body.get("app_id"), 200)}
+    out = {"app_id": display_text(body.get("app_id"), 200, redact=GUARD)}
     for group in ("configured", "effective"):
         values = body.get(group) if isinstance(body.get(group), dict) else {}
         out[group] = {key: _int(values.get(key)) for key in ("max_running", "max_queued")}
@@ -482,9 +504,10 @@ def spend_view(inventory: Any, backends: Any, limits: dict, key_id: str, secrets
     for row in backends if isinstance(backends, list) else []:
         if not isinstance(row, dict):
             continue
-        billing = _str(row.get("billing"), 32)
+        billing = display_text(row.get("billing"), 32, redact=GUARD)
         local = billing == "local"
-        out_backends.append({"name": _app_text(row.get("name"), 80, secrets), "billing": billing, "local": local,
+        out_backends.append({"name": display_text(row.get("name"), 80, secrets=secrets), "billing": billing,
+                             "local": local,
                              "today": usage_tally(row.get("today"), local),
                              "week": usage_tally(row.get("week"), local)})
     return {"apps": apps, "backends": out_backends}
@@ -602,7 +625,7 @@ def project(value: Any, schema: Any, secrets: tuple[str, ...] = ()) -> Any:
     if schema in (TEXT, LONG, IDENTIFIER, HASH):
         if not isinstance(value, str):
             raise ValueError("Invalid daemon text")
-        shown = _app_text(value, 262144 if schema == LONG else 32768, secrets)
+        shown = display_text(value, 262144 if schema == LONG else 32768, secrets=secrets)
         if schema in (IDENTIFIER, HASH) and not any(secret and secret in value for secret in secrets):
             pattern = TARGET if schema == IDENTIFIER else re.compile(r"[a-fA-F0-9]{64}")
             return value if pattern.fullmatch(value) and shown == value else ""
@@ -665,14 +688,14 @@ def pairing_request_view(row: Any, secrets: tuple[str, ...] = ()) -> dict:
     row = row if isinstance(row, dict) else {}
     kind = row.get("kind") if row.get("kind") in ("app", "hub") else "unknown"
     state = row.get("state") if row.get("state") in PAIRING_STATES else "unknown"
-    scopes = [_app_text(s, 64, secrets) for s in row.get("scopes", [])[:32] if isinstance(s, str)] if isinstance(
-        row.get("scopes"), list) else []
+    scopes = [display_text(s, 64, secrets=secrets) for s in row.get("scopes", [])[:32]
+              if isinstance(s, str)] if isinstance(row.get("scopes"), list) else []
     disclosures = []
     for item in row.get("disclosures", [])[:32] if isinstance(row.get("disclosures"), list) else []:
         if isinstance(item, dict) and isinstance(item.get("scope"), str):
-            disclosures.append({"scope": _app_text(item["scope"], 64, secrets),
+            disclosures.append({"scope": display_text(item["scope"], 64, secrets=secrets),
                                 "tier": "elevated" if item.get("tier") == "elevated" else "standard",
-                                "text": _app_text(item.get("text"), 4000, secrets)})
+                                "text": display_text(item.get("text"), 4000, secrets=secrets)})
     flagged = set(_names(row.get("elevated"))) | {d["scope"] for d in disclosures if d["tier"] == "elevated"}
     elevated = [s for s in scopes if s in ELEVATED_SCOPES or s in flagged or s == "admin"]
     for item in disclosures:
@@ -681,9 +704,9 @@ def pairing_request_view(row: Any, secrets: tuple[str, ...] = ()) -> dict:
     # Owner decision: codes come only from the App's screen, never from an owner listing (#519 step 2).
     needs = row.get("needs") if row.get("needs") in PAIRING_NEEDS else ""
     return {"id": _app_id(row.get("id")), "kind": kind, "state": state, "needs": needs,
-            "name": _app_text(row.get("name"), 120, secrets),
-            "catalog_app_id": _app_text(row.get("catalog_app_id"), 200, secrets),
-            "origin": _app_text(row.get("origin"), 500, secrets),
+            "name": display_text(row.get("name"), 120, secrets=secrets),
+            "catalog_app_id": display_text(row.get("catalog_app_id"), 200, secrets=secrets),
+            "origin": display_text(row.get("origin"), 500, secrets=secrets),
             "browser": row.get("browser") is True, "armed": row.get("armed") is True,
             "scopes": scopes, "elevated": elevated, "disclosures": disclosures,
             "key_id": _app_id(row.get("key_id")),
@@ -749,13 +772,6 @@ def _key_ids(value: Any) -> list[str]:
     return [_app_id(v) for v in value[:64] if _app_id(v)] if isinstance(value, list) else []
 
 
-def entry_text(value: Any, limit: int = 200, secrets: tuple[str, ...] = ()) -> str:
-    """Publisher display text cannot reorder surrounding labels or carry invisible controls."""
-    if isinstance(value, str):
-        value = "".join(char for char in value if unicodedata.category(char) not in {"Cc", "Cf"})
-    return _app_text(value, limit, secrets)
-
-
 def normalize_origin(value: str) -> str:
     """Mirror the daemon's apps.normalize_origin for entry binding comparisons."""
     parsed = urlsplit(value.strip())
@@ -789,7 +805,7 @@ def scope_disclosures(value: Any, scopes: list[str], secrets: tuple[str, ...] = 
                 item.get("tier") not in ("standard", "elevated")) or not isinstance(item.get("text"), str):
             return None
         text = item["text"]
-        if (not text.strip() or _app_text(text, 4000, secrets) != text or item["scope"] in by_scope
+        if (not text.strip() or display_text(text, 4000, secrets=secrets) != text or item["scope"] in by_scope
                 or any(secret and secret in text for secret in secrets)):
             return None
         by_scope[item["scope"]] = {key: item[key] for key in ("scope", "tier", "text")}
@@ -817,13 +833,14 @@ def entry_view(row: Any, secrets: tuple[str, ...] = ()) -> dict | None:
             return None
         tier = "elevated" if scope in ELEVATED_SCOPES or item.get("risk_tier") == "elevated" else "standard"
         scopes.append({"scope": scope, "tier": tier, "text": SCOPE_DISCLOSURES.get(scope, ""),
-                       "justification": entry_text(item.get("justification"), 1000, secrets)})
+                       "justification": display_text(item.get("justification"), 1000, secrets=secrets,
+                                                     strip_controls=True)})
     if not scopes:
         return None
     origins = app.get("browser_origins") if isinstance(app.get("browser_origins"), list) else []
     # Binding fields must survive the display projection exactly: never arm a prefix or a redacted value.
     if len(origins) > 8 or any(not isinstance(origin, str) or len(origin) > 300
-                               or _app_text(origin, 300) != origin
+                               or display_text(origin, 300) != origin
                                or any(unicodedata.category(char) in {"Cc", "Cf"} for char in origin)
                                for origin in origins):
         return None
@@ -834,11 +851,12 @@ def entry_view(row: Any, secrets: tuple[str, ...] = ()) -> dict | None:
         return None
     unverified = row.get("unverified_origin") if isinstance(row.get("unverified_origin"), dict) else {}
     icon = app.get("icon")
-    shown = {"catalog_app_id": catalog_app_id, "name": entry_text(app.get("display_name"), 80, secrets),
-            "version": entry_text(app.get("version"), 64, secrets),
-            "summary": entry_text(app.get("summary"), 280, secrets),
-            "publisher": {"name": entry_text(publisher.get("name"), 80, secrets),
-                          "id": entry_text(publisher.get("id"), 64, secrets)},
+    shown = {"catalog_app_id": catalog_app_id,
+            "name": display_text(app.get("display_name"), 80, secrets=secrets, strip_controls=True),
+            "version": display_text(app.get("version"), 64, secrets=secrets, strip_controls=True),
+            "summary": display_text(app.get("summary"), 280, secrets=secrets, strip_controls=True),
+            "publisher": {"name": display_text(publisher.get("name"), 80, secrets=secrets, strip_controls=True),
+                          "id": display_text(publisher.get("id"), 64, secrets=secrets, strip_controls=True)},
             "icon": icon if isinstance(icon, str) and INLINE_ICON.fullmatch(icon) else "",
             "scopes": scopes, "elevated": [item["scope"] for item in scopes if item["tier"] == "elevated"],
             "browser_origins": list(origins),
