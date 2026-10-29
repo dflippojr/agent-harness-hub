@@ -1059,10 +1059,10 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     @app.get("/api/manage/catalog")
     async def administration_catalog():
-        return {"operations": [{"id": name, "group": spec[0], "label": spec[1], "cli": spec[2],
-                                "fields": [{"name": field, "type": kind, "required": field in spec[4]}
-                                           for field, kind in spec[3].items()],
-                                "confirmation": spec[5], "method": ADMIN_ROUTES[name][0],
+        return {"operations": [{"id": name, "group": spec.group, "label": spec.label, "cli": spec.cli,
+                                "fields": [{"name": field, "type": kind, "required": field in spec.required}
+                                           for field, kind in spec.fields.items()],
+                                "confirmation": spec.confirmation, "method": ADMIN_ROUTES[name][0],
                                 "targets": re.findall(r"{(\w+)}", ADMIN_ROUTES[name][1])}
                                for name, spec in OPERATIONS.items()],
                 "not_offered": [
@@ -1090,7 +1090,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         body = None
         try:
             if request.method == "GET":
-                fields = OPERATIONS[operation][3]
+                fields = OPERATIONS[operation].fields
                 if set(params) - set(fields):
                     return _error(400, "Unexpected query fields")
                 for name, value in params.items():
