@@ -39,14 +39,13 @@ MESSAGES = {
 
 REDACTED = "[withheld: token-shaped]"
 # How display_text hides a key's display prefix (`ho-LW5TqUX`) or anything shaped like one (#189).
-# FIELD, the default and the strongest: one anywhere in the value, a full token too, replaces the entire field, and so
-# does one that appears only with or only without control and format characters (`h\u200bo-LW5TqUX`), unless the
-# guard would withhold the view anyway.
+# FIELD, the default and the strongest: one anywhere in the value, a full token too, replaces the entire field, as does
+# one only the text with or without control and format characters shows (`h\u200bo-x`), unless the guard would withhold
+# it anyway (`guarded`: the guard's secrets, from a caller that must not return them as `secrets` would).
 FIELD = "field"
 WORD = "word"  # Daemon diagnostics, which can echo a prefix: each one is redacted in place, a full token left in place.
 GUARD = "guard"  # Text whose ordinary words (`hp-instruct-7b`) must stay readable (#84): only the guard checks it.
 REDACT_MODES = (FIELD, WORD, GUARD)
-CONTROL_CATEGORIES = {"Cc", "Cf"}
 
 
 def _prefix(match: re.Match) -> str:
@@ -55,17 +54,16 @@ def _prefix(match: re.Match) -> str:
 
 
 def display_text(value: Any, limit: int = 200, *, secrets: tuple[str, ...] = (), strip_controls: bool = False,
-                 redact: str = FIELD) -> str:
-    """Daemon or publisher text as the browser may see it, cut to `limit`: the one place display text is redacted.
-
-    An exact known secret, even one split by a format character, is returned whole, so the guard withholds the view.
-    `strip_controls` first drops control and format characters, so publisher text cannot reorder surrounding labels or
+                 redact: str = FIELD, guarded: tuple[str, ...] = ()) -> str:
+    """Daemon or publisher text as the browser may see it, cut to `limit`: the one place display text is redacted. An
+    exact known secret, even one split by a format character, is returned whole, so the guard withholds the view.
+    `strip_controls` drops control and format characters first, so publisher text cannot reorder surrounding labels or
     carry invisible controls. `redact` is FIELD, WORD or GUARD, above."""
     if redact not in REDACT_MODES:
         raise ValueError(f"unknown redaction mode {redact!r}")
     if not isinstance(value, str):
         return ""
-    stripped = "".join(char for char in value if unicodedata.category(char) not in CONTROL_CATEGORIES) if (
+    stripped = "".join(char for char in value if unicodedata.category(char) not in {"Cc", "Cf"}) if (
         strip_controls or redact == FIELD or secrets) else value
     shown, other = (stripped, value) if strip_controls else (value, stripped)
     for secret in secrets:
@@ -77,10 +75,8 @@ def display_text(value: Any, limit: int = 200, *, secrets: tuple[str, ...] = (),
     if redact == FIELD and KEY_PREFIX_SHAPE.search(shown):
         return REDACTED
     token = next((token for token in TOKEN_SHAPE.finditer(shown) if token.end() > limit), None)
-    # A token cut short would pass the guard: keep it whole so the view is withheld.
-    cut = shown[:token.end()] if token and token.start() < limit else shown[:limit]
-    # A prefix only the other form shows is redacted too, but never in place of text the guard withholds.
-    if redact == FIELD and KEY_PREFIX_SHAPE.search(other) and not leaks(json.dumps(cut).encode(), ()):
+    cut = shown[:token.end()] if token and token.start() < limit else shown[:limit]  # Keep a token whole for the guard.
+    if redact == FIELD and KEY_PREFIX_SHAPE.search(other) and not leaks(json.dumps(cut).encode(), secrets + guarded):
         return REDACTED
     return cut
 
@@ -817,8 +813,9 @@ def scope_disclosures(value: Any, scopes: list[str], secrets: tuple[str, ...] = 
     return [by_scope[scope] for scope in scopes] if set(by_scope) == set(scopes) else None
 
 
-def entry_view(row: Any, secrets: tuple[str, ...] = ()) -> dict | None:
+def entry_view(row: Any, secrets: tuple[str, ...] = (), guarded: tuple[str, ...] = ()) -> dict | None:
     """One entry as the daemon validated it, or None when it does not match the entries contract."""
+    publisher_text = {"secrets": secrets, "guarded": guarded, "strip_controls": True}
     if not isinstance(row, dict) or row.get("verified") is not False or row.get("state") not in ENTRY_STATES:
         return None
     manifest = row.get("manifest") if isinstance(row.get("manifest"), dict) else {}
@@ -838,8 +835,7 @@ def entry_view(row: Any, secrets: tuple[str, ...] = ()) -> dict | None:
             return None
         tier = "elevated" if scope in ELEVATED_SCOPES or item.get("risk_tier") == "elevated" else "standard"
         scopes.append({"scope": scope, "tier": tier, "text": SCOPE_DISCLOSURES.get(scope, ""),
-                       "justification": display_text(item.get("justification"), 1000, secrets=secrets,
-                                                     strip_controls=True)})
+                       "justification": display_text(item.get("justification"), 1000, **publisher_text)})
     if not scopes:
         return None
     origins = app.get("browser_origins") if isinstance(app.get("browser_origins"), list) else []
@@ -857,11 +853,11 @@ def entry_view(row: Any, secrets: tuple[str, ...] = ()) -> dict | None:
     unverified = row.get("unverified_origin") if isinstance(row.get("unverified_origin"), dict) else {}
     icon = app.get("icon")
     shown = {"catalog_app_id": catalog_app_id,
-            "name": display_text(app.get("display_name"), 80, secrets=secrets, strip_controls=True),
-            "version": display_text(app.get("version"), 64, secrets=secrets, strip_controls=True),
-            "summary": display_text(app.get("summary"), 280, secrets=secrets, strip_controls=True),
-            "publisher": {"name": display_text(publisher.get("name"), 80, secrets=secrets, strip_controls=True),
-                          "id": display_text(publisher.get("id"), 64, secrets=secrets, strip_controls=True)},
+            "name": display_text(app.get("display_name"), 80, **publisher_text),
+            "version": display_text(app.get("version"), 64, **publisher_text),
+            "summary": display_text(app.get("summary"), 280, **publisher_text),
+            "publisher": {"name": display_text(publisher.get("name"), 80, **publisher_text),
+                          "id": display_text(publisher.get("id"), 64, **publisher_text)},
             "icon": icon if isinstance(icon, str) and INLINE_ICON.fullmatch(icon) else "",
             "scopes": scopes, "elevated": [item["scope"] for item in scopes if item["tier"] == "elevated"],
             "browser_origins": list(origins),

@@ -812,7 +812,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return _error(502, "The daemon returned an invalid inventory.")
             raw_entry = next((row for row in reply.body.get("entries", [])
                               if isinstance(row, dict) and row.get("catalog_app_id") == catalog_app_id), None)
-            entry = entry_view(raw_entry)
+            entry = entry_view(raw_entry, guarded=tuple(store.secrets()))  # Its digest has no secrets.
             if entry is None:
                 return _error(404, "No local entry has that catalog app id. Refresh the Marketplace.")
             baseline = {**entry, "scopes": [dict(item) for item in entry["scopes"]]}
