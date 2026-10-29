@@ -4,8 +4,9 @@
 // and this page never sees one. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { blocked, blockedKey, blockedState, clear, command, emphasis, h, icon, pill, placeNotice, reveal, sectionHead, table } from "../lib/dom.mjs";
-import { expiry, matchField, pairingRecovery, tickExpiries } from "../lib/pairing.mjs";
+import { blocked, blockedKey, blockedState, button, clear, command, emphasis, facts, h, icon, pill, placeNotice, reveal, sectionHead,
+  stamp, table } from "../lib/dom.mjs";
+import { expiry, matchField, pairingRecovery, tickExpiries, tier, verbButton } from "../lib/pairing.mjs";
 import { poller } from "../lib/poll.mjs";
 
 const NEEDS_YOU = ["pending", "claimed"];
@@ -19,11 +20,6 @@ const label = (row) => LABELS[row.state] || "Unknown";
 const kind = (row) => row.kind === "hub" ? "Hub claim" : row.kind === "app" ? "App" : "Unknown";
 const source = (row) => (row.origin || "Native app") + (row.catalog_app_id ? ` · catalog ${row.catalog_app_id}` : "");
 const withheld = (row) => [row.name, row.origin, row.catalog_app_id].some((value) => value?.startsWith("[withheld:"));
-
-function stamp(seconds) {
-  return typeof seconds === "number" ? new Date(seconds * 1000).toLocaleString(undefined,
-    { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
-}
 
 // What the app (or Hub) does next, for a request that waits on it rather than on the owner.
 function waitingFor(row) {
@@ -65,14 +61,6 @@ export function renderPairing(main) {
       "the app then fetches its own token from the daemon, and this Hub never sees it."),
     notice, problem, groups, pairingRecovery());
 
-  function button(text, action, extra = {}) {
-    return h("button", { type: "button", class: "btn", onclick: action, ...extra }, text);
-  }
-  // A button whose visible text is a verb; the request's name completes its accessible name (and, where the class
-  // allows, shows beside the verb).
-  function verbButton(verb, name, action, extra = {}, nameClass = "visually-hidden") {
-    return button([`${verb} `, h("span", { class: nameClass }, name)], action, extra);
-  }
   function message(value, bad = false) {
     notice.textContent = value;
     notice.className = bad ? "notice bad" : "notice";
@@ -150,12 +138,6 @@ export function renderPairing(main) {
   }
   function countdown(row) {
     return typeof row.expires_at === "number" ? expiry(row.expires_at, now()) : null;
-  }
-  function facts(rows) {
-    return h("dl", { class: "facts" }, rows.map(([key, value]) => [h("dt", {}, key), h("dd", {}, value)]));
-  }
-  function tier(item) {
-    return item.tier === "elevated" ? pill("Elevated", "bad") : pill("Standard", "muted");
   }
 
   // Needs you: who and what, then the decision. On a phone the decision comes right after the head and its scope chips.
