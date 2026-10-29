@@ -340,8 +340,11 @@ def _finite(value: Any) -> float | None:
     return number if number is not None and math.isfinite(number) else None
 
 
+ID_SEGMENT = re.compile(r"[A-Za-z0-9_-]{1,80}")
+
+
 def _app_id(value: Any) -> str:
-    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", value) else ""
+    return value if isinstance(value, str) and ID_SEGMENT.fullmatch(value) else ""
 
 
 def _app_text(value: Any, limit: int = 200, secrets: tuple[str, ...] = ()) -> str:
