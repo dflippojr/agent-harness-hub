@@ -37,6 +37,9 @@ START_SECONDS = 180  # docs/ui-testing.md, "Start": CI allows 180
 STEP_SECONDS = 600
 STEPS = ("launch", "doctor", "drive", "cleanup")  # a run passes only when every one of them ran and passed
 
+sys.path.insert(0, str(LAUNCHER.parent))
+import ui_instance  # noqa: E402 - scripts/ui_instance.py, for its recorded-process check
+
 
 def run_name() -> str:
     """A UTC timestamp plus a random suffix: two runs started in the same second never share a folder."""
@@ -44,22 +47,16 @@ def run_name() -> str:
 
 
 def created(pid: int) -> float | None:
-    import psutil
-    try:
-        return psutil.Process(pid).create_time()
-    except psutil.Error:
-        return None
+    return ui_instance.process_created(pid)
 
 
 def alive(entry: dict):
     """The recorded process if it still runs with its recorded start time (so a reused pid is left alone)."""
     import psutil
+    proc = ui_instance.recorded(entry)
     try:
-        proc = psutil.Process(int(entry["pid"]))
-        if entry.get("created") is None or abs(proc.create_time() - float(entry["created"])) > 0.01:
-            return None
-        return None if proc.status() == psutil.STATUS_ZOMBIE else proc
-    except (psutil.Error, KeyError, TypeError, ValueError):
+        return None if proc is None or proc.status() == psutil.STATUS_ZOMBIE else proc
+    except psutil.Error:
         return None
 
 
