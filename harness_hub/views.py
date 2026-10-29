@@ -39,7 +39,9 @@ MESSAGES = {
 
 REDACTED = "[withheld: token-shaped]"
 # How display_text hides a key's display prefix (`ho-LW5TqUX`) or anything shaped like one (#189).
-FIELD = "field"  # One anywhere in the value, a full token too, replaces the entire field. The strongest: the default.
+# FIELD, the default and the strongest: one anywhere in the value, a full token too, replaces the entire field, and so
+# does one that appears only once control and format characters are dropped (`h\u200bo-LW5TqUX`).
+FIELD = "field"
 WORD = "word"  # Daemon diagnostics, which can echo a prefix: each one is redacted in place, a full token left in place.
 GUARD = "guard"  # Text whose ordinary words (`hp-instruct-7b`) must stay readable (#84): only the guard checks it.
 REDACT_MODES = (FIELD, WORD, GUARD)
@@ -62,15 +64,17 @@ def display_text(value: Any, limit: int = 200, *, secrets: tuple[str, ...] = (),
         raise ValueError(f"unknown redaction mode {redact!r}")
     if not isinstance(value, str):
         return ""
-    if strip_controls:
-        value = "".join(char for char in value if unicodedata.category(char) not in CONTROL_CATEGORIES)
+    stripped = "".join(char for char in value if unicodedata.category(char) not in CONTROL_CATEGORIES) if (
+        strip_controls or redact == FIELD) else value
+    texts = (value, stripped) if redact == FIELD else (value,)  # FIELD checks the text both with and without them.
+    value = stripped if strip_controls else value
     for secret in secrets:
-        if secret and secret in value:
+        if secret and any(secret in text for text in texts):
             return secret  # The response guard must withhold the entire view.
     if redact == WORD:
         # Cut first: a token cut short at the limit is then redacted, not passed under the guard's full-length shape.
         return KEY_PREFIX_SHAPE.sub(_prefix, value[:limit])
-    if redact == FIELD and KEY_PREFIX_SHAPE.search(value):
+    if redact == FIELD and any(KEY_PREFIX_SHAPE.search(text) for text in texts):
         return REDACTED
     for token in TOKEN_SHAPE.finditer(value):
         if token.start() >= limit:

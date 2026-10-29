@@ -1,12 +1,11 @@
 """What each display-text helper in views.py did to token-shaped, prefix-shaped, exact-secret and control-character
 input, and the proof that display_text, which replaced all four (#189), does the same and redacts their union.
 
-The cases were written against the four helpers before they were merged; the expected values are unchanged since.
-`ORACLES` are those helpers as they were on main before the merge, frozen here to compare against."""
+The cases were written against the four helpers before they were merged; their expected values are unchanged since.
+The four functions below are those helpers as they were on main before the merge, frozen to compare against."""
 
 import re
 import unicodedata
-from functools import partial
 
 import pytest
 from hypothesis import example, given
@@ -21,9 +20,10 @@ CODE = "hp-" + "c0de" * 6
 PREFIX = "ho-LW5TqUX"
 SECRET = "synthetic-verifier-sentinel"
 R = "[withheld: token-shaped]"
+RLO, ZWSP, SHY = chr(0x202E), chr(0x200B), chr(0xAD)  # right-to-left override, zero-width space, soft hyphen
 
 
-def _str(value, limit=200):
+def _str(value, limit=200, secrets=()):  # `secrets` is unused here and in _diagnostic_text: they had none
     if not isinstance(value, str):
         return ""
     for token in TOKEN_SHAPE.finditer(value):
@@ -34,12 +34,9 @@ def _str(value, limit=200):
     return value[:limit]
 
 
-def _prefix(match):
-    return match[0] if TOKEN_SHAPE.match(match[0]) else REDACTED
-
-
-def _diagnostic_text(value, limit=200):
-    return KEY_PREFIX_SHAPE.sub(_prefix, value[:limit]) if isinstance(value, str) else ""
+def _diagnostic_text(value, limit=200, secrets=()):
+    return KEY_PREFIX_SHAPE.sub(lambda m: m[0] if TOKEN_SHAPE.match(m[0]) else REDACTED,
+                                value[:limit]) if isinstance(value, str) else ""
 
 
 def _app_text(value, limit=200, secrets=()):
@@ -52,23 +49,18 @@ def _app_text(value, limit=200, secrets=()):
     return _str(value, limit)
 
 
+def _strip(value):
+    return "".join(char for char in value if unicodedata.category(char) not in {"Cc", "Cf"})
+
+
 def entry_text(value, limit=200, secrets=()):
-    if isinstance(value, str):
-        value = "".join(char for char in value if unicodedata.category(char) not in {"Cc", "Cf"})
-    return _app_text(value, limit, secrets)
+    return _app_text(_strip(value) if isinstance(value, str) else value, limit, secrets)
 
 
-ORACLES = {"_str": _str, "_diagnostic_text": _diagnostic_text, "_app_text": _app_text, "entry_text": entry_text}
-# Each old helper is display_text with these options; every call site in views.py and server.py was moved this way.
-MODES = {"_str": {"redact": GUARD}, "_diagnostic_text": {"redact": WORD}, "_app_text": {},
-         "entry_text": {"strip_controls": True}}
-
-
-def _new(helper, value, limit=200, secrets=()):
-    return display_text(value, limit, secrets=secrets, **MODES[helper])
-
-
-HELPERS = {name: partial(_new, name) for name in MODES}
+# Each old helper is display_text with these options; every call site in views.py and server.py moved this way.
+MODES = {_str: {"redact": GUARD}, _diagnostic_text: {"redact": WORD}, _app_text: {},
+         entry_text: {"strip_controls": True}}
+NAMES = {"_str": _str, "_diagnostic_text": _diagnostic_text, "_app_text": _app_text, "entry_text": entry_text}
 
 CASES = [
     # _str: nothing is redacted; a token cut by the limit is kept whole so the response guard withholds the view.
@@ -83,7 +75,7 @@ CASES = [
     ("_str", "x" * 190 + " " + CODE, 200, (), "x" * 190 + " " + CODE),
     ("_str", "x" * 250 + " " + KEY, 200, (), "x" * 200),
     ("_str", "name " + SECRET, 200, (), "name " + SECRET),
-    ("_str", "a‮b\x07c", 200, (), "a‮b\x07c"),
+    ("_str", f"a{RLO}b\x07c", 200, (), f"a{RLO}b\x07c"),
     # _diagnostic_text: each prefix-shaped word is redacted in place; a whole token is left for the guard.
     ("_diagnostic_text", None, 200, (), ""),
     ("_diagnostic_text", f"key {PREFIX} revoked", 200, (), f"key {R} revoked"),
@@ -96,7 +88,7 @@ CASES = [
     ("_diagnostic_text", "x" * 300 + " " + PREFIX, 200, (), "x" * 200),
     ("_diagnostic_text", "pre" + PREFIX, 200, (), "pre" + PREFIX),
     ("_diagnostic_text", "ho-abc", 200, (), "ho-abc"),
-    ("_diagnostic_text", "a‮b\x07c", 200, (), "a‮b\x07c"),
+    ("_diagnostic_text", f"a{RLO}b\x07c", 200, (), f"a{RLO}b\x07c"),
     # _app_text: a prefix-shaped word anywhere, even past the limit and even a whole token, replaces the whole field;
     # an exact known secret is returned as is, so the guard withholds the view.
     ("_app_text", None, 200, (), ""),
@@ -111,53 +103,33 @@ CASES = [
     ("_app_text", "x" * 220 + SECRET, 200, (SECRET,), SECRET),
     ("_app_text", f"{PREFIX} {SECRET}", 200, (SECRET,), SECRET),
     ("_app_text", "name " + SECRET, 200, ("", "other"), "name " + SECRET),
-    ("_app_text", "a‮b\x07c", 200, (), "a‮b\x07c"),
+    ("_app_text", f"a{RLO}b\x07c", 200, (), f"a{RLO}b\x07c"),
     # entry_text: control and format characters go first, then everything _app_text does.
     ("entry_text", None, 200, (), ""),
-    ("entry_text", "a‮b\x07c​d", 200, (), "abcd"),
+    ("entry_text", f"a{RLO}b\x07c{ZWSP}d", 200, (), "abcd"),
     ("entry_text", "two\nlines\t", 200, (), "twolines"),
-    ("entry_text", "h​o-LW5TqUX", 200, (), R),
+    ("entry_text", f"h{ZWSP}o-LW5TqUX", 200, (), R),
     ("entry_text", KEY, 80, (), R),
     ("entry_text", "Notes", 200, (), "Notes"),
     ("entry_text", "x" * 300, 280, (), "x" * 280),
-    ("entry_text", "synthetic-​verifier-sentinel", 200, (SECRET,), SECRET),
+    ("entry_text", f"synthetic-{ZWSP}verifier-sentinel", 200, (SECRET,), SECRET),
 ]
 
 
 @pytest.mark.parametrize(("helper", "value", "limit", "secrets", "expected"), CASES)
 def test_display_text_helper_contract(helper, value, limit, secrets, expected):
-    if secrets:
-        assert HELPERS[helper](value, limit, secrets) == expected
-    else:
-        assert HELPERS[helper](value, limit) == expected
-
-
-@pytest.mark.parametrize(("helper", "value", "limit", "secrets", "expected"), CASES)
-def test_the_frozen_oracles_match_the_cases(helper, value, limit, secrets, expected):
-    assert ORACLES[helper](value, limit, *([secrets] if secrets else [])) == expected
+    assert display_text(value, limit, secrets=secrets, **MODES[NAMES[helper]]) == expected
+    assert NAMES[helper](value, limit, secrets) == expected  # The frozen copy is faithful to the cases too.
 
 
 TOKEN_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
-SECRETS = ("synthetic-verifier-sentinel", "ho-" + "H" * 43, "")
+SECRETS = (SECRET, "ho-" + "H" * 43, "")
 FRAGMENTS = ("ha-", "ho-", "hk-", "hp-", "hrp-", "ahg-", "core", "LW5TqUX", " ", ".", "/", "-", "_", "\n", "\t", "\x07",
-             "\u202e", "\u200b", "\u00ad", "é", "x" * 7, "c0de" * 6, "S" * 43, *SECRETS)
-fragment = st.sampled_from(FRAGMENTS) | st.text(alphabet=TOKEN_CHARS, max_size=12)
-values = st.lists(fragment, max_size=12).map("".join) | st.none() | st.integers()
+             RLO, ZWSP, SHY, "caf" + chr(0xE9), "x" * 7, "c0de" * 6, "S" * 43, *SECRETS)
+values = st.lists(st.sampled_from(FRAGMENTS) | st.text(alphabet=TOKEN_CHARS, max_size=12), max_size=12).map(
+    "".join) | st.none() | st.integers()
 limits = st.integers(0, 120)
 secret_sets = st.lists(st.sampled_from(SECRETS), max_size=3).map(tuple)
-
-
-@given(values, limits, secret_sets)
-@example("x" * 50 + " " + KEY, 64, ())
-@example("h\u200bo-LW5TqUX", 200, ())
-@example("synthetic-\u200bverifier-sentinel", 10, (SECRET,))
-def test_each_mode_is_its_old_helper_exactly(value, limit, secrets):
-    """Moving a call site to its mode changes no output, so no view is withheld or shown that was not before."""
-    for helper, oracle in ORACLES.items():
-        old = oracle(value, limit, secrets) if helper in ("_app_text", "entry_text") else oracle(value, limit)
-        new = display_text(value, limit, secrets=secrets if helper in ("_app_text", "entry_text") else (),
-                           **MODES[helper])
-        assert new == old, helper
 
 
 def revealed(text, secrets):
@@ -166,29 +138,38 @@ def revealed(text, secrets):
 
 
 @given(values, limits, secret_sets)
+@example("x" * 50 + " " + KEY, 64, ())
+@example("a\x07ho-LW5TqUX", 200, ())
+def test_each_mode_shows_no_more_than_its_old_helper(value, limit, secrets):
+    """GUARD and WORD are their old helpers exactly. The FIELD modes match theirs or are withheld where it was not."""
+    for helper, mode in MODES.items():
+        old = helper(value, limit, secrets if helper in (_app_text, entry_text) else ())
+        new = display_text(value, limit, secrets=secrets if helper in (_app_text, entry_text) else (), **mode)
+        assert new == old or (helper in (_app_text, entry_text) and revealed(new, secrets) in (None, REDACTED)), (
+            helper.__name__, new, old)
+
+
+@given(values, limits, secret_sets)
+@example(f"h{ZWSP}o-demo", 200, ())
 @example("Home hp-printer helper", 200, ())
-@example("echo " + KEY, 200, ())
 @example("x" * 190 + " " + KEY, 200, ())
 def test_the_default_redacts_the_union_of_the_old_helpers(value, limit, secrets):
-    """The default shows text only where every old helper showed the same text; otherwise it shows the marker, nothing,
-    or a value the guard withholds. With strip_controls it does the same for entry_text and for the other three helpers
-    given the stripped text."""
+    """The default, with or without strip_controls, shows text only where none of the four helpers redacts anything;
+    otherwise it shows the marker, nothing, or a value the guard withholds."""
     for strip in (False, True):
         shown = revealed(display_text(value, limit, secrets=secrets, strip_controls=strip), secrets)
         if shown in (None, "", REDACTED):
             continue
-        assert not KEY_PREFIX_SHAPE.search(shown)
-        stripped = "".join(char for char in value if unicodedata.category(char) not in {"Cc", "Cf"}) if (
-            strip and isinstance(value, str)) else value
-        old = [_str(stripped, limit), _diagnostic_text(stripped, limit), _app_text(stripped, limit, secrets)]
-        old += [entry_text(value, limit, secrets)] if strip else []
-        assert all(revealed(text, secrets) == shown for text in old), old
+        assert shown == (_strip(value) if strip else value)[:limit]
+        assert _str(value, limit) == _diagnostic_text(value, limit) == _app_text(value, limit, secrets) == value[:limit]
+        assert entry_text(value, limit, secrets) == _strip(value)[:limit]
 
 
 def test_an_unknown_mode_fails_loudly_instead_of_redacting_less():
     with pytest.raises(ValueError, match="unknown redaction mode"):
-        display_text("ho-LW5TqUX", redact="fields")
-    assert display_text("ho-LW5TqUX") == display_text("ho-LW5TqUX", redact=FIELD) == REDACTED
+        display_text(PREFIX, redact="fields")
+    assert display_text(PREFIX) == display_text(PREFIX, redact=FIELD) == REDACTED
+    assert display_text(f"h{ZWSP}o-demo") == display_text("a\x07ho-demo", strip_controls=True) == REDACTED
 
 
 def test_only_display_text_redacts_display_text():
