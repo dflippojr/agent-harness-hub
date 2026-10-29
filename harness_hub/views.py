@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from . import __version__
 from .administration import TARGET
 from .claim import CLAIMED, PENDING, RELEASE_COMMAND, ClaimManager
-from .guard import KEY_PREFIX_SHAPE, LINK_CODE, TOKEN_SHAPE
+from .guard import KEY_PREFIX_SHAPE, LINK_CODE, TOKEN_SHAPE, leaks
 
 MESSAGES = {
     "unclaimed": "This Hub has not claimed the daemon yet.",
@@ -40,7 +40,8 @@ MESSAGES = {
 REDACTED = "[withheld: token-shaped]"
 # How display_text hides a key's display prefix (`ho-LW5TqUX`) or anything shaped like one (#189).
 # FIELD, the default and the strongest: one anywhere in the value, a full token too, replaces the entire field, and so
-# does one that appears only once control and format characters are dropped (`h\u200bo-LW5TqUX`).
+# does one that appears only with or only without control and format characters (`h\u200bo-LW5TqUX`), unless the
+# guard would withhold the view anyway.
 FIELD = "field"
 WORD = "word"  # Daemon diagnostics, which can echo a prefix: each one is redacted in place, a full token left in place.
 GUARD = "guard"  # Text whose ordinary words (`hp-instruct-7b`) must stay readable (#84): only the guard checks it.
@@ -57,31 +58,31 @@ def display_text(value: Any, limit: int = 200, *, secrets: tuple[str, ...] = (),
                  redact: str = FIELD) -> str:
     """Daemon or publisher text as the browser may see it, cut to `limit`: the one place display text is redacted.
 
-    An exact known secret is returned whole, so the response guard withholds the entire view. `strip_controls` first
-    drops control and format characters, so publisher text cannot reorder surrounding labels or carry invisible
-    controls. `redact` is FIELD, WORD or GUARD, above."""
+    An exact known secret, even one split by a format character, is returned whole, so the guard withholds the view.
+    `strip_controls` first drops control and format characters, so publisher text cannot reorder surrounding labels or
+    carry invisible controls. `redact` is FIELD, WORD or GUARD, above."""
     if redact not in REDACT_MODES:
         raise ValueError(f"unknown redaction mode {redact!r}")
     if not isinstance(value, str):
         return ""
     stripped = "".join(char for char in value if unicodedata.category(char) not in CONTROL_CATEGORIES) if (
-        strip_controls or redact == FIELD) else value
-    texts = (value, stripped) if redact == FIELD else (value,)  # FIELD checks the text both with and without them.
-    value = stripped if strip_controls else value
+        strip_controls or redact == FIELD or secrets) else value
+    shown, other = (stripped, value) if strip_controls else (value, stripped)
     for secret in secrets:
-        if secret and any(secret in text for text in texts):
+        if secret and (secret in shown or secret in other):
             return secret  # The response guard must withhold the entire view.
     if redact == WORD:
         # Cut first: a token cut short at the limit is then redacted, not passed under the guard's full-length shape.
-        return KEY_PREFIX_SHAPE.sub(_prefix, value[:limit])
-    if redact == FIELD and any(KEY_PREFIX_SHAPE.search(text) for text in texts):
+        return KEY_PREFIX_SHAPE.sub(_prefix, shown[:limit])
+    if redact == FIELD and KEY_PREFIX_SHAPE.search(shown):
         return REDACTED
-    for token in TOKEN_SHAPE.finditer(value):
-        if token.start() >= limit:
-            break
-        if limit < token.end():
-            return value[:token.end()]  # Cut short, it would pass the guard: keep it whole so the view is withheld.
-    return value[:limit]
+    token = next((token for token in TOKEN_SHAPE.finditer(shown) if token.end() > limit), None)
+    # A token cut short would pass the guard: keep it whole so the view is withheld.
+    cut = shown[:token.end()] if token and token.start() < limit else shown[:limit]
+    # A prefix only the other form shows is redacted too, but never in place of text the guard withholds.
+    if redact == FIELD and KEY_PREFIX_SHAPE.search(other) and not leaks(json.dumps(cut).encode(), ()):
+        return REDACTED
+    return cut
 
 
 def _bool(value: Any) -> bool | None:

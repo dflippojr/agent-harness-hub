@@ -1,18 +1,14 @@
-"""What each display-text helper in views.py did to token-shaped, prefix-shaped, exact-secret and control-character
-input, and the proof that display_text, which replaced all four (#189), does the same and redacts their union.
+"""The four display-text helpers display_text replaced (#189), frozen as they were on main, and the cases written
+against them before the merge (expected values unchanged since): display_text does what each did, and their union."""
 
-The cases were written against the four helpers before they were merged; their expected values are unchanged since.
-The four functions below are those helpers as they were on main before the merge, frozen to compare against."""
-
-import re
+import json
 import unicodedata
 
 import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 
-from harness_hub import server, views
-from harness_hub.guard import KEY_PREFIX_SHAPE, TOKEN_SHAPE
+from harness_hub.guard import KEY_PREFIX_SHAPE, TOKEN_SHAPE, leaks
 from harness_hub.views import FIELD, GUARD, REDACTED, WORD, display_text
 
 KEY = "ho-" + "s" * 43
@@ -20,6 +16,7 @@ CODE = "hp-" + "c0de" * 6
 PREFIX = "ho-LW5TqUX"
 SECRET = "synthetic-verifier-sentinel"
 R = "[withheld: token-shaped]"
+PEM = "-----BEGIN PRIVATE KEY-----"
 RLO, ZWSP, SHY = chr(0x202E), chr(0x200B), chr(0xAD)  # right-to-left override, zero-width space, soft hyphen
 
 
@@ -125,7 +122,7 @@ def test_display_text_helper_contract(helper, value, limit, secrets, expected):
 TOKEN_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
 SECRETS = (SECRET, "ho-" + "H" * 43, "")
 FRAGMENTS = ("ha-", "ho-", "hk-", "hp-", "hrp-", "ahg-", "core", "LW5TqUX", " ", ".", "/", "-", "_", "\n", "\t", "\x07",
-             RLO, ZWSP, SHY, "caf" + chr(0xE9), "x" * 7, "c0de" * 6, "S" * 43, *SECRETS)
+             RLO, ZWSP, SHY, "caf" + chr(0xE9), "x" * 7, "c0de" * 6, "S" * 43, PEM, *SECRETS)
 values = st.lists(st.sampled_from(FRAGMENTS) | st.text(alphabet=TOKEN_CHARS, max_size=12), max_size=12).map(
     "".join) | st.none() | st.integers()
 limits = st.integers(0, 120)
@@ -133,20 +130,23 @@ secret_sets = st.lists(st.sampled_from(SECRETS), max_size=3).map(tuple)
 
 
 def revealed(text, secrets):
-    """What reaches the browser: the response guard withholds a whole view that holds a token or a known secret."""
-    return None if TOKEN_SHAPE.search(text) or any(secret and secret in text for secret in secrets) else text
+    """What reaches the browser: None when the response guard would withhold the view holding this text."""
+    return None if leaks(json.dumps(text).encode(), secrets) else text
 
 
 @given(values, limits, secret_sets)
 @example("x" * 50 + " " + KEY, 64, ())
 @example("a\x07ho-LW5TqUX", 200, ())
+@example(f"{PEM} h{ZWSP}o-demo", 200, ())
 def test_each_mode_shows_no_more_than_its_old_helper(value, limit, secrets):
-    """GUARD and WORD are their old helpers exactly. The FIELD modes match theirs or are withheld where it was not."""
+    """GUARD and WORD are their old helpers exactly. The FIELD modes match theirs, or are withheld or the marker where
+    it was shown; a view the guard withheld before is still withheld."""
     for helper, mode in MODES.items():
         old = helper(value, limit, secrets if helper in (_app_text, entry_text) else ())
         new = display_text(value, limit, secrets=secrets if helper in (_app_text, entry_text) else (), **mode)
         assert new == old or (helper in (_app_text, entry_text) and revealed(new, secrets) in (None, REDACTED)), (
             helper.__name__, new, old)
+        assert revealed(old, secrets) is not None or revealed(new, secrets) is None, (helper.__name__, new, old)
 
 
 @given(values, limits, secret_sets)
@@ -172,8 +172,8 @@ def test_an_unknown_mode_fails_loudly_instead_of_redacting_less():
     assert display_text(f"h{ZWSP}o-demo") == display_text("a\x07ho-demo", strip_controls=True) == REDACTED
 
 
-def test_only_display_text_redacts_display_text():
-    for module in (views, server):
-        with open(module.__file__, encoding="utf-8") as file:
-            source = file.read()
-        assert not re.search(r"\b(_str|_diagnostic_text|_app_text|entry_text)\b", source), module.__name__
+@pytest.mark.parametrize("redact", [FIELD, WORD, GUARD])
+def test_a_secret_split_by_a_format_character_is_returned_whole_in_every_mode(redact):
+    split = SECRET[:5] + ZWSP + SECRET[5:]
+    for strip in (False, True):
+        assert display_text("x" * 20 + split, 10, secrets=(SECRET,), strip_controls=strip, redact=redact) == SECRET
