@@ -43,6 +43,7 @@ DAEMON_MARKER = "fake-model-instance"  # in the daemon data_dir: what lets the d
 FAKE_ENV = "HARNESS_FAKE_MODEL"
 LIVE_PORTS = {8100: "the live daemon's port", 8120: "the live Hub's default port"}
 START_SECONDS = 90
+START_TOLERANCE = 0.01  # seconds: a recorded start time further from the process's own means its pid was reused
 # The variables a child process needs to run, and nothing else: tokens, provider keys and proxies stay out.
 # VERIFY_RUN_ID is the verify skill's random run id (.claude/skills/verify), which its cleanup finds processes by.
 ENV_ALLOW = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR",
@@ -257,6 +258,20 @@ def process_created(pid: int) -> float | None:
         return None
 
 
+def recorded(entry: dict, *, unknown_start_ok: bool = False):
+    """The live psutil.Process an entry records, or None when it is gone or its pid now names another process.
+
+    An entry without a recorded start time is refused unless unknown_start_ok."""
+    import psutil
+    try:
+        proc = psutil.Process(int(entry["pid"]))
+        if entry.get("created") is None:
+            return proc if unknown_start_ok else None
+        return proc if abs(proc.create_time() - float(entry["created"])) <= START_TOLERANCE else None
+    except (psutil.Error, KeyError, TypeError, ValueError):
+        return None
+
+
 def owned(root: Path) -> bool:
     return (root / MARKER).is_file() or (root.is_dir() and not any(root.iterdir()))
 
@@ -284,14 +299,9 @@ def kill_recorded(handle: dict) -> bool:
         return True
     import psutil  # a daemon requirement, so present wherever an instance ran
     procs = []
-    for t in targets:
-        try:
-            proc = psutil.Process(int(t["pid"]))
-            if t.get("created") is None or abs(proc.create_time() - float(t["created"])) > 0.01:
-                continue
+    for proc in filter(None, map(recorded, targets)):
+        with contextlib.suppress(psutil.NoSuchProcess):
             procs += proc.children(recursive=True) + [proc]
-        except (psutil.NoSuchProcess, KeyError, TypeError, ValueError):
-            continue
     for p in procs:
         with contextlib.suppress(psutil.NoSuchProcess):
             p.kill()
