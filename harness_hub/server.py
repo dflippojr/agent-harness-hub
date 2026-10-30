@@ -42,9 +42,9 @@ from .views import (
     apps_view,
     claim_view,
     control_view,
+    display_text,
     entries_view,
     entry_digest,
-    entry_text,
     entry_view,
     erasures_view,
     health_view,
@@ -812,7 +812,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return _error(502, "The daemon returned an invalid inventory.")
             raw_entry = next((row for row in reply.body.get("entries", [])
                               if isinstance(row, dict) and row.get("catalog_app_id") == catalog_app_id), None)
-            entry = entry_view(raw_entry)
+            entry = entry_view(raw_entry, guarded=tuple(store.secrets()))  # Its digest has no secrets.
             if entry is None:
                 return _error(404, "No local entry has that catalog app id. Refresh the Marketplace.")
             baseline = {**entry, "scopes": [dict(item) for item in entry["scopes"]]}
@@ -839,7 +839,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                               "acknowledgement before setup.",
                               error={"code": "acknowledgement_required"})
             arm = {"catalog_app_id": catalog_app_id, "scopes": declared,
-                   "name": entry_text(raw_app["display_name"], 80).strip()[:60]}
+                   "name": display_text(raw_app["display_name"], 80, strip_controls=True).strip()[:60]}
             if bound_origin:
                 arm["origin"] = bound_origin
             if acknowledged:
