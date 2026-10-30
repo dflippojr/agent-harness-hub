@@ -10,9 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import psutil
 import pytest
-
-psutil = pytest.importorskip("psutil")
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / ".claude" / "skills" / "verify" / "scripts"

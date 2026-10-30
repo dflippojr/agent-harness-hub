@@ -25,6 +25,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "hypothesis==6.168.3",
+    "psutil==7.2.2",  # the dev scripts' recorded-process checks (tests/test_recorded_process.py)
     "pytest==9.1.1",
     "pytest-cov==6.2.1",
     "ruff==0.16.10",
