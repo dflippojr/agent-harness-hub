@@ -7,8 +7,8 @@
 // string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { blocked, blockedState, clear, command, dangerZone, emptyState, h, icon, pill, placeNotice, reveal, sectionHead, table,
-  when } from "../lib/dom.mjs";
+import { blocked, blockedState, button, clear, command, dangerZone, emptyState, facts, figure, h, icon, pill, placeNotice, reveal,
+  sectionHead, stamp, table, when } from "../lib/dom.mjs";
 
 const GROUPS = [["accounts", "Accounts"], ["credentials", "Provider assignments"], ["skills", "Skills"],
   ["maintenance", "Maintenance"], ["runners", "Runners and projects"], ["audit", "Audit"]];
@@ -27,13 +27,11 @@ const DESTRUCTIVE = new Set(["github_reset", "google_unlink", "google_revoke"]);
 const UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
 const targetLabel = name => ({ user_id: "Member id", pid: "Proposal id", slug: "Skill or folder slug", credential_id: "Assignment id",
   scan_id: "Scan id", candidate_id: "Candidate id", project: "Project or folder", name: "Runner name" })[name] || name;
-const button = (label, action, attrs = {}) => h("button", { type: "button", class: "btn", onclick: action, ...attrs }, label);
 const validTarget = value => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/.test(value) && !/(?:^|[^A-Za-z0-9])(?:ha|ho|hp)-[A-Za-z0-9_-]{4,}/.test(value);
 const validHash = value => typeof value === "string" && /^[a-fA-F0-9]{64}$/.test(value);
 const readable = value => String(value).replaceAll("_", " ");
 // An action label inside a sentence: "Erase GitHub credential" reads "erase GitHub credential".
 const lower = label => label.charAt(0).toLowerCase() + label.slice(1);
-const figure = value => typeof value === "number" && Number.isFinite(value) ? value.toLocaleString() : "—";
 const memberName = row => row.display_name || row.login || row.user_id || "Unnamed member";
 
 // A byte count in binary units: "0 B", "312 MiB", "20 GiB".
@@ -43,11 +41,6 @@ export function size(bytes) {
   while (value >= 1024 && unit < UNITS.length - 1) { value /= 1024; unit++; }
   const shown = unit && value < 10 ? Math.round(value * 10) / 10 : Math.round(value);
   return `${shown.toLocaleString()} ${UNITS[unit]}`;
-}
-// The daemon's epoch seconds as a short local date and time: "13 Oct, 12:58".
-export function stamp(seconds) {
-  return typeof seconds === "number" && Number.isFinite(seconds) ? new Date(seconds * 1000).toLocaleString(undefined,
-    { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
 }
 function enabledPill(row) {
   if (row.enabled === true) return pill("Enabled", "ok");
@@ -253,9 +246,6 @@ export function renderAdmin(main) {
           "data-field": `open-${id}`, "aria-expanded": String(id === memberId && paneMode !== "add"), onclick: open },
         icon("chevron"), h("span", { class: "visually-hidden" }, `Open ${name}`)) : null));
       })));
-  }
-  function facts(rows) {
-    return h("dl", { class: "facts" }, rows.map(([key, value]) => [h("dt", {}, key), h("dd", {}, value)]));
   }
   // An action on the open member: the question first when the daemon wants one, otherwise straight to the daemon.
   function actionButton(id, label, place, extra = {}) {

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { Element } from "./page-fake.mjs";
 
 import * as dom from "../harness_hub/static/lib/dom.mjs";
+import * as pairing from "../harness_hub/static/lib/pairing.mjs";
 
 // The builders reach for document and Node only when called, so each test installs the fakes and puts the originals
 // back; this file also runs inside browser-session.test.mjs beside other suites.
@@ -23,6 +24,13 @@ function test(name, fn) {
       }
     }
   });
+}
+// The fake's outerHTML: class first, then the other attributes in the order they were set, then click handlers.
+function html(el) {
+  if (el.tag === "#text") return el.text;
+  const attrs = [el.className ? ` class="${el.className}"` : "", ...[...el.attrs].map(([key, value]) => ` ${key}="${value}"`),
+    ...[...el.listeners.keys()].map((name) => ` on${name}`)].join("");
+  return `<${el.tag}${attrs}>${el.text}${el.children.map(html).join("")}</${el.tag}>`;
 }
 const find = (el, tag) => el.tag === tag ? el : el.children.map((child) => find(child, tag)).find(Boolean);
 
@@ -158,4 +166,48 @@ test("an empty state says what appears and offers the step that fixes it", () =>
   assert.equal(state.className, "card empty");
   assert.equal(find(state, "h3").textContent, "No apps paired yet");
   assert.ok(state.children.includes(link));
+});
+
+// The helpers four pages kept their own copies of (#195), pinned to what those copies drew.
+test("stamp shows the daemon's epoch seconds as a short date and time, and a dash for anything else", () => {
+  assert.equal(dom.stamp(0), new Date(0).toLocaleString(undefined,
+    { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }));
+  assert.notEqual(dom.stamp(0), "—");
+  assert.equal(dom.stamp("x"), "—");
+  assert.equal(dom.stamp(undefined), "—");
+  assert.equal(dom.stamp(Number.NaN), "—");
+});
+
+test("figure shows a count in the reader's number format, and a dash for anything else", () => {
+  assert.equal(dom.figure(1234), (1234).toLocaleString());
+  assert.equal(dom.figure(0), "0");
+  assert.equal(dom.figure(null), "—");
+  assert.equal(dom.figure("12"), "—");
+  assert.equal(dom.figure(Number.POSITIVE_INFINITY), "—");
+});
+
+test("facts draws label and value pairs as a definition list", () => {
+  assert.equal(html(dom.facts([["A", "b"]])), '<dl class="facts"><dt>A</dt><dd>b</dd></dl>');
+});
+
+test("button is a plain btn whose extra attributes are added", () => {
+  let pressed = 0;
+  const go = dom.button("Go", () => { pressed += 1; }, { disabled: true });
+  assert.equal(html(go), '<button class="btn" type="button" disabled="" onclick>Go</button>');
+  go.listeners.get("click")();
+  assert.equal(pressed, 1);
+  assert.equal(dom.button("Deny", () => {}, { class: "btn danger" }).className, "btn danger");
+});
+
+test("verbButton shows its verb and keeps the rest of its name in a span the class may hide", () => {
+  const withdraw = pairing.verbButton("Withdraw", "slot", () => {});
+  assert.equal(html(withdraw),
+    '<button class="btn" type="button" onclick>Withdraw <span class="visually-hidden">slot</span></button>');
+  assert.equal(withdraw.textContent, "Withdraw slot");
+  assert.equal(find(pairing.verbButton("Deny", "Notes", () => {}, {}, "verb-rest"), "span").className, "verb-rest");
+});
+
+test("tier is an Elevated or Standard pill", () => {
+  assert.equal(html(pairing.tier({ tier: "elevated" })), '<span class="pill bad">Elevated</span>');
+  assert.equal(html(pairing.tier({})), '<span class="pill muted">Standard</span>');
 });

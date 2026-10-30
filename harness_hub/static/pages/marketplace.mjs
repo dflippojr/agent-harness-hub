@@ -5,9 +5,9 @@
 // image shown is an inline one the server already checked. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { banner, blocked, blockedKey, blockedState, clear, command, emphasis, h, icon, pill, placeNotice, sectionHead, sentence, when }
-  from "../lib/dom.mjs";
-import { expiry, matchField, pairingRecovery, tickExpiries } from "../lib/pairing.mjs";
+import { banner, blocked, blockedKey, blockedState, button, clear, command, emphasis, facts, h, icon, pill, placeNotice, sectionHead,
+  sentence, when } from "../lib/dom.mjs";
+import { expiry, matchField, pairingRecovery, tickExpiries, tier, verbButton } from "../lib/pairing.mjs";
 import { poller } from "../lib/poll.mjs";
 
 const POLL_MS = 5000;
@@ -26,8 +26,6 @@ export function armCommand(entry, origin) {
   return `harness pairing-requests arm ${entry.catalog_app_id} --scopes ${entry.scopes.map((s) => s.scope).join(" ")}` +
     (origin ? ` --origin ${origin}` : "") + (acknowledgedScopes(entry).length ? " --acknowledge-elevated" : "");
 }
-
-const tier = (item) => item.tier === "elevated" ? pill("Elevated", "bad") : pill("Standard", "muted");
 
 export function renderMarketplace(main) {
   let stopped = false, busy = false, ticker, data = null, offset = 0, signature = "";
@@ -53,13 +51,6 @@ export function renderMarketplace(main) {
     command(["harness hub status", "harness hub entries validate"], { parity: true }), notice, problem, count, list,
     pairingRecovery());
 
-  function button(text, action, extra = {}) {
-    return h("button", { type: "button", class: "btn", onclick: action, ...extra }, text);
-  }
-  // A button whose visible text is a verb; the rest of its accessible name sits in a span the class may hide.
-  function verbButton(verb, rest, action, extra = {}, restClass = "visually-hidden") {
-    return button([`${verb} `, h("span", { class: restClass }, rest)], action, extra);
-  }
   function message(value, bad = false) {
     notice.textContent = value;
     notice.className = bad ? "notice bad" : "notice";
@@ -150,9 +141,6 @@ export function renderMarketplace(main) {
     return h("section", { class: "card empty" }, icon("marketplace"), h("h2", {}, "No entries yet"),
       h("p", {}, "The entries file lists no apps. Create it on the daemon host with harness hub entries init."),
       command("harness hub entries init"));
-  }
-  function facts(rows) {
-    return h("dl", { class: "facts" }, rows.map(([key, value]) => [h("dt", {}, key), h("dd", {}, value)]));
   }
   function entryIcon(entry) {
     // Only a data: raster image survives the server's allowlist, so this never loads anything from the network.
