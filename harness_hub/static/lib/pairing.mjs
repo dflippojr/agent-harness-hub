@@ -1,6 +1,15 @@
 // Shared by Pairing requests and Marketplace: the countdown chip on a request or slot, the typed match-code field, and
 // the recovery steps for an app that says its slot was already claimed (inspect the current state before acting).
-import { command, countdown, h, icon } from "./dom.mjs";
+import { button, command, countdown, h, icon, pill } from "./dom.mjs";
+
+// A button whose visible text is a verb; the rest of its accessible name (a request's or slot's name) sits in a span
+// the class may hide.
+export function verbButton(verb, rest, action, extra = {}, restClass = "visually-hidden") {
+  return button([`${verb} `, h("span", { class: restClass }, rest)], action, extra);
+}
+
+// A request's or entry's scope tier as a pill.
+export const tier = (item) => item.tier === "elevated" ? pill("Elevated", "bad") : pill("Standard", "muted");
 
 // The chip turns warn in the last two minutes, so a code is not typed into a request about to expire.
 const WARN_SECONDS = 120;
