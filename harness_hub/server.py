@@ -35,6 +35,7 @@ from .state import SERVER_FILE, StateStore, write_private
 from .status import StatusReporter
 from .tailnet import PeerCheck, TailnetIdentity, login
 from .views import (
+    ID_SEGMENT,
     REDACTED,
     administration_view,
     app_view,
@@ -677,7 +678,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 reply.body, reply.status)["detail"]
         live = [row["id"] for row in (body or {}).get("apps", []) if isinstance(row, dict)
                 and row.get("kind") == "app" and row.get("revoked_at") is None and row.get("id") != key["key_id"]
-                and isinstance(row.get("id"), str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", row["id"])]
+                and isinstance(row.get("id"), str) and ID_SEGMENT.fullmatch(row["id"])]
         gate = asyncio.Semaphore(SPEND_CAP_READS)
 
         async def read_caps(app_id: str):
@@ -902,7 +903,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         if resource == "erasures" and request.method == "GET":
             operation = "erasures"
         else:
-            match = re.fullmatch(r"([A-Za-z0-9_-]{1,80})/(revoke|limits|retention)", resource)
+            match = re.fullmatch(rf"({ID_SEGMENT.pattern})/(revoke|limits|retention)", resource)
             if match:
                 app_id, action = match.groups()
                 operation = {("DELETE", "revoke"): "revoke", ("GET", "limits"): "limits",
@@ -970,7 +971,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 if row is None:
                     return _error(404, "The App no longer appears in the key list. Refresh Apps.")
                 return {**shown, "retention_days": app_view(row)["retention_days"]}
-            return {"id": app_view(reply.body)["id"], "retention_days": app_view(reply.body)["retention_days"]}
+            view = app_view(reply.body)
+            return {"id": view["id"], "retention_days": view["retention_days"]}
         except DaemonUnreachable:
             return _unreachable("The daemon did not answer. Refresh the state before repeating a write.")
 
@@ -979,8 +981,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     async def pairing_action(request: Request, rid: str = "", action: str = ""):
         """App pairing requests: list, approve, confirm or deny. Tokens go from the daemon straight to the App."""
         operation = action or "list"
-        if operation not in ("list", "approve", "confirm", "deny") or rid and not re.fullmatch(
-                r"[A-Za-z0-9_-]{1,80}", rid):
+        if operation not in ("list", "approve", "confirm", "deny") or rid and not ID_SEGMENT.fullmatch(rid):
             return _error(404, "Unknown pairing operation")
         key = claims.key()
         if key is None:
@@ -1045,10 +1046,10 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     @app.get("/api/manage/catalog")
     async def administration_catalog():
-        return {"operations": [{"id": name, "group": spec[0], "label": spec[1], "cli": spec[2],
-                                "fields": [{"name": field, "type": kind, "required": field in spec[4]}
-                                           for field, kind in spec[3].items()],
-                                "confirmation": spec[5], "method": ADMIN_ROUTES[name][0],
+        return {"operations": [{"id": name, "group": spec.group, "label": spec.label, "cli": spec.cli,
+                                "fields": [{"name": field, "type": kind, "required": field in spec.required}
+                                           for field, kind in spec.fields.items()],
+                                "confirmation": spec.confirmation, "method": ADMIN_ROUTES[name][0],
                                 "targets": re.findall(r"{(\w+)}", ADMIN_ROUTES[name][1])}
                                for name, spec in OPERATIONS.items()],
                 "not_offered": [
@@ -1076,7 +1077,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         body, invalid = None, "Invalid administration fields; check required values and confirmation"
         try:
             if request.method == "GET":
-                fields = OPERATIONS[operation][3]
+                fields = OPERATIONS[operation].fields
                 if set(params) - set(fields):
                     return _error(400, "Unexpected query fields")
                 for name, value in params.items():
@@ -1170,7 +1171,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return _error(400, "confirm this action in the page first")
             if operation == "backend_save":
                 name = body.pop("name", "")
-                if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", name):
+                if not isinstance(name, str) or not ID_SEGMENT.fullmatch(name):
                     return _error(400, "invalid backend name")
             if operation == "github_save" and type(body.get("enabled")) is not bool:
                 return _error(400, "enabled must be a boolean")

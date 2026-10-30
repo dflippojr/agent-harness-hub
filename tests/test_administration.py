@@ -61,6 +61,11 @@ def test_checked_in_daemon_route_snapshot_has_no_gap(claimed):
     assert all("hub_key" in row["reason"] for row in catalogue["not_offered"])
 
 
+def test_catalog_response_matches_checked_in_snapshot_byte_for_byte(claimed):
+    snapshot = (Path(__file__).parent / "fixtures" / "administration-catalog.json").read_bytes()
+    assert claimed.get("/api/manage/catalog").content == snapshot
+
+
 @pytest.mark.parametrize("operation", list(OPERATIONS))
 def test_each_group_dispatches_exact_owner_route_and_withholds_extra_fields(claimed, fake_daemon, operation):
     spec = OPERATIONS[operation]

@@ -4,14 +4,24 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any
+from typing import Any, NamedTuple
+
+
+class Operation(NamedTuple):
+    group: str
+    label: str
+    cli: str
+    fields: dict[str, str]
+    required: tuple[str, ...]
+    confirmation: str
+
 
 # name: group, label, CLI, input fields (type), required fields, confirmation text.
 # Path targets are separate from daemon request bodies; no browser-supplied URL is accepted.
-OPERATIONS = {
-    "accounts": ("accounts", "List members", "harness accounts list", {}, (), ""),
-    "account": ("accounts", "Member detail", "harness accounts show <user_id>", {}, (), ""),
-    "account_add": (
+OPERATIONS: dict[str, Operation] = {
+    "accounts": Operation("accounts", "List members", "harness accounts list", {}, (), ""),
+    "account": Operation("accounts", "Member detail", "harness accounts show <user_id>", {}, (), ""),
+    "account_add": Operation(
         "accounts",
         "Add member",
         "harness accounts add <login> <display_name>",
@@ -25,7 +35,7 @@ OPERATIONS = {
         ("login", "display_name"),
         "",
     ),
-    "account_save": (
+    "account_save": Operation(
         "accounts",
         "Update member",
         "harness accounts update <user_id>",
@@ -40,7 +50,7 @@ OPERATIONS = {
         (),
         "Disabling cancels this member's work. Rebinding invalidates their old login immediately. Confirm the changes.",
     ),
-    "github_reset": (
+    "github_reset": Operation(
         "accounts",
         "Erase GitHub credential",
         "harness accounts github-reset <user_id> --confirm",
@@ -48,8 +58,10 @@ OPERATIONS = {
         (),
         "Erase this member's GitHub credential?",
     ),
-    "google_invite": ("accounts", "Create Google link code", "harness accounts google-invite <user_id>", {}, (), ""),
-    "google_cancel": (
+    "google_invite": Operation(
+        "accounts", "Create Google link code", "harness accounts google-invite <user_id>", {}, (), ""
+    ),
+    "google_cancel": Operation(
         "accounts",
         "Cancel Google link code",
         "harness accounts google-cancel-invite <user_id>",
@@ -57,7 +69,7 @@ OPERATIONS = {
         (),
         "Cancel this member's pending Google link code?",
     ),
-    "google_revoke": (
+    "google_revoke": Operation(
         "accounts",
         "Revoke Google sessions",
         "harness accounts google-revoke-sessions <user_id>",
@@ -65,7 +77,7 @@ OPERATIONS = {
         (),
         "End all Google Web sessions for this member?",
     ),
-    "google_unlink": (
+    "google_unlink": Operation(
         "accounts",
         "Unlink Google",
         "harness accounts google-unlink <user_id> --confirm",
@@ -73,9 +85,11 @@ OPERATIONS = {
         (),
         "Unlink Google and end this member's Google sessions?",
     ),
-    "account_audit": ("accounts", "Household audit", "harness accounts audit", {"limit": "integer"}, (), ""),
-    "credentials": ("credentials", "List provider assignments", "harness provider-credentials list", {}, (), ""),
-    "credential_set": (
+    "account_audit": Operation("accounts", "Household audit", "harness accounts audit", {"limit": "integer"}, (), ""),
+    "credentials": Operation(
+        "credentials", "List provider assignments", "harness provider-credentials list", {}, (), ""
+    ),
+    "credential_set": Operation(
         "credentials",
         "Assign provider credential name",
         "harness provider-credentials set <app_id> <backend>",
@@ -83,7 +97,7 @@ OPERATIONS = {
         ("app_id", "backend"),
         "Assign this credential policy to the App? Existing policy for this backend will be replaced.",
     ),
-    "credential_revoke": (
+    "credential_revoke": Operation(
         "credentials",
         "Revoke provider assignment",
         "harness provider-credentials revoke <credential_id>",
@@ -91,10 +105,10 @@ OPERATIONS = {
         (),
         "Revoke this App's provider assignment?",
     ),
-    "skills": ("skills", "Skills and proposals", "harness skills list", {}, (), ""),
-    "skills_enabled": ("skills", "Enabled skills", "harness skills enabled", {}, (), ""),
-    "proposal": ("skills", "Read proposal", "harness skills proposal <pid>", {}, (), ""),
-    "skill_install": (
+    "skills": Operation("skills", "Skills and proposals", "harness skills list", {}, (), ""),
+    "skills_enabled": Operation("skills", "Enabled skills", "harness skills enabled", {}, (), ""),
+    "proposal": Operation("skills", "Read proposal", "harness skills proposal <pid>", {}, (), ""),
+    "skill_install": Operation(
         "skills",
         "Install reviewed proposal",
         "harness skills install <pid> <content_hash>",
@@ -102,10 +116,10 @@ OPERATIONS = {
         ("content_hash",),
         "Install the proposal at this exact reviewed hash?",
     ),
-    "skill_reject": ("skills", "Reject proposal", "harness skills reject <pid>", {"reason": "text"}, (), ""),
-    "skill_reopen": ("skills", "Reopen proposal", "harness skills reopen <pid>", {}, (), ""),
-    "skill_review": ("skills", "Run hosted review", "harness skills review <pid>", {}, (), ""),
-    "proposal_delete": (
+    "skill_reject": Operation("skills", "Reject proposal", "harness skills reject <pid>", {"reason": "text"}, (), ""),
+    "skill_reopen": Operation("skills", "Reopen proposal", "harness skills reopen <pid>", {}, (), ""),
+    "skill_review": Operation("skills", "Run hosted review", "harness skills review <pid>", {}, (), ""),
+    "proposal_delete": Operation(
         "skills",
         "Delete proposal",
         "harness skills delete-proposal <pid>",
@@ -113,9 +127,9 @@ OPERATIONS = {
         (),
         "Permanently delete this proposal?",
     ),
-    "skill_enable": ("skills", "Enable skill", "harness skills enable <slug>", {}, (), ""),
-    "skill_disable": ("skills", "Disable skill", "harness skills disable <slug>", {}, (), ""),
-    "skill_projects": (
+    "skill_enable": Operation("skills", "Enable skill", "harness skills enable <slug>", {}, (), ""),
+    "skill_disable": Operation("skills", "Disable skill", "harness skills disable <slug>", {}, (), ""),
+    "skill_projects": Operation(
         "skills",
         "Set project allowlist",
         "harness skills projects <slug> <project>",
@@ -123,7 +137,7 @@ OPERATIONS = {
         ("projects",),
         "Confirm the before and after project lists. Added projects will receive this skill automatically.",
     ),
-    "skill_rollback": (
+    "skill_rollback": Operation(
         "skills",
         "Roll back skill",
         "harness skills rollback <slug>",
@@ -131,7 +145,7 @@ OPERATIONS = {
         (),
         "Roll back this skill to its previous version?",
     ),
-    "skill_uninstall": (
+    "skill_uninstall": Operation(
         "skills",
         "Uninstall skill",
         "harness skills uninstall <slug>",
@@ -139,9 +153,9 @@ OPERATIONS = {
         (),
         "Uninstall this skill?",
     ),
-    "skill_export": ("skills", "Export skill", "harness skills export <slug>", {}, (), ""),
-    "maintenance": ("maintenance", "Maintenance status", "harness maintenance status", {}, (), ""),
-    "cleanup": (
+    "skill_export": Operation("skills", "Export skill", "harness skills export <slug>", {}, (), ""),
+    "maintenance": Operation("maintenance", "Maintenance status", "harness maintenance status", {}, (), ""),
+    "cleanup": Operation(
         "maintenance",
         "Clean up",
         "harness maintenance cleanup",
@@ -149,8 +163,8 @@ OPERATIONS = {
         (),
         "Cleanup can erase retained workspaces and sessions under daemon policy. Continue?",
     ),
-    "backup": ("maintenance", "Back up", "harness maintenance backup", {}, (), ""),
-    "retention_preview": (
+    "backup": Operation("maintenance", "Back up", "harness maintenance backup", {}, (), ""),
+    "retention_preview": Operation(
         "maintenance",
         "Preview image archive retention",
         "harness maintenance image-retention-preview",
@@ -158,7 +172,7 @@ OPERATIONS = {
         (),
         "",
     ),
-    "retention_apply": (
+    "retention_apply": Operation(
         "maintenance",
         "Apply image archive retention",
         "harness maintenance image-retention-apply <confirmation>",
@@ -166,8 +180,8 @@ OPERATIONS = {
         ("confirmation",),
         "Permanently erase the images in the preview? Type the daemon's exact confirmation phrase.",
     ),
-    "runners": ("runners", "List runners", "harness runner list", {}, (), ""),
-    "runner_update": (
+    "runners": Operation("runners", "List runners", "harness runner list", {}, (), ""),
+    "runner_update": Operation(
         "runners",
         "Update runner",
         "harness runner update <name>",
@@ -175,8 +189,8 @@ OPERATIONS = {
         (),
         "Update this runner? It may restart.",
     ),
-    "projects": ("runners", "List projects", "harness projects list", {}, (), ""),
-    "project_add": (
+    "projects": Operation("runners", "List projects", "harness projects list", {}, (), ""),
+    "project_add": Operation(
         "runners",
         "Add project",
         "harness projects create <name>",
@@ -184,8 +198,8 @@ OPERATIONS = {
         ("name",),
         "",
     ),
-    "remote": ("runners", "Remote Control folders", "harness remote-control list", {}, (), ""),
-    "folder_trust": (
+    "remote": Operation("runners", "Remote Control folders", "harness remote-control list", {}, (), ""),
+    "folder_trust": Operation(
         "runners",
         "Open folder trust prompt",
         "harness remote-control trust <project>",
@@ -194,7 +208,7 @@ OPERATIONS = {
         "Open the daemon host's interactive trust prompt for this folder? "
         "Approve there only after checking the folder.",
     ),
-    "folder_forget": (
+    "folder_forget": Operation(
         "runners",
         "Forget discovered folder",
         "harness remote-control forget <slug>",
@@ -202,9 +216,9 @@ OPERATIONS = {
         (),
         "Forget this discovered folder?",
     ),
-    "scan_start": ("runners", "Scan for folders", "harness remote-control scan", {}, (), ""),
-    "scan": ("runners", "Scan progress", "harness remote-control scan-show <scan_id>", {}, (), ""),
-    "scan_cancel": (
+    "scan_start": Operation("runners", "Scan for folders", "harness remote-control scan", {}, (), ""),
+    "scan": Operation("runners", "Scan progress", "harness remote-control scan-show <scan_id>", {}, (), ""),
+    "scan_cancel": Operation(
         "runners",
         "Cancel scan",
         "harness remote-control scan-cancel <scan_id>",
@@ -212,7 +226,7 @@ OPERATIONS = {
         (),
         "Cancel this discovery scan?",
     ),
-    "scan_promote": (
+    "scan_promote": Operation(
         "runners",
         "Add scanned folder",
         "harness remote-control promote <scan_id> <candidate_id> <slug> <confirmed_path> <marker>",
@@ -220,7 +234,7 @@ OPERATIONS = {
         ("slug", "confirmed_path", "confirmed_markers"),
         "Add this scanned folder with the exact path and markers you checked?",
     ),
-    "audit": (
+    "audit": Operation(
         "audit",
         "Read retained audit",
         "harness audit list",
@@ -245,7 +259,8 @@ DAEMON_CONFIRM = {"github_reset", "google_unlink"}
 
 
 def validate_fields(operation: str, body: Any) -> dict:
-    _, _, _, fields, required, confirmation = OPERATIONS[operation]
+    spec = OPERATIONS[operation]
+    fields, required, confirmation = spec.fields, spec.required, spec.confirmation
     if not isinstance(body, dict) or set(body) - (set(fields) | ({"confirm"} if confirmation else set())):
         raise ValueError("Unexpected administration fields")
     if confirmation and body.get("confirm") is not True:

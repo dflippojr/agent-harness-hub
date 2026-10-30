@@ -5,8 +5,8 @@
 // goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { blocked, blockedKey, blockedState, clear, command, dangerZone, emptyState, h, icon, pill, placeNotice, reveal, sectionHead,
-  sentence, table, when } from "../lib/dom.mjs";
+import { blocked, blockedKey, blockedState, button, clear, command, dangerZone, emptyState, facts, figure, h, icon, pill, placeNotice,
+  reveal, sectionHead, sentence, stamp, table, when } from "../lib/dom.mjs";
 import { poller } from "../lib/poll.mjs";
 
 const POLL_MS = 30000;
@@ -23,16 +23,11 @@ const isHub = (row) => row.this_hub || row.role === "hub";
 const canRevoke = (row) => Boolean(row.id) && !isHub(row) && hasAppData(row) && !revoked(row);
 const manageable = (row) => row.kind === "app" && !revoked(row);
 const displayName = (row) => row.this_hub ? "This Hub" : row.name || row.id;
-const figure = (value) => typeof value === "number" ? value.toLocaleString() : "—";
 
 function kindLabel(row) {
   if (isHub(row)) return "Hub";
   if (row.kind === "owner") return row.role === "runner" ? "Runner" : "Owner";
   return { app: "App", device: "Device", web: "Web" }[row.kind] || row.kind || "Unknown";
-}
-function stamp(seconds) {
-  return typeof seconds === "number" ? new Date(seconds * 1000).toLocaleString(undefined,
-    { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
 }
 function day(seconds) {
   return new Date(seconds * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short" });
@@ -83,9 +78,6 @@ export function renderApps(main) {
       "come from the app itself; check the key id and origins."),
     command(["harness hub status", "harness keys list"], { parity: true }), notice, problem, view);
 
-  function button(text, action, extra = {}) {
-    return h("button", { type: "button", class: "btn", onclick: action, ...extra }, text);
-  }
   // Every write and its outcome belong to the open App, so the notice shows in its detail (decision 5 of #65).
   function message(value, bad = false) {
     acted = selected;
@@ -96,9 +88,6 @@ export function renderApps(main) {
   function showProblem(value) {
     problem.textContent = value;
     problem.hidden = !value;
-  }
-  function facts(rows) {
-    return h("dl", { class: "facts" }, rows.map(([key, value]) => [h("dt", {}, key), h("dd", {}, value)]));
   }
   // Drop the open App's caps and retention, and any read of them still in flight, so the next draw reads them afresh.
   function forgetDetail() {
