@@ -142,6 +142,64 @@ test("on Marketplace a slot counts down, a claim needs the typed code, and Withd
     expect(errors.filter((e) => !/status of 400/.test(e))).toEqual([]);
   });
 
+test("on Marketplace a refused Confirm focuses its notice in view, and a confirm or withdraw that succeeds does not",
+  async ({ signedIn: page, request, errors }, testInfo) => {
+    functionalProject(testInfo);
+    const { challenge } = pkce();
+    const claimed = await armSlot(page, ENTRY);
+    const armed = await armSlot(page, ENTRY);
+    const { match_code: code } = await appClaims(request, claimed.id, challenge);
+    await openSection(page, "marketplace");
+    const entry = page.getByRole("region", { name: ENTRY, exact: true });
+    const notice = page.locator('[data-field="notice"]');
+    const slot = () => entry.locator(`[data-slot="${claimed.id}"]`);
+    await slot().getByLabel("Match code the app shows").fill(wrongCode(code));
+    await slot().getByRole("button", { name: `Confirm ${ENTRY}` }).click();
+    await expect(notice).toHaveClass(/\bbad\b/);
+    await expect(notice).toContainText("the match code does not match the one the App shows", { ignoreCase: true });
+    await expect(notice).toBeFocused();
+    await expect(notice).toBeInViewport();
+
+    await slot().getByLabel("Match code the app shows").fill(code);
+    await slot().getByRole("button", { name: `Confirm ${ENTRY}` }).click();
+    await expect(notice).toHaveText(new RegExp(`Confirmed ${ENTRY}`));
+    await expect(notice).not.toBeFocused();
+
+    const other = entry.locator(`[data-slot="${armed.id}"]`);
+    await other.getByRole("button", { name: `Withdraw slot for ${ENTRY}` }).click();
+    await other.getByRole("button", { name: "Confirm withdraw" }).click();
+    await expect(entry.locator(`[data-slot="${armed.id}"]`)).toHaveCount(0);
+    await expect(notice).not.toHaveClass(/\bbad\b/);
+    await expect(notice).not.toBeFocused();
+    // The confirmed slot is the App's to redeem; deny it so the entry is left with no slots.
+    expect((await hubApi(page, `pairing/${claimed.id}/deny`, { method: "POST", body: { confirm: true } })).status).toBe(200);
+    expect(errors.filter((e) => !/status of 400/.test(e))).toEqual([]);
+  });
+
+test("on Marketplace an arm the daemon sends back for fresh consent focuses the consent heading, not the notice",
+  async ({ signedIn: page, errors }, testInfo) => {
+    functionalProject(testInfo);
+    await openSection(page, "marketplace");
+    const { json: view } = await hubApi(page, "marketplace");
+    const reviewed = view.entries.find((e) => e.name === "financial-planner");
+    // The Hub answers this 409 when the daemon's scope wording changed after the consent screen was drawn.
+    await page.route("**/api/marketplace/arm", (route) => route.fulfill({ status: 409, contentType: "application/json",
+      body: JSON.stringify({ detail: "The daemon describes these scopes differently now.", consent_entry: reviewed }) }));
+    const entry = page.getByRole("region", { name: "financial-planner", exact: true });
+    await entry.getByRole("button", { name: "Set up financial-planner" }).click();
+    const consent = entry.getByRole("region", { name: /^Set up financial-planner/ });
+    for (const box of await consent.getByRole("checkbox").all()) await box.check();
+    const origins = consent.getByRole("radio");
+    if (await origins.count()) await origins.first().check();
+    await consent.getByRole("button", { name: "Approve" }).click();
+    const notice = page.locator('[data-field="notice"]');
+    await expect(notice).toHaveText("The daemon describes these scopes differently now.");
+    await expect(entry.getByRole("region", { name: /^Set up financial-planner/ }).getByRole("heading", { level: 3 }))
+      .toBeFocused();
+    await expect(notice).not.toBeFocused();
+    expect(errors.filter((e) => !/status of 409/.test(e))).toEqual([]);
+  });
+
 test("Marketplace entries say they are local and unverified, and nothing is fetched from an entry",
   async ({ signedIn: page, errors }, testInfo) => {
     functionalProject(testInfo);

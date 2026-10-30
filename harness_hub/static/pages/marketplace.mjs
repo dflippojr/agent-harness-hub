@@ -5,8 +5,8 @@
 // image shown is an inline one the server already checked. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { banner, blocked, blockedKey, blockedState, button, clear, command, emphasis, facts, h, icon, pill, placeNotice, sectionHead,
-  sentence, when } from "../lib/dom.mjs";
+import { banner, blocked, blockedKey, blockedState, button, clear, command, emphasis, facts, h, icon, pill, placeNotice, reveal,
+  sectionHead, sentence, when } from "../lib/dom.mjs";
 import { expiry, matchField, pairingRecovery, tickExpiries, tier, verbButton } from "../lib/pairing.mjs";
 import { poller } from "../lib/poll.mjs";
 
@@ -364,11 +364,12 @@ export function renderMarketplace(main) {
     for (const control of list.querySelectorAll("button:not(.copy), input")) control.disabled = true;
     confirming = null;
     if (!keepOpen) open = null;
-    let reviewed = null, reviewMessage = "";
+    let reviewed = null, reviewMessage = "", refused = false;
     try {
       await action();
     } catch (error) {
       if (stopped) return;
+      refused = true;
       open = null;
       if (error.status === 409 && error.body.consent_entry) {
         reviewed = error.body.consent_entry;
@@ -388,6 +389,7 @@ export function renderMarketplace(main) {
       consent(sameCopy ? current : reviewed);
       message(reviewMessage, true);
     }
+    if (refused && !reviewed && !stopped) reveal(notice);
   }
   ticker = setInterval(() => tickExpiries(list, now()), 1000);
   void load(true);
