@@ -18,7 +18,7 @@ from importlib import resources
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -135,6 +135,22 @@ def _json_body(data: bytes | bytearray) -> Any:
         return json.loads(data)
     except RecursionError as error:
         raise ValueError("JSON body is nested too deeply") from error
+
+
+async def _read_json(request: Request, limit: int, label: str, origin: str, not_json: str = "") -> Any:
+    """A write's JSON body of at most `limit` bytes, {} when empty. Raises the refusal as an HTTPException, answered
+    as {"detail": ...} just as `_error` answers: 403 with no Origin, 413 over the limit, 400 when it does not parse."""
+    if not request.headers.get("origin"):
+        raise HTTPException(403, origin)
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > limit:
+            raise HTTPException(413, f"{label} body is too large")
+        data.extend(chunk)
+    try:
+        return _json_body(data or b"{}")
+    except ValueError:
+        raise HTTPException(400, not_json or f"{label} body must be JSON") from None
 
 
 # An error says whether the daemon answered, so the shell's status tells "the Hub could not reach the daemon" (a 503 of
@@ -781,17 +797,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         key = claims.key()
         if key is None:
             return _unclaimed("Claim this Hub on Overview before setting up an app.")
-        if not request.headers.get("origin"):
-            return _error(403, "Setting up an app requires a same-origin Origin")
-        data = bytearray()
-        async for chunk in request.stream():
-            if len(data) + len(chunk) > 4096:
-                return _error(413, "Set-up body is too large")
-            data.extend(chunk)
-        try:
-            body = _json_body(data or b"{}")
-        except ValueError:
-            return _error(400, "Set-up body must be JSON")
+        body = await _read_json(request, 4096, "Set-up", "Setting up an app requires a same-origin Origin")
         if not isinstance(body, dict) or set(body) - {"catalog_app_id", "scopes", "origin", "acknowledge_elevated",
                                                                "consent_digest"}:
             return _error(400, "Unexpected set-up fields")
@@ -910,17 +916,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return _unclaimed("Claim this Hub on Overview before administering Apps.")
         body = None
         if request.method != "GET":
-            if not request.headers.get("origin"):
-                return _error(403, "Apps writes require a same-origin Origin")
-            data = bytearray()
-            async for chunk in request.stream():
-                if len(data) + len(chunk) > 1024:
-                    return _error(413, "Apps body is too large")
-                data.extend(chunk)
-            try:
-                body = _json_body(data or b"{}")
-            except ValueError:
-                return _error(400, "Apps body must be JSON")
+            body = await _read_json(request, 1024, "Apps", "Apps writes require a same-origin Origin")
             fields = {"revoke": {"confirm"}, "limits_save": {"max_running", "max_queued"},
                       "retention": {"retention_days", "confirm"}}
             if not isinstance(body, dict) or not body or set(body) - fields[operation]:
@@ -992,17 +988,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return _unclaimed("Claim this Hub on Overview before deciding pairing requests.")
         body = None
         if request.method == "POST":
-            if not request.headers.get("origin"):
-                return _error(403, "Pairing decisions require a same-origin Origin")
-            data = bytearray()
-            async for chunk in request.stream():
-                if len(data) + len(chunk) > 1024:
-                    return _error(413, "Pairing body is too large")
-                data.extend(chunk)
-            try:
-                body = _json_body(data or b"{}")
-            except ValueError:
-                return _error(400, "Pairing body must be JSON")
+            body = await _read_json(request, 1024, "Pairing", "Pairing decisions require a same-origin Origin")
             fields = {"approve": {"match", "acknowledge_elevated"}, "confirm": {"match"}, "deny": {"confirm"}}
             if not isinstance(body, dict) or set(body) - fields[operation]:
                 return _error(400, "Unexpected pairing fields")
@@ -1088,7 +1074,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         if len(request.query_params.multi_items()) != len(set(request.query_params)):
             return _error(400, "Repeated query fields are refused")
         params = {name: value for name, value in request.query_params.items() if name not in targets}
-        body = None
+        body, invalid = None, "Invalid administration fields; check required values and confirmation"
         try:
             if request.method == "GET":
                 fields = OPERATIONS[operation].fields
@@ -1103,16 +1089,10 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             else:
                 if params:
                     return _error(400, "Unexpected query fields")
-                if not request.headers.get("origin"):
-                    return _error(403, "Administration writes require a same-origin Origin")
-                data = bytearray()
-                async for chunk in request.stream():
-                    if len(data) + len(chunk) > 65536:
-                        return _error(413, "Administration body is too large")
-                    data.extend(chunk)
-                body = validate_fields(operation, _json_body(data or b"{}"))
+                body = validate_fields(operation, await _read_json(
+                    request, 65536, "Administration", "Administration writes require a same-origin Origin", invalid))
         except (ValueError, OverflowError):
-            return _error(400, "Invalid administration fields; check required values and confirmation")
+            return _error(400, invalid)
         try:
             if operation == "skill_install":
                 review = await daemon.administration(key["token"], "proposal", targets)
@@ -1175,17 +1155,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return _unclaimed("Claim this Hub on Overview before administering Settings.")
         body, name = None, ""
         if request.method != "GET":
-            if not request.headers.get("origin"):
-                return _error(403, "Settings writes require a same-origin Origin")
-            data = bytearray()
-            async for chunk in request.stream():
-                if len(data) + len(chunk) > 262144:
-                    return _error(413, "Settings body is too large")
-                data.extend(chunk)
-            try:
-                body = _json_body(data or b"{}")
-            except ValueError:
-                return _error(400, "Settings body must be JSON")
+            body = await _read_json(request, 262144, "Settings", "Settings writes require a same-origin Origin")
             fields = {"validate": {"revision", "changes"}, "save": {"revision", "changes"},
                       "rollback": {"revision", "confirm"}, "restart": {"revision", "confirm"},
                       "smart_save": {"mode"}, "backend_save": {"name", "model", "effort"},
