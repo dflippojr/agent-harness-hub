@@ -97,9 +97,8 @@ export function requestPage({ path, root, owners, controls, watched, onRead, pai
     if (stopped) return;
     page.busy = false;
     await load(true);
-    if (!refused || stopped) return;
     if (afterReload) afterReload();
-    else reveal(notice);
+    else if (refused && !stopped) reveal(notice);
   }
   function stop() {
     stopped = true;
