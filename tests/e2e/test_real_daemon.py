@@ -83,6 +83,16 @@ def daemon(tmp_path_factory):
                  else f"unix://{(root / 'no-docker.sock').as_posix()}")
     daemon_env = dict(os.environ, HARNESS_SUPERVISED="1", DOCKER_HOST=no_engine)
     daemon_env.pop("DOCKER_CONTEXT", None)
+    docker_calls = root / "docker-calls.txt"
+    if os.name != "nt":
+        # A recording stand-in first on the daemon's PATH. Windows can't have one: docker.exe is in System32, which
+        # CreateProcess searches before any PATH.
+        shim = root / "docker-shim"
+        shim.mkdir()
+        (shim / "docker").write_text(f'#!/bin/sh\necho "$@" >> "{docker_calls}"\n'
+                                     f'PATH="{os.environ["PATH"]}" exec docker "$@"\n', encoding="utf-8")
+        (shim / "docker").chmod(0o755)
+        daemon_env["PATH"] = f"{shim}{os.pathsep}{os.environ['PATH']}"
     log = (root / "daemon.log").open("w")
     def launch():
         return subprocess.Popen([DAEMON_PYTHON, "-m", "harness", "--config-dir", str(config)], cwd=src,
@@ -114,7 +124,8 @@ def daemon(tmp_path_factory):
     env.pop("HARNESS_TOKEN", None)
     env.pop("HARNESS_LOCAL_TOKEN", None)
     daemon_logs.append(root / "daemon.log")
-    yield {"url": url, "src": src, "env": env, "daemon_env": daemon_env, "root": root, "processes": processes}
+    yield {"url": url, "src": src, "env": env, "daemon_env": daemon_env, "root": root, "processes": processes,
+           "docker_calls": docker_calls}
     daemon_logs.remove(root / "daemon.log")
     stopping.set()
     proc = processes[-1]
@@ -666,3 +677,13 @@ def test_the_daemon_has_no_docker_engine_to_wait_on(daemon):
     except FileNotFoundError:
         return  # no Docker CLI on this host: nothing to wait on
     assert reply.returncode != 0, f"the daemon's Docker CLI reached an engine: {reply.stdout.strip()}"
+
+
+def test_reading_backends_starts_no_docker_cli(daemon):
+    """A Backends read must not start `docker`: on windows-latest the job's first, cold `docker.exe` start took 2.5 s
+    to over 10 s, past the Hub's and this module's 10 s read timeout, even with no engine to reach (#215)."""
+    if os.name == "nt":
+        pytest.skip("docker.exe is in System32, ahead of any PATH, so only POSIX can record its calls")
+    host_cli(daemon, "backends", "list")
+    calls = daemon["docker_calls"].read_text(encoding="utf-8").splitlines() if daemon["docker_calls"].exists() else []
+    assert [call for call in calls if call.startswith("run ")] == []
