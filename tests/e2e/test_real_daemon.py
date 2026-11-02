@@ -89,6 +89,7 @@ def daemon(tmp_path_factory):
         # TEMP (#215): dump every thread's stack each second, to see where the /backends read waits.
         bootstrap = ("import faulthandler, os, runpy, sys; sys.hub215 = open(os.environ['HUB215_STACKS'], 'a'); "
                      "faulthandler.dump_traceback_later(1.0, repeat=True, file=sys.hub215); "
+                     "import threading; threading.Timer(25, faulthandler.cancel_dump_traceback_later).start(); "
                      "sys.argv[0] = 'harness'; runpy.run_module('harness', run_name='__main__', alter_sys=True)")
         return subprocess.Popen([DAEMON_PYTHON, "-c", bootstrap, "--config-dir", str(config)], cwd=src,
                                 env=daemon_env, stdout=log, stderr=subprocess.STDOUT)
@@ -100,7 +101,8 @@ def daemon(tmp_path_factory):
     def supervise():
         # A test-only supervisor exercises the daemon's supported restart contract.
         while not stopping.is_set():
-            processes[-1].wait()
+            code = processes[-1].wait()
+            diagnostics.append(f"daemon {processes[-1].pid} exited {code:#x} at {time.strftime('%H:%M:%S')}")
             if not stopping.is_set():
                 processes.append(launch())
 
@@ -217,12 +219,17 @@ def hub215_report(daemon, mark: int, started: float):
     waiting = [d for d in dumps if "backend_state" in d]
     diagnostics.append(f"{len(dumps)} stack dumps during the read, {len(waiting)} inside backend_state")
     for label, dump in (("first", waiting[:1]), ("last", waiting[-1:])):
-        diagnostics.append(f"--- {label} dump inside backend_state ---\n" + "".join(dump)[:7000])
+        threads = "".join(dump).split("Thread 0x")
+        probes = [t for t in threads if "backend_state" in t]
+        diagnostics.append(f"--- {label} dump: {len(threads)} threads, {len(probes)} in backend_state ---\n"
+                           + "".join(t[-1500:] for t in probes[:1]))
     if os.name == "nt":
-        ps = ("Get-Process docker -ErrorAction SilentlyContinue | Select-Object Id,StartTime,CPU,WorkingSet | Out-String;"
+        ps = ("Get-Process docker -ErrorAction SilentlyContinue | "
+              "Select-Object Id,StartTime,CPU,WorkingSet | Out-String;"
               "Get-Date; (Get-Command docker).Source; Get-Service docker -ErrorAction SilentlyContinue | Out-String;"
               "Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled,AMRunningMode | Out-String")
-        report = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=60)
+        report = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
+                                timeout=60)
         diagnostics.append(report.stdout + report.stderr)
     for argv in (["docker", "--version"], ["docker", "version"],
                  ["docker", "run", "--rm", "--network", "x", "agent-harness-cli:1", "claude", "auth", "status"]):
