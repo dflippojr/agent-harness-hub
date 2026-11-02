@@ -212,6 +212,16 @@ class Hub:
                 self.proc.wait(timeout=15)
 
 
+def hub215_snapshot(label: str):
+    """TEMP (#215): every process started in the last 90 s, with its parent and command line."""
+    ps = ("$now = Get-Date; Get-CimInstance Win32_Process | Where-Object { $_.CreationDate -gt $now.AddSeconds(-90) } | "
+          "Sort-Object CreationDate | ForEach-Object { '{0:HH:mm:ss.fff} pid={1} parent={2} {3} :: {4}' -f "
+          "$_.CreationDate,$_.ProcessId,$_.ParentProcessId,$_.Name,$_.CommandLine }")
+    done = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=60)
+    lines = "\n".join(line[:260] for line in done.stdout.splitlines())
+    diagnostics.append(f"--- processes {label} at {time.strftime('%H:%M:%S')} ---\n{lines}\n{done.stderr[:300]}")
+
+
 def hub215_report(daemon, mark: int, started: float):
     """TEMP (#215): what the daemon's threads and the Docker CLI were doing during the backends read."""
     diagnostics.append(f"backends read took {time.monotonic() - started:.2f} s")
@@ -363,11 +373,17 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         for resource in ("smart-approvals", "backends", "memory", "github", "google"):
             stacks = daemon["root"] / "stacks.txt"
             mark, began = stacks.stat().st_size, time.monotonic()
+            sampler = None
+            if resource == "backends" and os.name == "nt":
+                sampler = threading.Timer(4, hub215_snapshot, args=("4 s into the read",))
+                sampler.start()
             try:
                 response = first.call("GET", "/api/settings/" + resource)
             finally:
                 if resource == "backends":
                     hub215_report(daemon, mark, began)
+                    if sampler:
+                        sampler.join()
             assert response.status_code in (200, 404), (
                 f"{resource}: {response.status_code} after {response.elapsed.total_seconds():.1f} s: {response.text}")
 
