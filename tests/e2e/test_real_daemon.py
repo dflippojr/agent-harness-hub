@@ -89,7 +89,7 @@ def daemon(tmp_path_factory):
         # TEMP (#215): dump every thread's stack each second, to see where the /backends read waits.
         bootstrap = ("import faulthandler, os, runpy, sys; sys.hub215 = open(os.environ['HUB215_STACKS'], 'a'); "
                      "faulthandler.dump_traceback_later(1.0, repeat=True, file=sys.hub215); "
-                     "import threading; threading.Timer(25, faulthandler.cancel_dump_traceback_later).start(); "
+                     "import threading; threading.Timer(45, faulthandler.cancel_dump_traceback_later).start(); "
                      "sys.argv[0] = 'harness'; runpy.run_module('harness', run_name='__main__', alter_sys=True)")
         return subprocess.Popen([DAEMON_PYTHON, "-c", bootstrap, "--config-dir", str(config)], cwd=src,
                                 env=daemon_env, stdout=log, stderr=subprocess.STDOUT)
@@ -220,6 +220,18 @@ def hub215_snapshot(label: str):
     done = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=60)
     lines = "\n".join(line[:260] for line in done.stdout.splitlines())
     diagnostics.append(f"--- processes {label} at {time.strftime('%H:%M:%S')} ---\n{lines}\n{done.stderr[:300]}")
+
+
+def hub215_probe_seconds(daemon, mark: int):
+    """TEMP (#215): one dump a second, so the dumps holding a probe thread say how long the probes really ran."""
+    time.sleep(32)
+    dumps = (daemon["root"] / "stacks.txt").read_bytes()[mark:].decode("utf-8", "replace").split("Timeout (")
+    frames = []
+    for dump in dumps:
+        probes = [t for t in dump.split("Thread 0x") if "backend_state" in t]
+        tops = [t.splitlines()[1].split(chr(92))[-1].strip() if len(t.splitlines()) > 1 else "?" for t in probes]
+        frames.append(f"{len(probes)}:{'/'.join(sorted({x.split(' in ')[-1] for x in tops}))}")
+    diagnostics.append(f"probe threads per 1 s dump from the read's start: {frames}")
 
 
 def hub215_report(daemon, mark: int, started: float):
@@ -374,8 +386,8 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
             stacks = daemon["root"] / "stacks.txt"
             mark, began = stacks.stat().st_size, time.monotonic()
             sampler = None
-            if resource == "backends" and os.name == "nt":
-                sampler = threading.Timer(4, hub215_snapshot, args=("4 s into the read",))
+            if resource == "backends":
+                sampler = threading.Thread(target=hub215_probe_seconds, args=(daemon, mark))
                 sampler.start()
             try:
                 response = first.call("GET", "/api/settings/" + resource)
