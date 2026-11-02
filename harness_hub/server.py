@@ -28,7 +28,7 @@ from .administration import OPERATIONS, TARGET, validate_fields
 from .auth import SESSION_TTL_SECONDS, Sessions
 from .claim import CLAIMED, ClaimError, ClaimManager
 from .config import Settings
-from .daemon import ADMIN_ROUTES, DaemonClient, DaemonUnreachable
+from .daemon import ADMIN_ROUTES, DaemonClient, DaemonUnreachable, route_targets
 from .guard import TOKEN_SHAPE, ResponseGuard, leaks
 from .inventory import InventoryCache, valid_inventory
 from .state import SERVER_FILE, StateStore, write_private
@@ -1050,7 +1050,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                                 "fields": [{"name": field, "type": kind, "required": field in spec.required}
                                            for field, kind in spec.fields.items()],
                                 "confirmation": spec.confirmation, "method": ADMIN_ROUTES[name][0],
-                                "targets": re.findall(r"{(\w+)}", ADMIN_ROUTES[name][1])}
+                                "targets": route_targets(ADMIN_ROUTES[name][1])}
                                for name, spec in OPERATIONS.items()],
                 "not_offered": [
                     {"label": "Mac runner pairing codes", "reason": "A Hub key cannot mint owner keys "
@@ -1067,7 +1067,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         key = claims.key()
         if key is None:
             return _unclaimed("Claim this Hub on Overview before administering the daemon.")
-        target_names = re.findall(r"{(\w+)}", ADMIN_ROUTES[operation][1])
+        target_names = route_targets(ADMIN_ROUTES[operation][1])
         targets = {name: request.query_params.get(name, "") for name in target_names}
         if any(not TARGET.fullmatch(value) for value in targets.values()):
             return _error(400, "A valid target identifier is required")
