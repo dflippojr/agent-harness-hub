@@ -11,6 +11,13 @@ LOG_TAIL = 4000
 # the Hub logs the running test started.
 daemon_logs: list[Path] = []
 started_logs: list[Path] = []
+diagnostics: list[str] = []  # TEMP (#215)
+
+
+def pytest_terminal_summary(terminalreporter):  # TEMP (#215)
+    terminalreporter.section("hub215 diagnostics")
+    for line in diagnostics:
+        terminalreporter.write_line(line)
 
 
 def log_tail(path: Path) -> str:

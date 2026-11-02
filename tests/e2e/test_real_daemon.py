@@ -33,7 +33,7 @@ from harness_hub.views import ELEVATED_SCOPES, SCOPE_DISCLOSURES, owner_api_comp
 
 from ..conftest import assert_no_secrets
 from ..response_capture import capture_response
-from .conftest import daemon_logs, started_logs
+from .conftest import daemon_logs, diagnostics, started_logs
 
 pytestmark = pytest.mark.e2e
 
@@ -84,8 +84,13 @@ def daemon(tmp_path_factory):
     daemon_env = dict(os.environ, HARNESS_SUPERVISED="1", DOCKER_HOST=no_engine)
     daemon_env.pop("DOCKER_CONTEXT", None)
     log = (root / "daemon.log").open("w")
+    daemon_env["HUB215_STACKS"] = str(root / "stacks.txt")
     def launch():
-        return subprocess.Popen([DAEMON_PYTHON, "-m", "harness", "--config-dir", str(config)], cwd=src,
+        # TEMP (#215): dump every thread's stack each second, to see where the /backends read waits.
+        bootstrap = ("import faulthandler, os, runpy, sys; sys.hub215 = open(os.environ['HUB215_STACKS'], 'a'); "
+                     "faulthandler.dump_traceback_later(1.0, repeat=True, file=sys.hub215); "
+                     "sys.argv[0] = 'harness'; runpy.run_module('harness', run_name='__main__', alter_sys=True)")
+        return subprocess.Popen([DAEMON_PYTHON, "-c", bootstrap, "--config-dir", str(config)], cwd=src,
                                 env=daemon_env, stdout=log, stderr=subprocess.STDOUT)
 
     processes = [launch()]
@@ -203,6 +208,31 @@ class Hub:
                 self.proc.kill()
             finally:
                 self.proc.wait(timeout=15)
+
+
+def hub215_report(daemon, mark: int, started: float):
+    """TEMP (#215): what the daemon's threads and the Docker CLI were doing during the backends read."""
+    diagnostics.append(f"backends read took {time.monotonic() - started:.2f} s")
+    dumps = (daemon["root"] / "stacks.txt").read_bytes()[mark:].decode("utf-8", "replace").split("Timeout (")
+    waiting = [d for d in dumps if "backend_state" in d]
+    diagnostics.append(f"{len(dumps)} stack dumps during the read, {len(waiting)} inside backend_state")
+    for label, dump in (("first", waiting[:1]), ("last", waiting[-1:])):
+        diagnostics.append(f"--- {label} dump inside backend_state ---\n" + "".join(dump)[:7000])
+    if os.name == "nt":
+        ps = ("Get-Process docker -ErrorAction SilentlyContinue | Select-Object Id,StartTime,CPU,WorkingSet | Out-String;"
+              "Get-Date; (Get-Command docker).Source; Get-Service docker -ErrorAction SilentlyContinue | Out-String;"
+              "Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled,AMRunningMode | Out-String")
+        report = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=60)
+        diagnostics.append(report.stdout + report.stderr)
+    for argv in (["docker", "--version"], ["docker", "version"],
+                 ["docker", "run", "--rm", "--network", "x", "agent-harness-cli:1", "claude", "auth", "status"]):
+        began = time.monotonic()
+        try:
+            done = subprocess.run(argv, env=daemon["daemon_env"], capture_output=True, text=True, timeout=60)
+            outcome = f"rc {done.returncode}: {(done.stderr or done.stdout).strip()[:300]}"
+        except (OSError, subprocess.TimeoutExpired) as error:
+            outcome = repr(error)
+        diagnostics.append(f"{argv[:2]} after the read: {time.monotonic() - began:.2f} s, {outcome}")
 
 
 def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
@@ -324,7 +354,13 @@ def test_install_claim_overview_refuse_release_deny(daemon, tmp_path):
         # Read every moved control; disabled modules return their actual error or
         # disabled state without ever exposing provider credentials.
         for resource in ("smart-approvals", "backends", "memory", "github", "google"):
-            response = first.call("GET", "/api/settings/" + resource)
+            stacks = daemon["root"] / "stacks.txt"
+            mark, began = stacks.stat().st_size, time.monotonic()
+            try:
+                response = first.call("GET", "/api/settings/" + resource)
+            finally:
+                if resource == "backends":
+                    hub215_report(daemon, mark, began)
             assert response.status_code in (200, 404), (
                 f"{resource}: {response.status_code} after {response.elapsed.total_seconds():.1f} s: {response.text}")
 
