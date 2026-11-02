@@ -21,7 +21,7 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import ExitStack, suppress
+from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -60,11 +60,14 @@ def wait(check, timeout: float, what: str):
     raise AssertionError(f"timed out waiting for {what}")
 
 
-def start_docker_once(env: dict) -> None:
-    """Start the Docker CLI once, so no daemon read pays for its first, cold start (#215). `ps` exits at once: this
-    environment has no engine to reach."""
-    with suppress(FileNotFoundError):  # no Docker CLI on this host: nothing to wait on
+def start_docker_once(env: dict) -> float | None:
+    """Start the Docker CLI once, so no daemon read pays for its first, cold start (#215), and return when it finished,
+    or None if there is no CLI to start. `ps` exits at once: this environment has no engine to reach."""
+    try:
         subprocess.run(["docker", "ps", "-a"], env=env, capture_output=True, timeout=120)
+    except FileNotFoundError:  # no Docker CLI on this host: nothing to wait on
+        return None
+    return time.monotonic()
 
 
 def record_docker_calls(root: Path, env: dict) -> Path:
@@ -106,16 +109,15 @@ def daemon(tmp_path_factory):
     daemon_env.pop("DOCKER_CONTEXT", None)
     docker_calls = record_docker_calls(root, daemon_env)
     started = time.monotonic()
-    processes: list[subprocess.Popen] = []
-    start_docker_once(daemon_env)
-    docker_started_before_daemon = not processes
+    docker_finished = start_docker_once(daemon_env)
     notes.append(f"first docker CLI start (cold): {time.monotonic() - started:.2f} s")
     log = (root / "daemon.log").open("w")
     def launch():
         return subprocess.Popen([DAEMON_PYTHON, "-m", "harness", "--config-dir", str(config)], cwd=src,
                                 env=daemon_env, stdout=log, stderr=subprocess.STDOUT)
 
-    processes.append(launch())
+    daemon_launched = time.monotonic()
+    processes = [launch()]
     proc = processes[0]
     stopping = threading.Event()
 
@@ -142,7 +144,8 @@ def daemon(tmp_path_factory):
     env.pop("HARNESS_LOCAL_TOKEN", None)
     daemon_logs.append(root / "daemon.log")
     yield {"url": url, "src": src, "env": env, "daemon_env": daemon_env, "root": root, "processes": processes,
-           "docker_calls": docker_calls, "docker_started_before_daemon": docker_started_before_daemon}
+           "docker_calls": docker_calls, "docker_finished": docker_finished,
+           "daemon_launched": daemon_launched}
     daemon_logs.remove(root / "daemon.log")
     stopping.set()
     proc = processes[-1]
@@ -700,7 +703,8 @@ def test_the_first_docker_start_is_not_inside_a_request(daemon):
     """Several daemon reads start `docker` (Backends' sign-in probes, Maintenance's `docker ps`). The job's first, cold
     docker.exe start on windows-latest took up to over 10 s with no engine to reach, past the Hub's and this module's
     10 s read timeouts (#215), so the fixture starts it before the daemon runs."""
-    assert daemon["docker_started_before_daemon"]
+    if shutil.which("docker", path=daemon["daemon_env"]["PATH"]):
+        assert daemon["docker_finished"] is not None and daemon["docker_finished"] <= daemon["daemon_launched"]
     host_cli(daemon, "backends", "list")
     if os.name == "nt":
         return  # docker.exe is in System32, ahead of any PATH, so only POSIX can also record its calls
