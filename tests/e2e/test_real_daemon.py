@@ -72,9 +72,18 @@ def daemon(tmp_path_factory):
     for name in ("harness.yaml", "projects.yaml"):
         shutil.copy(src / "config" / name, config / name)
     port = free_port()
-    (config / "harness.local.yaml").write_text(
-        f"listen:\n  port: {port}\ndata_dir: {data.as_posix()}\nrepos_dir: {repos.as_posix()}\n"
-        "notify:\n  enabled: false\nallowed_logins: [owner@example.test]\n", encoding="utf-8")
+    # A hosted backend on `auth: subscription` makes each Backends read start `docker run ... auth status`, and the
+    # first, cold docker.exe start on windows-latest can outlast the 10 s read timeouts (#215). On `api_key` the daemon
+    # runs no probe. No key exists, so each still answers not signed in. harness.local.yaml merges one level deep, so
+    # each backend is written whole.
+    import yaml  # the daemon's dependency: in requirements-e2e.lock, not in the lock the non-e2e jobs collect this with
+
+    copied = yaml.safe_load((config / "harness.yaml").read_text(encoding="utf-8"))
+    backends = {name: dict(backend, auth="api_key") for name, backend in copied["backends"].items()}
+    (config / "harness.local.yaml").write_text(yaml.safe_dump({
+        "listen": {"port": port}, "data_dir": data.as_posix(), "repos_dir": repos.as_posix(),
+        "notify": {"enabled": False}, "allowed_logins": ["owner@example.test"], "backends": backends}),
+        encoding="utf-8")
     (config / "profile.yaml").write_text("profile: service\nmodules:\n  hub: true\n", encoding="utf-8")
     # The copied harness.yaml has hosted CLI backends, and the daemon checks their sign-in with `docker run <image>`.
     # A runner has no such image, so each check would pull from a registry while a Settings read waits (#138). With
@@ -670,7 +679,8 @@ def test_heartbeat_reads_the_real_daemons_health(daemon, tmp_path):
 def test_the_daemon_has_no_docker_engine_to_wait_on(daemon):
     """A Settings → Backends read runs one `docker run <CLI image> ... auth status` per hosted CLI backend, each allowed
     30 s. A runner has no such image, so each one becomes a registry pull, which can outlast the Hub's and this
-    module's 10 s read timeout (#138). The daemon under test must find no engine, so every probe fails at once."""
+    module's 10 s read timeout (#138). The daemon under test must find no engine, so any probe still run fails at once.
+    The fixture also switches those probes off (#215), since starting the Docker CLI can itself take that long."""
     try:
         reply = subprocess.run(["docker", "version"], env=daemon["daemon_env"], capture_output=True, text=True,
                                timeout=30)
