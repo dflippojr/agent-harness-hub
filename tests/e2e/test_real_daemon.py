@@ -10,7 +10,6 @@ daemon's own CLI, and every response the browser could see is checked for the Hu
 from __future__ import annotations
 
 import base64
-import contextlib
 import hashlib
 import json
 import os
@@ -22,7 +21,7 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -61,13 +60,25 @@ def wait(check, timeout: float, what: str):
     raise AssertionError(f"timed out waiting for {what}")
 
 
-def start_docker_once(env: dict) -> float:
-    """Start the Docker CLI once and return how long that took, so no daemon read pays for its first, cold start (#215).
-    `ps` exits at once: this environment has no engine to reach."""
-    started = time.monotonic()
-    with contextlib.suppress(FileNotFoundError):  # no Docker CLI on this host: nothing to wait on
+def start_docker_once(env: dict) -> None:
+    """Start the Docker CLI once, so no daemon read pays for its first, cold start (#215). `ps` exits at once: this
+    environment has no engine to reach."""
+    with suppress(FileNotFoundError):  # no Docker CLI on this host: nothing to wait on
         subprocess.run(["docker", "ps", "-a"], env=env, capture_output=True, timeout=120)
-    return time.monotonic() - started
+
+
+def record_docker_calls(root: Path, env: dict) -> Path:
+    """Put a recording stand-in first on `env`'s PATH, and return the file it appends to. Windows can't have one:
+    docker.exe is in System32, which CreateProcess searches before any PATH."""
+    calls = root / "docker-calls.txt"
+    if os.name != "nt":
+        shim = root / "docker-shim"
+        shim.mkdir()
+        (shim / "docker").write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\n'
+                                     f'PATH="{os.environ["PATH"]}" exec docker "$@"\n', encoding="utf-8")
+        (shim / "docker").chmod(0o755)
+        env["PATH"] = f"{shim}{os.pathsep}{os.environ['PATH']}"
+    return calls
 
 
 @pytest.fixture(scope="module")
@@ -93,17 +104,10 @@ def daemon(tmp_path_factory):
                  else f"unix://{(root / 'no-docker.sock').as_posix()}")
     daemon_env = dict(os.environ, HARNESS_SUPERVISED="1", DOCKER_HOST=no_engine)
     daemon_env.pop("DOCKER_CONTEXT", None)
-    docker_calls = root / "docker-calls.txt"
-    if os.name != "nt":
-        # A recording stand-in first on the daemon's PATH. Windows can't have one: docker.exe is in System32, which
-        # CreateProcess searches before any PATH.
-        shim = root / "docker-shim"
-        shim.mkdir()
-        (shim / "docker").write_text(f'#!/bin/sh\necho "$@" >> "{docker_calls}"\n'
-                                     f'PATH="{os.environ["PATH"]}" exec docker "$@"\n', encoding="utf-8")
-        (shim / "docker").chmod(0o755)
-        daemon_env["PATH"] = f"{shim}{os.pathsep}{os.environ['PATH']}"
-    notes.append(f"first docker CLI start (cold): {start_docker_once(daemon_env):.2f} s")
+    docker_calls = record_docker_calls(root, daemon_env)
+    started = time.monotonic()
+    start_docker_once(daemon_env)
+    notes.append(f"first docker CLI start (cold): {time.monotonic() - started:.2f} s")
     log = (root / "daemon.log").open("w")
     def launch():
         return subprocess.Popen([DAEMON_PYTHON, "-m", "harness", "--config-dir", str(config)], cwd=src,
@@ -698,4 +702,6 @@ def test_the_first_docker_start_is_not_inside_a_request(daemon):
         pytest.skip("docker.exe is in System32, ahead of any PATH, so only POSIX can record its calls")
     host_cli(daemon, "backends", "list")
     calls = daemon["docker_calls"].read_text(encoding="utf-8").splitlines()
-    assert calls[0] == "ps -a"
+    assert calls[0] == "ps -a"  # the fixture's, before the daemon ran
+    # The reason it has to come first: this read does start docker, once per hosted backend.
+    assert any(call.startswith("run ") for call in calls[1:]), calls
