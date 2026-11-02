@@ -4,17 +4,15 @@
 // and this page never sees one. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { blocked, blockedKey, blockedState, button, clear, command, emphasis, facts, h, icon, pill, placeNotice, reveal, sectionHead,
+import { blocked, blockedState, button, clear, command, emphasis, facts, h, icon, pill, placeNotice, sectionHead,
   stamp, table } from "../lib/dom.mjs";
-import { expiry, matchField, pairingRecovery, tickExpiries, tier, verbButton } from "../lib/pairing.mjs";
-import { poller } from "../lib/poll.mjs";
+import { expiry, matchField, pairingRecovery, POLL_MS, requestPage, tier, verbButton } from "../lib/pairing.mjs";
 
 const NEEDS_YOU = ["pending", "claimed"];
 const WAITING = ["armed", "approved"];
 const ACTIVE = [...NEEDS_YOU, ...WAITING];
 const LABELS = { pending: "Needs approval", claimed: "Needs confirmation", armed: "Waiting for the app",
   approved: "Approved", redeemed: "Paired", denied: "Denied", expired: "Expired" };
-const POLL_MS = 5000;
 
 const label = (row) => LABELS[row.state] || "Unknown";
 const kind = (row) => row.kind === "hub" ? "Hub claim" : row.kind === "app" ? "App" : "Unknown";
@@ -44,16 +42,16 @@ function caveat(row) {
 }
 
 export function renderPairing(main) {
-  let stopped = false, busy = false, ticker, data = null, offset = 0, signature = "";
   let confirming = null; // the request whose Deny or Withdraw is asking for confirmation, inside its own card
-  let acted = null; // the request the last decision acted on: its card holds the notice while it is on the page
-  let readError = null; // why the last read failed, or null once one succeeds
   const drafts = new Map();
-  const poll = poller(() => load());
   const updated = h("span", { class: "muted refreshed" });
-  const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true, "data-field": "notice" });
-  const problem = h("p", { class: "notice bad", role: "alert", hidden: true });
   const groups = h("div", { class: "pairing-groups" });
+  const page = requestPage({ path: "pairing", root: groups, owners: ["data-request-id"], controls: "button,input",
+    watched: (data) => [data?.requests ?? null], onRead, paint: () => keepFocus(drawRequests),
+    onAction: () => { confirming = null; },
+    refusals: { 409: () => "That request changed state before your decision. The list was refreshed; check it again.",
+      404: () => "That request no longer exists. The list was refreshed." } });
+  const { notice, problem, message, now, load, perform, draw, keepFocus, focus } = page;
   const refresh = h("button", { type: "button", class: "btn ghost refresh", onclick: () => load(true) },
     icon("refresh"), "Refresh requests");
   clear(main, h("header", { class: "page-head" }, h("h1", {}, "Pairing requests"), updated, refresh),
@@ -61,45 +59,22 @@ export function renderPairing(main) {
       "the app then fetches its own token from the daemon, and this Hub never sees it."),
     notice, problem, groups, pairingRecovery());
 
-  function message(value, bad = false) {
-    notice.textContent = value;
-    notice.className = bad ? "notice bad" : "notice";
-    notice.hidden = !value;
-  }
   function showProblem(value) {
     problem.textContent = value;
     problem.hidden = !value;
   }
-  function now() { return Date.now() / 1000 + offset; }
-  async function load(force = false) {
-    if (stopped || busy && !force) return;
-    poll.cancel();
-    try {
-      const result = await api("pairing");
-      if (stopped) return;
-      data = result;
-      offset = typeof result.now === "number" ? result.now - Date.now() / 1000 : 0;
-      readError = null;
-      showProblem(result.confirmation_warning || "");
-      updated.textContent = `Updated ${new Date().toLocaleTimeString()} · every ${POLL_MS / 1000} s`;
-    } catch (error) {
-      if (stopped) return;
-      readError = error;
+  function onRead(error) {
+    const { data } = page;
+    if (error) {
       // With no list yet, a read that could not run at all is shown as its state in place of the list.
       showProblem(!data && blocked(error) ? "" : error.message + (data ? " Showing the last list." : ""));
+      return;
     }
-    draw(force);
-    poll.schedule(POLL_MS);
+    showProblem(data.confirmation_warning || "");
+    updated.textContent = `Updated ${new Date().toLocaleTimeString()} · every ${POLL_MS / 1000} s`;
   }
-  function draw(force) {
-    const next = JSON.stringify([data?.requests ?? null, blockedKey(readError)]);
-    if (!force && next === signature) return;
-    signature = next;
-    // Keep the owner's typing and focus across a poll that changed the list.
-    const active = document.activeElement;
-    const focused = active?.dataset?.field ? [active.closest("[data-request-id]")?.dataset.requestId,
-      active.dataset.field, active.selectionStart] : null;
-    const rows = data?.requests || [];
+  function drawRequests() {
+    const rows = page.data?.requests || [];
     if (confirming && !rows.some((row) => row.id === confirming && ACTIVE.includes(row.state))) confirming = null;
     const needs = rows.filter((row) => NEEDS_YOU.includes(row.state));
     const waiting = rows.filter((row) => WAITING.includes(row.state));
@@ -110,25 +85,16 @@ export function renderPairing(main) {
       done.length ? group("history", sectionHead("History · last day", done.length), history(done)) : null,
       rows.length ? null : empty());
     // In a decision card the notice joins the decision half, by the buttons it answers.
-    const card = acted && [...groups.querySelectorAll("section[data-request-id]")]
-      .find((el) => el.dataset.requestId === acted);
+    const card = page.acted && [...groups.querySelectorAll("section[data-request-id]")]
+      .find((el) => el.dataset.requestId === page.acted);
     placeNotice(notice, card ? card.querySelector(".decision-act") || card : null, problem);
-    if (focused) focus(focused[0], focused[1], focused[2]);
-    tickExpiries(groups, now());
-  }
-  function focus(id, field, caret) {
-    const target = [...groups.querySelectorAll("[data-field]")].find((el) =>
-      el.dataset.field === field && el.closest("[data-request-id]")?.dataset.requestId === id);
-    if (!target) return;
-    target.focus();
-    if (typeof caret === "number" && target.setSelectionRange) target.setSelectionRange(caret, caret);
   }
   function group(name, head, content) {
     return h("section", { class: "pairing-group", "data-group": name }, head, content);
   }
   function empty() {
-    if (!data) {
-      return blockedState(readError, "Pairing requests", () => load(true)) ??
+    if (!page.data) {
+      return blockedState(page.readError, "Pairing requests", () => load(true)) ??
         h("p", { class: "muted" }, "The pairing list is not available.");
     }
     return h("section", { class: "card empty" }, icon("pairing"), h("h2", {}, "No pairing requests in the last day"),
@@ -209,7 +175,7 @@ export function renderPairing(main) {
     const update = () => {
       draft.match = input.value;
       if (ack) draft.ack = ack.checked;
-      submit.disabled = busy || !input.value.trim() || Boolean(ack && !ack.checked);
+      submit.disabled = page.busy || !input.value.trim() || Boolean(ack && !ack.checked);
     };
     input.addEventListener("input", update);
     ack?.addEventListener("change", update);
@@ -252,10 +218,10 @@ export function renderPairing(main) {
 
   // Deny and Withdraw ask first, inside the card that was acted on (decision 5 of #65).
   function askDeny(row) {
-    if (busy) return;
+    if (page.busy) return;
     confirming = row.id;
     draw(true);
-    focus(row.id, "confirm-deny");
+    focus(["data-request-id", row.id], "confirm-deny");
   }
   function confirmation(row) {
     const name = row.name || row.id;
@@ -263,7 +229,7 @@ export function renderPairing(main) {
     const cancel = button("Cancel", () => {
       confirming = null;
       draw(true);
-      focus(row.id, "deny");
+      focus(["data-request-id", row.id], "deny");
     }, { "data-field": "cancel" });
     const ok = button(`Confirm ${verb.toLowerCase()}`, () => perform(row.id, async () => {
       await api(`pairing/${row.id}/deny`, { method: "POST", body: { confirm: true } });
@@ -276,30 +242,6 @@ export function renderPairing(main) {
       h("div", { class: "decision-buttons" }, cancel, ok),
       command(`harness pairing-requests deny ${row.id}`, { parity: true }));
   }
-  // A decision on request `id`: its outcome shows in that request's card, or under the page head once the card is gone.
-  async function perform(id, action) {
-    if (busy || stopped) return;
-    busy = true;
-    acted = id;
-    poll.cancel();
-    for (const control of groups.querySelectorAll("button,input")) control.disabled = true;
-    confirming = null;
-    let refused = false;
-    try {
-      await action();
-    } catch (error) {
-      if (stopped) return;
-      refused = true;
-      if (error.status === 409) message("That request changed state before your decision. The list was refreshed; check it again.", true);
-      else if (error.status === 404) message("That request no longer exists. The list was refreshed.", true);
-      else message(error.message, true);
-    }
-    if (stopped) return;
-    busy = false;
-    await load(true);
-    if (refused && !stopped) reveal(notice);
-  }
-  ticker = setInterval(() => tickExpiries(groups, now()), 1000);
   void load(true);
-  return () => { stopped = true; poll.stop(); clearInterval(ticker); };
+  return page.stop;
 }

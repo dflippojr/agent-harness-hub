@@ -1,6 +1,113 @@
-// Shared by Pairing requests and Marketplace: the countdown chip on a request or slot, the typed match-code field, and
-// the recovery steps for an app that says its slot was already claimed (inspect the current state before acting).
-import { button, command, countdown, h, icon, pill } from "./dom.mjs";
+// Shared by Pairing requests and Marketplace: the page controller, the countdown chip on a request or slot, the typed
+// match-code field, and the recovery steps for an app that says its slot was already claimed (inspect the current state
+// before acting).
+import { api } from "./api.mjs";
+import { blockedKey, button, command, countdown, h, icon, pill, reveal } from "./dom.mjs";
+import { poller } from "./poll.mjs";
+
+export const POLL_MS = 5000;
+
+// A page of requests: its notice and problem lines, the polled read, the redraw when the read changed, focus kept across
+// it, and an action with its refusal. The page gives what it reads (path), the node its cards are in (root), the
+// attributes that name a card (owners), what an action disables (controls) and hooks: watched(data), the parts of a read
+// a redraw shows; onRead(error), after each read; paint(), which redraws inside keepFocus; onAction(), as an action
+// starts; refusals, a refused action's message by status; and onRefused(error), whose returned step runs after the
+// reload in place of moving focus to the notice.
+export function requestPage({ path, root, owners, controls, watched, onRead, paint, onAction, refusals, onRefused }) {
+  let stopped = false, offset = 0, signature = "";
+  const ownerSelector = owners.map((name) => `[${name}]`).join(", ");
+  const poll = poller(() => load());
+  const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true, "data-field": "notice" });
+  const problem = h("p", { class: "notice bad", role: "alert", hidden: true });
+  const page = { notice, problem, data: null, readError: null, busy: false, acted: null,
+    message, now, load, draw, keepFocus, focus, perform, stop };
+  const ticker = setInterval(() => tickExpiries(root, now()), 1000);
+
+  function message(value, bad = false) {
+    notice.textContent = value;
+    notice.className = bad ? "notice bad" : "notice";
+    notice.hidden = !value;
+  }
+  function now() { return Date.now() / 1000 + offset; }
+  async function load(force = false) {
+    if (stopped || page.busy && !force) return;
+    poll.cancel();
+    try {
+      const result = await api(path);
+      if (stopped) return;
+      page.data = result;
+      page.readError = null;
+      offset = typeof result.now === "number" ? result.now - Date.now() / 1000 : 0;
+    } catch (error) {
+      if (stopped) return;
+      page.readError = error;
+    }
+    onRead(page.readError);
+    draw(force);
+    poll.schedule(POLL_MS);
+  }
+  function draw(force) {
+    const next = JSON.stringify([...watched(page.data), blockedKey(page.readError)]);
+    if (!force && next === signature) return;
+    signature = next;
+    paint();
+    tickExpiries(root, now());
+  }
+  // Keep the owner's typing and focus across a redraw. A control inside `kept`, a node put back as it is, keeps its own
+  // focus; any other is found again by its card and its data-field.
+  function keepFocus(render, kept) {
+    const active = document.activeElement;
+    const same = kept?.contains(active) ? active : null;
+    const focused = !same && active?.dataset?.field && root.contains(active) ?
+      [owner(active), active.dataset.field, active.selectionStart] : null;
+    render();
+    if (same) same.focus();
+    else if (focused) focus(...focused);
+  }
+  // The card a control belongs to, as [attribute, value].
+  function owner(el) {
+    const box = el.closest(ownerSelector);
+    const attribute = box && owners.find((name) => box.hasAttribute(name));
+    return attribute ? [attribute, box.getAttribute(attribute)] : [];
+  }
+  function focus([attribute, value], field, caret) {
+    const target = [...root.querySelectorAll("[data-field]")].find((el) => el.dataset.field === field &&
+      el.closest(ownerSelector)?.getAttribute(attribute) === value);
+    if (!target) return;
+    target.focus();
+    if (typeof caret === "number" && target.setSelectionRange) target.setSelectionRange(caret, caret);
+  }
+  // An action on card `id`: its outcome shows in that card, or under the page head once the card is gone.
+  async function perform(id, action) {
+    if (page.busy || stopped) return;
+    page.busy = true;
+    page.acted = id;
+    poll.cancel();
+    for (const control of root.querySelectorAll(controls)) control.disabled = true;
+    onAction();
+    let refused = false, afterReload = null;
+    try {
+      await action();
+    } catch (error) {
+      if (stopped) return;
+      refused = true;
+      message(refusals[error.status]?.(error) ?? error.message, true);
+      afterReload = onRefused?.(error);
+    }
+    if (stopped) return;
+    page.busy = false;
+    await load(true);
+    if (!refused || stopped) return;
+    if (afterReload) afterReload();
+    else reveal(notice);
+  }
+  function stop() {
+    stopped = true;
+    poll.stop();
+    clearInterval(ticker);
+  }
+  return page;
+}
 
 // A button whose visible text is a verb; the rest of its accessible name (a request's or slot's name) sits in a span
 // the class may hide.
