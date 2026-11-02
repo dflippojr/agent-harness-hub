@@ -1,7 +1,7 @@
-# Daemon requirements at f9d3a1af045cfd8da93b0f85269ac44b64bc9769 (CI fixture only).
+# Daemon requirements at 5eb4cc05398dbc46e013238d6602ef56c2eb70bd (CI fixture only).
 httpx>=0.28.1
 pyyaml>=6.0.3
-fastapi>=0.143.0
+fastapi>=0.162.0
 uvicorn>=0.54.0
 pytest>=9.1.1
 jsonschema>=4.26.0
