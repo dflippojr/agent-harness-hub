@@ -11,6 +11,13 @@ LOG_TAIL = 4000
 # the Hub logs the running test started.
 daemon_logs: list[Path] = []
 started_logs: list[Path] = []
+# Measurements worth seeing on a green run too, such as how long this runner takes to start the Docker CLI (#215).
+notes: list[str] = []
+
+
+def pytest_terminal_summary(terminalreporter):
+    for note in notes:
+        terminalreporter.write_line(note)
 
 
 def log_tail(path: Path) -> str:

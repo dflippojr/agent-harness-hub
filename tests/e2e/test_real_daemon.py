@@ -10,6 +10,7 @@ daemon's own CLI, and every response the browser could see is checked for the Hu
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -33,7 +34,7 @@ from harness_hub.views import ELEVATED_SCOPES, SCOPE_DISCLOSURES, owner_api_comp
 
 from ..conftest import assert_no_secrets
 from ..response_capture import capture_response
-from .conftest import daemon_logs, started_logs
+from .conftest import daemon_logs, notes, started_logs
 
 pytestmark = pytest.mark.e2e
 
@@ -58,6 +59,15 @@ def wait(check, timeout: float, what: str):
             return value
         time.sleep(0.25)
     raise AssertionError(f"timed out waiting for {what}")
+
+
+def start_docker_once(env: dict) -> float:
+    """Start the Docker CLI once and return how long that took, so no daemon read pays for its first, cold start (#215).
+    `ps` exits at once: this environment has no engine to reach."""
+    started = time.monotonic()
+    with contextlib.suppress(FileNotFoundError):  # no Docker CLI on this host: nothing to wait on
+        subprocess.run(["docker", "ps", "-a"], env=env, capture_output=True, timeout=120)
+    return time.monotonic() - started
 
 
 @pytest.fixture(scope="module")
@@ -93,6 +103,7 @@ def daemon(tmp_path_factory):
                                      f'PATH="{os.environ["PATH"]}" exec docker "$@"\n', encoding="utf-8")
         (shim / "docker").chmod(0o755)
         daemon_env["PATH"] = f"{shim}{os.pathsep}{os.environ['PATH']}"
+    notes.append(f"first docker CLI start (cold): {start_docker_once(daemon_env):.2f} s")
     log = (root / "daemon.log").open("w")
     def launch():
         return subprocess.Popen([DAEMON_PYTHON, "-m", "harness", "--config-dir", str(config)], cwd=src,
