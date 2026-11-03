@@ -94,6 +94,12 @@ def error_status(status: int) -> int:
     return status if 400 <= status < 600 else 502
 
 
+def forwarded(reply: Any) -> JSONResponse:
+    """The daemon's refusal, forwarded to the browser as the Hub's settings-error shape."""
+    return JSONResponse({**settings_error(reply.body, reply.status), "reachable": True},
+                        status_code=error_status(reply.status))
+
+
 # An error says whether the daemon answered, so the shell's status tells "the Hub could not reach the daemon" (a 503 of
 # the Hub's own, reachable false) from "the daemon answered with an error" (forwarded, any status, reachable true).
 def unreachable(detail: str, **extra: Any) -> JSONResponse:
