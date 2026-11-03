@@ -60,7 +60,8 @@ that only the proxy can reach. Non-loopback listeners require an HTTPS public UR
 to the upstream listener. Never expose that HTTP port directly to the LAN or internet.
 A remote `--daemon-url` must use HTTPS; HTTP is accepted only for loopback daemon addresses.
 
-To run the Hub as a service on the daemon's host, with an upgrade, rollback and health check, see
+To run the Hub as a service on the daemon's host (a systemd user unit on Linux, a logon task on Windows), with an
+upgrade, rollback and health check, see
 [docs/deployment.md](docs/deployment.md); the read-only checks a sweep makes on it are in
 [docs/production-signals.md](docs/production-signals.md).
 

@@ -1,0 +1,605 @@
+"""The Linux deployment (ops/hub/*.sh, docs/deployment.md), run end to end without systemd.
+
+Each test runs the real bash scripts against a scratch HOME. A fake `systemctl` on PATH keeps the unit's state in files
+and "starts" it by running the unit's ExecStart (the deployed run-hub.sh) once; a fake `python` stands in for the
+interpreter, its virtual environments and the Hub, which writes status.json and the /healthz answer a fake `curl`
+serves. Git is real: each test has a release checkout with a local bare `origin`.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+OPS = ROOT / "ops" / "hub"
+UNIT = "agent-harness-hub.service"
+SHELL_SCRIPTS = sorted(OPS.glob("*.sh"))
+EXECUTABLES = ("deploy-hub.sh", "check-hub.sh", "install-unit.sh", "uninstall-unit.sh", "run-hub.sh")
+
+FAKE_SYSTEMCTL = r"""#!/usr/bin/env bash
+# systemctl --user, kept in files under $FAKE_SYSTEMD. `start` runs the unit's ExecStart once, synchronously.
+set -u
+state=$FAKE_SYSTEMD
+printf '%s\n' "$*" >>"$state/calls"
+[[ ${1:-} == --user ]] && shift
+command=${1:-}; shift || true
+unit_file=$XDG_CONFIG_HOME/systemd/user/${1:-none}
+case $command in
+    daemon-reload) : ;;
+    enable) [[ -f $unit_file ]] || { echo "Unit file $1 does not exist." >&2; exit 1; }; touch "$state/enabled" ;;
+    disable) rm -f "$state/enabled" ;;
+    is-enabled)
+        if [[ -f $unit_file && -e $state/enabled ]]; then echo enabled
+        elif [[ -f $unit_file ]]; then echo disabled; exit 1
+        else exit 1; fi ;;
+    is-active)
+        current=$(cat "$state/active" 2>/dev/null || echo inactive)
+        echo "$current"; [[ $current == active ]] ;;
+    stop) [[ -e $state/fail-stop ]] && exit 1; echo inactive >"$state/active"; rm -f "$state"/healthz.* ;;
+    start | restart)
+        [[ -e $state/fail-start ]] && exit 1
+        echo active >"$state/active"
+        echo 4242 >"$state/prop.ExecMainStartTimestampMonotonic"
+        environment=() exec_start=''
+        while IFS= read -r line; do
+            case $line in
+                Environment=*) environment+=("${line#Environment=}") ;;
+                EnvironmentFile=*)
+                    while IFS= read -r assignment; do
+                        [[ $assignment =~ ^[A-Z_]+= ]] && environment+=("$assignment")
+                    done <"${line#EnvironmentFile=}" ;;
+                ExecStart=*) exec_start=${line#ExecStart=} ;;
+            esac
+        done <"$unit_file"
+        # shellcheck disable=SC2086
+        env "${environment[@]}" $exec_start >>"$state/execstart.log" 2>&1 || true ;;
+    show)
+        shift
+        property=''
+        while (($#)); do [[ $1 == -p ]] && property=$2; shift; done
+        cat "$state/prop.$property" 2>/dev/null || { [[ $property == Result ]] && echo success; } || true ;;
+    *) echo "fake systemctl: unsupported $command" >&2; exit 2 ;;
+esac
+"""
+
+FAKE_CURL = r"""#!/usr/bin/env bash
+# curl -fsS --max-time 3 http://127.0.0.1:<port>/healthz: answers only while the fake unit is active.
+url=${*: -1}
+port=${url#http://127.0.0.1:}; port=${port%%/*}
+[[ $(cat "$FAKE_SYSTEMD/active" 2>/dev/null) == active && -f $FAKE_SYSTEMD/healthz.$port ]] || exit 7
+cat "$FAKE_SYSTEMD/healthz.$port"
+"""
+
+FAKE_LOGINCTL = """#!/usr/bin/env bash
+echo yes
+"""
+
+# The interpreter, a virtual environment's python and the Hub. Markers in the archived commit steer it: VERSION is the
+# version it reports, BROKEN makes the Hub exit at once, STALE makes it write an old status.json.
+FAKE_PYTHON = r"""#!/usr/bin/env bash
+set -u
+venv=$(cd "$(dirname "$0")/.." && pwd)
+case "$*" in
+    "-m venv "*) mkdir -p "$3/bin" && cp "$0" "$3/bin/python" && exit 0 ;;
+    *"-m pip install"*"--no-deps"*)
+        source=${*: -1}
+        cp "$source/VERSION" "$venv/version"
+        [[ -f $source/BROKEN ]] && touch "$venv/broken"
+        [[ -f $source/STALE ]] && touch "$venv/stale"
+        exit 0 ;;
+    *"-m pip install"*) exit 0 ;;
+    "-I -m harness_hub --version") echo "harness_hub $(cat "$venv/version")"; exit 0 ;;
+    "-I -c "*) echo True; exit 0 ;;
+    "-u -m harness_hub "*)
+        printf '%s\n' "$*" >>"$FAKE_SYSTEMD/hub-args"
+        [[ -e $venv/broken ]] && { echo "the Hub failed to start" >&2; exit 1; }
+        while (($#)); do
+            case $1 in --state-dir) state_dir=$2 ;; --port) port=$2 ;; esac
+            shift
+        done
+        written=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        [[ -e $venv/stale ]] && written=2000-01-01T00:00:00Z
+        mkdir -p "$state_dir"
+        printf '{"version": "%s", "build": "%s", "written_at": "%s"}\n' \
+            "$(cat "$venv/version")" "$HUB_BUILD_COMMIT" "$written" >"$state_dir/status.json"
+        printf '{"ok":true,"version":"%s"}' "$(cat "$venv/version")" >"$FAKE_SYSTEMD/healthz.$port"
+        exit 0 ;;
+esac
+echo "fake python: unsupported $*" >&2
+exit 2
+"""
+
+
+@pytest.fixture(autouse=True)
+def posix_bash():
+    # The scripts are for a Linux host; Windows CI runs the PowerShell path's tests instead.
+    if os.name == "nt" or shutil.which("bash") is None:
+        pytest.skip("the Linux deployment scripts need bash on a POSIX host")
+
+
+def write_executable(path: Path, text: str) -> Path:
+    path.write_text(text, encoding="utf-8", newline="\n")
+    path.chmod(0o755)
+    return path
+
+
+def git(cwd: Path, *args: str) -> str:
+    identity = ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]
+    return subprocess.run(["git", *identity, *args], cwd=cwd, check=True, capture_output=True,
+                          text=True).stdout.strip()
+
+
+@dataclass
+class Host:
+    """A scratch Linux host: HOME, a deploy directory, fake systemd, and a release checkout with an origin."""
+
+    root: Path
+    env: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self):
+        self.home = self.root / "home"
+        self.deploy = self.home / ".local" / "share" / "agent-harness-hub"
+        self.systemd = self.root / "systemd"
+        self.bin = self.root / "bin"
+        self.release = self.root / "release"
+        for directory in (self.home, self.systemd, self.bin):
+            directory.mkdir(parents=True)
+        write_executable(self.bin / "systemctl", FAKE_SYSTEMCTL)
+        write_executable(self.bin / "curl", FAKE_CURL)
+        write_executable(self.bin / "loginctl", FAKE_LOGINCTL)
+        self.python = write_executable(self.bin / "python", FAKE_PYTHON)
+        self.env = {
+            **{key: value for key, value in os.environ.items() if not key.startswith(("HUB_", "XDG_"))},
+            "HOME": str(self.home),
+            "XDG_CONFIG_HOME": str(self.home / ".config"),
+            "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_SYSTEMD": str(self.systemd),
+            "HUB_START_TIMEOUT": "2",
+            "HUB_POLL_SECONDS": "0.1",
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+        self.unit_file = self.home / ".config" / "systemd" / "user" / UNIT
+        # Nothing a test runs may reach the real user's unit or deployment.
+        assert self.unit_file.is_relative_to(self.root) and self.deploy.is_relative_to(self.root)
+        origin = self.root / "origin.git"
+        git(self.root, "init", "-q", "--bare", "-b", "main", str(origin))
+        git(self.root, "init", "-q", "-b", "main", str(self.release))
+        git(self.release, "remote", "add", "origin", str(origin))
+
+    def commit(self, version: str, *markers: str, push: bool = True) -> str:
+        for name in ("BROKEN", "STALE"):
+            (self.release / name).unlink(missing_ok=True)
+        (self.release / "VERSION").write_text(version, encoding="utf-8")
+        (self.release / "requirements.lock").write_text("", encoding="utf-8")
+        (self.release / "requirements-build.lock").write_text("", encoding="utf-8")
+        for name in markers:
+            (self.release / name).write_text("", encoding="utf-8")
+        git(self.release, "add", "-A")
+        git(self.release, "commit", "-q", "-m", version)
+        sha = git(self.release, "rev-parse", "HEAD")
+        if push:
+            git(self.release, "push", "-q", "origin", "HEAD:main")
+        return sha
+
+    def run(self, script: str, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(["bash", str(OPS / script), *args], cwd=self.root, env=self.env, capture_output=True,
+                                text=True, timeout=120, check=False)
+        if check:
+            assert result.returncode == 0, result.stdout + result.stderr
+        return result
+
+    def deploy_at(self, sha: str, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        git(self.release, "checkout", "-q", sha)
+        return self.run("deploy-hub.sh", "--release-root", str(self.release), "--deploy-dir", str(self.deploy),
+                        "--python", str(self.python), *args, check=check)
+
+    def check(self) -> subprocess.CompletedProcess[str]:
+        return self.run("check-hub.sh", "--deploy-dir", str(self.deploy), check=False)
+
+    def read(self, name: str) -> str | None:
+        path = self.deploy / name
+        return path.read_text(encoding="utf-8").strip() if path.exists() else None
+
+    def stamp(self, name: str = "deployed.json") -> dict | None:
+        text = self.read(name)
+        return json.loads(text) if text is not None else None
+
+    def records(self) -> dict[str, object]:
+        """Every record a deployment or rollback changes, for before/after comparison."""
+        return {
+            ".venv-path": self.read(".venv-path"), ".venv-previous": self.read(".venv-previous"),
+            "deployed.json": self.read("deployed.json"), "deployed.previous.json": self.read("deployed.previous.json"),
+            "ops": self.ops_marker("ops"), "ops.previous": self.ops_marker("ops.previous"),
+            "venvs": sorted(path.name for path in (self.deploy / "venvs").iterdir()),
+        }
+
+    def ops_marker(self, name: str) -> str | None:
+        """Which deployment's copy of the scripts is in ops/ or ops.previous/: tests tag each copy after a deploy."""
+        tag = self.deploy / name / "TAG"
+        if tag.exists():
+            return tag.read_text(encoding="utf-8")
+        return "untagged" if (self.deploy / name).exists() else None
+
+    def tag_ops(self, tag: str):
+        (self.deploy / "ops" / "TAG").write_text(tag, encoding="utf-8")
+
+    def healthz(self) -> dict | None:
+        if (self.systemd / "active").read_text(encoding="utf-8").strip() != "active":
+            return None
+        path = self.systemd / "healthz.8120"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+    def set_unit(self, *, active: str, started: str = "4242", result: str = "success", after: str = ""):
+        (self.systemd / "active").write_text(active, encoding="utf-8")
+        (self.systemd / "prop.ExecMainStartTimestampMonotonic").write_text(started, encoding="utf-8")
+        (self.systemd / "prop.Result").write_text(result, encoding="utf-8")
+        (self.systemd / "prop.After").write_text(after, encoding="utf-8")
+
+
+@pytest.fixture
+def host(tmp_path) -> Host:
+    return Host(tmp_path)
+
+
+def venv_of(host: Host, sha: str) -> str:
+    return str(host.deploy / "venvs" / sha)
+
+
+# -- the unit --------------------------------------------------------------------------------------------------------
+
+
+def unit_directives(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+
+
+def test_the_unit_has_no_ordering_on_the_daemon_and_keeps_host_values_in_the_env_file(host):
+    a = host.commit("1.0.0")
+    host.deploy_at(a, "--public-url", "https://hub.example.invalid:8120", "--port", "8120")
+    unit = host.unit_file.read_text(encoding="utf-8")
+    directives = unit_directives(unit)
+    # No ordering or dependency on any unit: Restart=always covers a daemon that is not up yet (#210).
+    assert not [line for line in directives if re.match(r"(After|Before|Requires|Wants|BindsTo|Requisite|PartOf)=",
+                                                        line)]
+    for needed in ("Restart=always", "WantedBy=default.target", "UMask=0077", f"EnvironmentFile={host.deploy}/hub.env",
+                   f"ExecStart=/usr/bin/env bash {host.deploy}/ops/run-hub.sh"):
+        assert needed in directives, needed
+    # The host-specific address is in hub.env (owner-only), not in the unit.
+    assert "example.invalid" not in unit
+    env_file = host.deploy / "hub.env"
+    assert "HUB_PUBLIC_URL=https://hub.example.invalid:8120" in env_file.read_text(encoding="utf-8")
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+    # The Hub was started on loopback with the env file's values.
+    hub_args = (host.systemd / "hub-args").read_text(encoding="utf-8")
+    assert "--host 127.0.0.1 --port 8120" in hub_args and "--public-url https://hub.example.invalid:8120" in hub_args
+    assert "--status-interval 60" in hub_args
+
+
+def test_a_hand_written_unit_is_replaced_only_when_asked(host):
+    host.unit_file.parent.mkdir(parents=True)
+    host.unit_file.write_text("[Unit]\nAfter=agent-harness.service\n[Service]\nExecStart=/bin/true\n", encoding="utf-8")
+    a = host.commit("1.0.0")
+    refused = host.deploy_at(a, check=False)
+    assert refused.returncode != 0 and "--replace-unit" in refused.stderr
+    assert "After=agent-harness.service" in host.unit_file.read_text(encoding="utf-8")
+    assert host.read(".venv-path") is None and host.read("deployed.json") is None  # nothing was swapped
+    assert not (host.deploy / "venvs" / a).exists()
+    host.deploy_at(a, "--replace-unit")
+    assert "After=" not in host.unit_file.read_text(encoding="utf-8")
+
+
+# -- deploy, roll back, roll forward ----------------------------------------------------------------------------------
+
+
+def test_deploy_upgrade_roll_back_and_roll_forward(host):
+    a, b = host.commit("1.0.0"), host.commit("1.1.0")
+    first = host.deploy_at(a)
+    assert "ok    /healthz" in first.stdout  # every deployment ends with the check
+    host.tag_ops("A")
+    assert host.read(".venv-path") == venv_of(host, a) and host.read(".venv-previous") is None
+    assert host.stamp()["commit"] == a and host.stamp()["version"] == "1.0.0" and host.stamp()["unmerged"] is False
+    assert set(host.stamp()) == {"commit", "version", "deployed_at", "unmerged"}
+    assert "enable agent-harness-hub.service" in (host.systemd / "calls").read_text(encoding="utf-8")
+
+    host.deploy_at(b)
+    host.tag_ops("B")
+    assert host.read(".venv-path") == venv_of(host, b) and host.read(".venv-previous") == venv_of(host, a)
+    assert host.stamp()["commit"] == b and host.stamp("deployed.previous.json")["commit"] == a
+    assert (host.ops_marker("ops"), host.ops_marker("ops.previous")) == ("B", "A")
+    assert host.healthz() == {"ok": True, "version": "1.1.0"}
+    assert host.check().returncode == 0
+
+    back = host.run("deploy-hub.sh", "--rollback", "--deploy-dir", str(host.deploy))
+    assert "ok    /healthz" in back.stdout  # every rollback ends with the check
+    assert host.read(".venv-path") == venv_of(host, a) and host.read(".venv-previous") == venv_of(host, b)
+    assert host.stamp()["commit"] == a and host.stamp("deployed.previous.json")["commit"] == b
+    assert (host.ops_marker("ops"), host.ops_marker("ops.previous")) == ("A", "B")
+    assert host.healthz() == {"ok": True, "version": "1.0.0"}
+    status = json.loads((host.deploy / "state" / "status.json").read_text(encoding="utf-8"))
+    assert status["build"] == a
+
+    host.run("deploy-hub.sh", "--rollback", "--deploy-dir", str(host.deploy))  # forward again while B's env exists
+    assert host.read(".venv-path") == venv_of(host, b) and host.stamp()["commit"] == b
+    assert (host.ops_marker("ops"), host.ops_marker("ops.previous")) == ("B", "A")
+    assert host.healthz() == {"ok": True, "version": "1.1.0"}
+
+
+def test_a_third_deployment_deletes_the_oldest_environment(host):
+    a, b, c = host.commit("1.0.0"), host.commit("1.1.0"), host.commit("1.2.0")
+    for sha in (a, b, c):
+        host.deploy_at(sha)
+    assert host.records()["venvs"] == sorted([b, c])
+    assert host.read(".venv-previous") == venv_of(host, b)
+
+
+def test_a_deployment_whose_hub_does_not_start_is_undone_and_never_becomes_previous(host):
+    a, b, broken = host.commit("1.0.0"), host.commit("1.1.0"), host.commit("1.2.0", "BROKEN")
+    host.deploy_at(a)
+    host.tag_ops("A")
+    host.deploy_at(b)
+    host.tag_ops("B")
+    before = host.records()
+    failed = host.deploy_at(broken, check=False)
+    assert failed.returncode != 0 and "the previous deployment is restored" in failed.stderr
+    assert host.records() == before  # pointers, records, ops and environments, the failed one removed
+    assert host.healthz() == {"ok": True, "version": "1.1.0"}  # the previous Hub runs again
+    # A rollback still goes to A, the deployment before B, not to the failed one.
+    host.run("deploy-hub.sh", "--rollback", "--deploy-dir", str(host.deploy))
+    assert host.stamp()["commit"] == a and host.healthz() == {"ok": True, "version": "1.0.0"}
+    assert (host.ops_marker("ops"), host.ops_marker("ops.previous")) == ("A", "B")
+
+
+def test_a_failed_check_after_the_deployment_rolls_back_automatically(host):
+    # The Hub starts and answers /healthz with the new version, but its status.json is stale: only the check fails.
+    a, stale = host.commit("1.0.0"), host.commit("1.1.0", "STALE")
+    host.deploy_at(a)
+    host.tag_ops("A")
+    before = host.records()
+    failed = host.deploy_at(stale, check=False)
+    assert failed.returncode != 0
+    assert "FAIL" in failed.stdout and "status.json is stale" in failed.stdout
+    assert "ok    /healthz" in failed.stdout and "with version 1.1.0" in failed.stdout
+    assert host.records() == before
+    assert host.healthz() == {"ok": True, "version": "1.0.0"}
+
+
+def test_a_failed_first_deployment_leaves_no_records(host):
+    broken = host.commit("1.0.0", "BROKEN")
+    failed = host.deploy_at(broken, check=False)
+    assert failed.returncode != 0
+    for name in (".venv-path", ".venv-previous", "deployed.json", "deployed.previous.json"):
+        assert host.read(name) is None, name
+    # The scripts the unit runs stay (as on Windows), with no older copy recorded; the Hub is stopped.
+    assert host.records()["venvs"] == [] and host.ops_marker("ops.previous") is None
+    assert (host.systemd / "active").read_text(encoding="utf-8").strip() == "inactive"
+    assert not (host.deploy / ".snapshot").exists()
+
+
+def test_a_failed_rollback_restores_what_ran_before(host):
+    a, b = host.commit("1.0.0"), host.commit("1.1.0")
+    host.deploy_at(a)
+    host.tag_ops("A")
+    host.deploy_at(b)
+    host.tag_ops("B")
+    before = host.records()
+    (Path(venv_of(host, a)) / "broken").touch()  # A's environment no longer starts
+    failed = host.run("deploy-hub.sh", "--rollback", "--deploy-dir", str(host.deploy), check=False)
+    assert failed.returncode != 0 and "the previous state is restored" in failed.stderr
+    assert host.records() == before
+    assert host.healthz() == {"ok": True, "version": "1.1.0"}
+
+
+def test_rollback_without_a_previous_deployment_changes_nothing(host):
+    a = host.commit("1.0.0")
+    host.deploy_at(a)
+    before = host.records()
+    refused = host.run("deploy-hub.sh", "--rollback", "--deploy-dir", str(host.deploy), check=False)
+    assert refused.returncode != 0 and "no previous deployment" in refused.stderr
+    assert host.records() == before
+
+
+# -- guards -----------------------------------------------------------------------------------------------------------
+
+
+def test_deploy_refuses_a_dirty_checkout_a_wrong_head_and_an_unmerged_commit(host):
+    a = host.commit("1.0.0")
+    unmerged = host.commit("1.1.0", push=False)
+    git(host.release, "checkout", "-q", a)
+    (host.release / "VERSION").write_text("dirty", encoding="utf-8")
+    dirty = host.run("deploy-hub.sh", "--release-root", str(host.release), "--deploy-dir", str(host.deploy),
+                     "--python", str(host.python), check=False)
+    assert dirty.returncode != 0 and "uncommitted changes" in dirty.stderr
+    git(host.release, "checkout", "-q", "--", "VERSION")
+    wrong = host.run("deploy-hub.sh", "--release-root", str(host.release), "--deploy-dir", str(host.deploy),
+                     "--python", str(host.python), "--commit", unmerged, check=False)
+    assert wrong.returncode != 0 and "expected" in wrong.stderr
+    refused = host.deploy_at(unmerged, check=False)
+    assert refused.returncode != 0 and "not on origin/main" in refused.stderr
+    assert not (host.deploy / ".venv-path").exists()
+    trial = host.deploy_at(unmerged, "--allow-unmerged")
+    assert "not on origin/main" in trial.stderr and host.stamp()["unmerged"] is True
+
+
+def test_a_dry_run_changes_nothing(host):
+    a = host.commit("1.0.0")
+    result = host.deploy_at(a, "--dry-run")
+    assert "[dry run]" in result.stdout
+    assert not host.deploy.exists() and not host.unit_file.exists()
+    assert not (host.systemd / "calls").exists()
+
+
+# -- the check --------------------------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def deployed(host) -> Host:
+    host.deploy_at(host.commit("1.0.0"))
+    assert host.check().returncode == 0
+    return host
+
+
+def test_the_check_passes_on_a_healthy_deployment(deployed):
+    result = deployed.check()
+    assert result.returncode == 0, result.stdout
+    assert "FAIL" not in result.stdout
+    assert "is enabled" in result.stdout and "is active" in result.stdout and "status.json was written" in result.stdout
+
+
+def test_the_check_reports_a_start_job_dropped_at_boot(deployed):
+    # The 2026-10-29 failure: enabled, inactive, never started since the user manager came up, no failure recorded.
+    deployed.set_unit(active="inactive", started="0")
+    result = deployed.check()
+    assert result.returncode == 1
+    assert f"FAIL  {UNIT} is enabled but has not started since the user manager came up" in result.stdout
+    assert "start job was dropped" in result.stdout and "ordering cycle" in result.stdout
+
+
+def test_the_check_reports_an_enabled_unit_that_was_stopped(deployed):
+    deployed.set_unit(active="inactive", started="98765")
+    result = deployed.check()
+    assert result.returncode == 1
+    assert f"FAIL  {UNIT} is enabled but inactive: it was stopped" in result.stdout
+    assert "/healthz on 127.0.0.1:8120 does not answer" in result.stdout
+
+
+def test_the_check_reports_a_failed_unit(deployed):
+    deployed.set_unit(active="failed", result="exit-code")
+    result = deployed.check()
+    assert result.returncode == 1 and f"FAIL  {UNIT} failed (Result=exit-code)" in result.stdout
+
+
+def test_the_check_reports_an_ordering_on_another_service(deployed):
+    deployed.set_unit(active="active", after="basic.target agent-harness-daemon.service")
+    (deployed.systemd / "healthz.8120").write_text('{"ok":true,"version":"1.0.0"}', encoding="utf-8")
+    result = deployed.check()
+    assert result.returncode == 1
+    assert "is ordered on or requires agent-harness-daemon.service" in result.stdout
+    assert "is active" in result.stdout
+
+
+def test_the_check_reports_a_disabled_unit_and_a_wrong_build(deployed):
+    (deployed.systemd / "enabled").unlink()
+    status = deployed.deploy / "state" / "status.json"
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    status.write_text(json.dumps({"build": "f" * 40, "written_at": now}), encoding="utf-8")
+    result = deployed.check()
+    assert result.returncode == 1
+    assert f"FAIL  {UNIT} is disabled, so it does not start at boot" in result.stdout
+    assert f"names build {'f' * 40}, not the deployed" in result.stdout
+
+
+# -- stop and uninstall -----------------------------------------------------------------------------------------------
+
+
+def test_uninstall_stops_and_removes_the_unit_and_keeps_the_deployment(deployed):
+    deployed.run("uninstall-unit.sh", "--deploy-dir", str(deployed.deploy))
+    assert not deployed.unit_file.exists() and not (deployed.systemd / "enabled").exists()
+    assert deployed.healthz() is None
+    assert (deployed.deploy / "deployed.json").exists() and (deployed.deploy / "state").is_dir()
+
+
+# -- the ops copies, replayed on their own ----------------------------------------------------------------------------
+
+OPS_SCENARIO = r"""
+set -euo pipefail
+source "$HUB_OPS/hub-ops.sh"
+DEPLOY=$1
+version() { if [[ -d $DEPLOY/$1 ]]; then cat "$DEPLOY/$1/run-hub.sh"; else printf -- '-'; fi; }
+source_of() { mkdir -p "$DEPLOY/src-$1"; printf '%s' "$1" >"$DEPLOY/src-$1/run-hub.sh"; printf '%s' "$DEPLOY/src-$1"; }
+shown() { printf '%s=%s,%s\n' "$1" "$(version ops)" "$(version ops.previous)"; }
+copy_ops "$(source_of A)"; complete_ops; shown 'deploy A'
+copy_ops "$(source_of C)"; complete_ops; shown 'deploy C'
+copy_ops "$(source_of D)"; undo_ops; shown 'deploy D fails'
+swap_ops; shown 'rollback'
+swap_ops; shown 'rollback again'
+"""
+
+
+def test_a_failed_deployment_is_never_recorded_as_the_previous_scripts(tmp_path):
+    script = tmp_path / "scenario.sh"
+    script.write_text(OPS_SCENARIO, encoding="utf-8")
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    result = subprocess.run(["bash", str(script), str(deploy)], capture_output=True, text=True, timeout=60,
+                            env={**os.environ, "HUB_OPS": str(OPS)}, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    steps = dict(line.split("=", 1) for line in result.stdout.splitlines())
+    assert steps == {"deploy A": "A,-", "deploy C": "C,A", "deploy D fails": "C,A", "rollback": "A,C",
+                     "rollback again": "C,A"}
+
+
+# -- the scripts themselves -------------------------------------------------------------------------------------------
+
+
+def code_lines(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
+def test_the_scripts_are_strict_bash_and_executable():
+    names = {path.name for path in SHELL_SCRIPTS}
+    assert set(EXECUTABLES) | {"hub-common.sh", "hub-ops.sh"} <= names
+    tracked = subprocess.run(["git", "ls-files", "-s", "ops/hub"], cwd=ROOT, capture_output=True, text=True,
+                             check=True).stdout
+    modes = {line.split("\t")[1].rsplit("/", 1)[1]: line.split()[0] for line in tracked.splitlines()}
+    for name in EXECUTABLES:
+        text = (OPS / name).read_text(encoding="utf-8")
+        assert text.startswith("#!/usr/bin/env bash\n") and "\nset -euo pipefail\n" in text, name
+        if name in modes:  # tracked: the executable bit is committed
+            assert modes[name] == "100755", name
+
+
+def test_the_scripts_are_shellcheck_clean():
+    shellcheck = shutil.which("shellcheck")
+    if shellcheck is None:
+        pytest.skip("shellcheck is not installed (GitHub's ubuntu-latest image has it)")
+    result = subprocess.run([shellcheck, "-x", "-P", str(OPS), *map(str, SHELL_SCRIPTS)], cwd=OPS,
+                            capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_hub_listens_on_loopback_only_and_the_daemon_is_never_touched():
+    common = (OPS / "hub-common.sh").read_text(encoding="utf-8")
+    assert "\nHUB_HOST=127.0.0.1\n" in common
+    assert '--host "$HUB_HOST"' in (OPS / "run-hub.sh").read_text(encoding="utf-8")
+    for path in SHELL_SCRIPTS:
+        text = path.read_text(encoding="utf-8")
+        code = code_lines(text)
+        assert "0.0.0.0" not in text and "funnel" not in text.lower(), path.name  # noqa: S104
+        assert "--host" not in code or path.name == "run-hub.sh", path.name
+        # the only unit the scripts name is the Hub's own; no daemon process or unit is matched
+        assert not re.search(r"agent-harness(-daemon)?\.service|harness-daemon|-m harness(?!_hub)", code), path.name
+
+
+def test_no_host_name_or_secret_is_committed():
+    deployment = (ROOT / "docs" / "deployment.md").read_text(encoding="utf-8")
+    for text in (deployment, *(path.read_text(encoding="utf-8") for path in SHELL_SCRIPTS)):
+        # a tailnet name: only placeholders and example names
+        for name in re.findall(r"[A-Za-z0-9-]+\.[A-Za-z0-9-]+\.ts\.net", text):
+            assert name.split(".")[0] in {"hub", "example", "tower", "host"} or name.startswith("<"), name
+        assert not re.search(r"(?<![A-Za-z0-9])(?:ha|ho|hp)-[A-Za-z0-9_\-]{8,}", text)
+        assert not re.search(r"(token|password|secret)\s*[=:]\s*['\"]?[A-Za-z0-9+/_\-]{16,}", text, re.I)
+        assert not re.search(r"https://(?!<)[A-Za-z0-9-]+\.(?!example)[A-Za-z0-9-]+\.ts\.net", text)
+
+
+def test_the_deployment_doc_leads_with_linux_and_keeps_windows():
+    deployment = (ROOT / "docs" / "deployment.md").read_text(encoding="utf-8")
+    for path in SHELL_SCRIPTS:
+        assert path.name in deployment, path.name
+    linux, windows = deployment.index("## Linux"), deployment.index("## Windows")
+    assert linux < windows
+    for needle in ("--rollback", "check-hub.sh", "systemctl --user", "loginctl enable-linger", "tailscale serve",
+                   "hub.env", "sign-in link"):
+        assert needle in deployment[linux:windows], needle
+    assert re.search(r"peer check[^.]*Windows only", deployment[linux:windows], re.S)
+    # the Windows path keeps its scripts and switches
+    for needle in ("deploy-hub.ps1", "install-task.ps1", "-Rollback", "Unregister-ScheduledTask"):
+        assert needle in deployment[windows:], needle
