@@ -8,6 +8,7 @@ The Hub calls the public `/health`, the Hub-claim pairing routes for its *own* c
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,6 +19,8 @@ CLAIM_REQUESTS = "/api/v1/pair/requests"
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 # The redeem mints the Hub key and the daemon answers it only once: wait long enough that a slow reply is not lost.
 REDEEM_TIMEOUT = httpx.Timeout(60.0, connect=5.0)
+# The operations in LONG_OPERATIONS can run for minutes on the daemon, so they wait this long instead of TIMEOUT.
+LONG_TIMEOUT = 310.0
 # Failures raised before the request could reach the daemon; any other failure may follow a request it processed.
 NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.UnsupportedProtocol)
 
@@ -106,6 +109,12 @@ ADMIN_ROUTES = {
     "scan_promote": ("POST", "/remote-control/discovery/scans/{scan_id}/candidates/{candidate_id}/promote"),
     "audit": ("GET", "/audit"),
 }
+LONG_OPERATIONS = frozenset({"runner_update", "backup", "cleanup"})
+
+
+def route_targets(path: str) -> list[str]:
+    """The `{name}` placeholders of a route template: the targets a caller supplies to fill it."""
+    return re.findall(r"{(\w+)}", path)
 
 
 class DaemonUnreachable(Exception):
@@ -177,27 +186,29 @@ class DaemonClient:
     async def inventory(self, token: str) -> Reply:
         return await self._call("GET", ADMIN + "/hub", token=token)
 
+    async def _routed(self, table: dict[str, tuple[str, str]], operation: str, token: str, targets: dict[str, str],
+                      body: dict | None = None, params: dict | None = None,
+                      timeout: float | httpx.Timeout = TIMEOUT) -> Reply:
+        """The one table lookup: the operation's method and path, its `{name}` placeholders filled from `targets`."""
+        method, path = table[operation]
+        return await self._call(method, ADMIN + path.format(**targets), token=token, json=body, params=params,
+                                timeout=timeout)
+
     async def apps(self, token: str, operation: str, app_id: str = "", body: dict | None = None) -> Reply:
-        method, path = APPS_ROUTES[operation]
-        return await self._call(method, ADMIN + path.format(app_id=app_id), token=token, json=body)
+        return await self._routed(APPS_ROUTES, operation, token, {"app_id": app_id}, body)
 
     async def pairing(self, token: str, operation: str, rid: str = "", body: dict | None = None) -> Reply:
-        method, path = PAIRING_ROUTES[operation]
         # The server validates `rid` as one path segment before dispatch.
-        return await self._call(method, ADMIN + path.format(rid=rid), token=token, json=body)
+        return await self._routed(PAIRING_ROUTES, operation, token, {"rid": rid}, body)
 
     async def settings(self, token: str, operation: str, body: dict | None = None, name: str = "") -> Reply:
-        method, path = SETTINGS_ROUTES[operation]
-        if operation == "backend_save":
-            # The server validates this single path segment before dispatch.
-            path = path.format(name=name)
-        return await self._call(method, ADMIN + path, token=token, json=body)
+        # Only backend_save has a `{name}`; the server validates it as one path segment before dispatch.
+        return await self._routed(SETTINGS_ROUTES, operation, token, {"name": name}, body)
 
     async def administration(self, token: str, operation: str, targets: dict, body: dict | None = None,
                              params: dict | None = None) -> Reply:
-        method, path = ADMIN_ROUTES[operation]
-        return await self._call(method, ADMIN + path.format(**targets), token=token, json=body, params=params,
-                                timeout=310.0 if operation in ("runner_update", "backup", "cleanup") else TIMEOUT)
+        return await self._routed(ADMIN_ROUTES, operation, token, targets, body, params,
+                                  timeout=LONG_TIMEOUT if operation in LONG_OPERATIONS else TIMEOUT)
 
     async def start_hub_claim(self, name: str, challenge: str) -> Reply:
         return await self._call("POST", CLAIM_REQUESTS, json={

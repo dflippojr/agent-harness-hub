@@ -1,4 +1,5 @@
-"""A failing real-daemon test prints the tail of the daemon's log and of each Hub log it started (#138)."""
+"""A failing real-daemon test prints the tail of the daemon's log and of each Hub log it started (#138). Every run
+prints the fixture's notes in its summary, such as how long the Docker CLI took to start (#215)."""
 
 from __future__ import annotations
 
@@ -11,6 +12,13 @@ LOG_TAIL = 4000
 # the Hub logs the running test started.
 daemon_logs: list[Path] = []
 started_logs: list[Path] = []
+# Measurements worth keeping on a green run too: a slow start that passes today is tomorrow's timeout.
+notes: list[str] = []
+
+
+def pytest_terminal_summary(terminalreporter):
+    for note in notes:
+        terminalreporter.write_line(note)
 
 
 def log_tail(path: Path) -> str:

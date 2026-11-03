@@ -9,6 +9,7 @@ import "./modules-notice.test.mjs";
 import "./overview-attention.test.mjs";
 import "./overview-polling.test.mjs";
 import "./page-polling.test.mjs";
+import "./request-page.test.mjs";
 import "./spend-page.test.mjs";
 import "./shell-status.test.mjs";
 import { api, HUB_DOWN } from "../harness_hub/static/lib/api.mjs";

@@ -32,6 +32,25 @@ export function when(seconds) {
   return new Date(seconds * 1000).toLocaleString();
 }
 
+// The daemon's epoch seconds as a short local date and time: "13 Oct, 12:58".
+export function stamp(seconds) {
+  return typeof seconds === "number" && Number.isFinite(seconds) ? new Date(seconds * 1000).toLocaleString(undefined,
+    { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+}
+
+// A count in the reader's number format, or a dash when there is none.
+export const figure = (value) => typeof value === "number" && Number.isFinite(value) ? value.toLocaleString() : "—";
+
+// A plain button; extra adds or overrides its attributes (disabled, data-action, class).
+export function button(text, action, extra = {}) {
+  return h("button", { type: "button", class: "btn", onclick: action, ...extra }, text);
+}
+
+// Label and value pairs as a definition list.
+export function facts(rows) {
+  return h("dl", { class: "facts" }, rows.map(([key, value]) => [h("dt", {}, key), h("dd", {}, value)]));
+}
+
 // Host commands a Host command button opened, by key: held for this page load so a poll's redraw keeps them open.
 const openCommands = new Set();
 let hostCommandCount = 0;
