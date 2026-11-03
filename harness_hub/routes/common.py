@@ -54,8 +54,8 @@ def json_body(data: bytes | bytearray) -> Any:
     (json raises RecursionError for those, which a route's `except ValueError` would miss and answer with a 500)."""
     try:
         return json.loads(data)
-    except RecursionError as error:
-        raise ValueError("JSON body is nested too deeply") from error
+    except RecursionError as exc:
+        raise ValueError("JSON body is nested too deeply") from exc
 
 
 def error(status: int, detail: str, **extra: Any) -> JSONResponse:
