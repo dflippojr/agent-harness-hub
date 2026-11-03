@@ -1,6 +1,6 @@
-"""The `/api/session` router (sign-in, session state, sign-out), the session check every `/api/` request passes
-(`server.require_owner`), and the tailnet sign-in's owner check: a tailnet binding lasts only while the daemon lists
-its login as the owner's (`allowed_logins`)."""
+"""The `/api/session` router (sign-in, session state, sign-out) and the Hub's claim on its daemon (`/api/claim`), the
+session check every `/api/` request passes (`server.require_owner`), and the tailnet sign-in's owner check: a tailnet
+binding lasts only while the daemon lists its login as the owner's (`allowed_logins`)."""
 
 from __future__ import annotations
 
@@ -12,10 +12,11 @@ from fastapi.responses import JSONResponse, Response
 
 from .. import __version__
 from ..auth import SESSION_TTL_SECONDS
+from ..claim import ClaimError
 from ..daemon import DaemonUnreachable
 from ..guard import TOKEN_SHAPE
 from ..tailnet import login
-from ..views import REDACTED
+from ..views import REDACTED, claim_view
 from .common import HubContext, error, hub, json_body, tuning, unreachable
 
 log = logging.getLogger("harness_hub")
@@ -216,9 +217,42 @@ async def sign_out(request: Request):
     return response
 
 
+async def get_claim(request: Request):
+    ctx = hub(request)
+    return claim_view(ctx.claims)
+
+
+async def start_claim(request: Request):
+    ctx = hub(request)
+    try:
+        await ctx.claims.start()
+    except ClaimError as exc:
+        status = exc.status or {"refused": 409, "rate_limited": 429, "claimed": 409,
+                  "persisting": 503, "pending": 503}.get(exc.state, 502)
+        return JSONResponse({"detail": str(exc), "claim": claim_view(ctx.claims)}, status_code=status)
+    return JSONResponse(claim_view(ctx.claims), status_code=201)
+
+
+async def forget_claim(request: Request):
+    ctx = hub(request)
+    try:
+        await ctx.claims.forget()
+    except ClaimError as exc:
+        return error(503, str(exc), claim=claim_view(ctx.claims))
+    return claim_view(ctx.claims)
+
+
+
 def add_routes(app: FastAPI) -> None:
     """Add the `/api/session` routes to the app itself, in this order. Not `include_router`: FastAPI 0.162 puts one
     nested entry in `app.routes` for an included router, which would change the route table (#190)."""
     app.add_api_route("/api/session", get_session, methods=["GET"])
     app.add_api_route("/api/session", sign_in, methods=["POST"])
     app.add_api_route("/api/session", sign_out, methods=["DELETE"])
+
+
+def add_claim_routes(app: FastAPI) -> None:
+    """Add the `/api/claim` routes, in this order, where they were in the route table: after Settings (#190)."""
+    app.add_api_route("/api/claim", get_claim, methods=["GET"])
+    app.add_api_route("/api/claim", start_claim, methods=["POST"])
+    app.add_api_route("/api/claim", forget_claim, methods=["DELETE"])
