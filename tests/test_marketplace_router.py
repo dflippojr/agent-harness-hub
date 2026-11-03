@@ -20,3 +20,9 @@ def test_each_hub_keeps_its_own_marketplace_state(tmp_path):
     marketplace_routes.remember_consent(first, {"catalog_app_id": "demo", "scopes": [], "elevated": []}, "key-1", [])
     assert first.browser_slot_states == {("key-1", "slot-1"): ("armed", False)} and first.consent_copies
     assert second.browser_slot_states == {} and second.consent_copies == {}
+
+
+def test_the_marketplace_listing_is_the_routers_handler(tmp_path):
+    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).fastapi
+    [route] = [route for route in app.routes if getattr(route, "path", "") == "/api/marketplace"]
+    assert route.endpoint is marketplace_routes.get_marketplace and route.methods == {"GET"}
