@@ -549,6 +549,28 @@ def test_invalid_numbers_are_refused(host):
     assert host.read(".venv-path") is None
 
 
+def test_failed_stop_restores_running_hub(host):
+    a, b = host.commit("1.0.0"), host.commit("1.1.0")
+    host.deploy_at(a)
+    before = host.records()
+
+    ctl = host.bin / "systemctl"
+    ctl.rename(host.bin / "systemctl-real")
+    write_executable(ctl, '''#!/usr/bin/env bash
+"$(dirname "$0")/systemctl-real" "$@"
+status=$?
+if [[ $2 == stop ]]; then exit 1; fi
+exit "$status"
+''')
+
+    result = host.deploy_at(b, check=False)
+    assert result.returncode != 0
+    assert host.records() == before
+    assert host.healthz() == {
+        "ok": True, "version": "1.0.0"
+    }, result.stderr
+
+
 # -- guards -----------------------------------------------------------------------------------------------------------
 
 
