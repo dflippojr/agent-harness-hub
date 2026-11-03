@@ -202,7 +202,10 @@ hub_check() {
     else
         started=$(hub_unit_property ExecMainStartTimestampMonotonic)
         result=$(hub_unit_property Result)
-        if [[ $active == failed ]]; then
+        if [[ $active == activating ]]; then
+            check_fail "$HUB_UNIT is restarting after the Hub exited (Restart=always); see $LOGS/hub.log and" \
+                "journalctl --user -u $HUB_UNIT"
+        elif [[ $active == failed ]]; then
             check_fail "$HUB_UNIT failed (Result=${result:-unknown}); see journalctl --user -u $HUB_UNIT"
         elif [[ $enabled == enabled && ${started:-0} == 0 ]]; then
             # The 2026-10-29 failure: an ordering cycle made systemd delete the start job at boot, and nothing recorded

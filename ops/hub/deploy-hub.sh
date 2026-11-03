@@ -55,19 +55,21 @@ run() {
     "$@"
 }
 
-# Saved copies of the four records, put back as they were (present or absent) when a step fails.
+# Saved copies of the four records (and, for a deployment, the unit file and hub.env, which install-unit.sh rewrites),
+# put back as they were (present or absent) when a step fails.
 SNAPSHOT=$DEPLOY/.snapshot
+SNAPSHOT_FILES=("$POINTER" "$PREVIOUS" "$STAMP" "$STAMP_OLD")
 snapshot_records() {
     local file name
     rm -rf -- "$SNAPSHOT" && mkdir -p -- "$SNAPSHOT" || return 1
-    for file in "$POINTER" "$PREVIOUS" "$STAMP" "$STAMP_OLD"; do
+    for file in "${SNAPSHOT_FILES[@]}"; do
         name=$SNAPSHOT/$(basename -- "$file")
         if [[ -f $file ]]; then cp -p -- "$file" "$name" || return 1; else : >"$name.absent" || return 1; fi
     done
 }
 restore_records() {
     local file name ok=0
-    for file in "$POINTER" "$PREVIOUS" "$STAMP" "$STAMP_OLD"; do
+    for file in "${SNAPSHOT_FILES[@]}"; do
         name=$SNAPSHOT/$(basename -- "$file")
         if [[ -e $name.absent ]]; then
             rm -f -- "$file" || ok=1
@@ -198,7 +200,25 @@ if ((DRY_RUN)); then
     hub_say '[dry run] copy ops; install the unit; stop the Hub; repoint .venv-path; write deployed.json; start; check'
     exit 0
 fi
+SNAPSHOT_FILES+=("$UNIT_FILE" "$ENV_FILE")
 snapshot_records || hub_die "could not save the deployment records"
+# What ran before: a Hub from a unit this script did not write (no .venv-path yet) is restarted on failure too.
+UNIT_WAS_ENABLED=0 HUB_WAS_ACTIVE=0
+if hub_unit_installed; then
+    [[ $(systemctl --user is-enabled "$HUB_UNIT" 2>/dev/null || true) == enabled ]] && UNIT_WAS_ENABLED=1
+    [[ $(systemctl --user is-active "$HUB_UNIT" 2>/dev/null || true) == active ]] && HUB_WAS_ACTIVE=1
+fi
+# Puts the unit file, its enablement and hub.env back as they were before install-unit.sh.
+restore_unit() {
+    local ok=0
+    if [[ -e $SNAPSHOT/$HUB_UNIT.absent ]] || ((!UNIT_WAS_ENABLED)); then
+        if hub_unit_installed; then systemctl --user disable "$HUB_UNIT" >/dev/null 2>&1 || ok=1; fi
+    fi
+    restore_records || ok=1
+    systemctl --user daemon-reload || ok=1
+    if ((UNIT_WAS_ENABLED)); then systemctl --user enable "$HUB_UNIT" >/dev/null 2>&1 || ok=1; fi
+    return "$ok"
+}
 STOPPED=0
 deploy_swap() {
     copy_ops "$here" || return 1
@@ -222,14 +242,18 @@ deploy_swap() {
 if ! deploy_swap; then
     if ((!STOPPED)); then
         undo_ops
+        restore_unit || hub_warn "restoring the unit file or hub.env failed"
         rm -rf -- "$staged" "$SNAPSHOT"
         hub_die "deployment failed before the Hub was stopped; nothing else was changed"
     fi
     errors=()
     hub_stop || errors+=("stop failed")
     undo_ops || errors+=("restoring ops failed")
-    restore_records || errors+=("restoring the records failed")
-    if [[ -n $previous_venv ]]; then
+    restore_unit || errors+=("restoring the records, the unit file or hub.env failed")
+    PORT='' DAEMON_URL='' PUBLIC_URL='' STATUS_SECONDS=''
+    hub_load_env
+    if [[ -n $previous_venv ]] || ((HUB_WAS_ACTIVE)); then
+        # A Hub this script did not deploy has no deployed.json: then any healthy answer will do.
         if hub_start "$(hub_json_field "$STAMP" version)"; then
             hub_say '[rollback] previous Hub started and healthy'
         else

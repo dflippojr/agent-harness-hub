@@ -93,14 +93,16 @@ logs in, and the check warns. The script, in order:
 4. **Start and check.** Start the unit. `/healthz` must answer `ok` with the new version and `state/status.json` must
    name the new commit, each within 60 s. Then the full [check](#check-it) must pass.
 5. **Roll back on failure.** After the stop, any failure, a failed check included, restores the previous pointers,
-   records and scripts, restarts the previous Hub and says so. If that restart also fails, the error says both.
+   records, scripts, unit file and `hub.env`, restarts the previous Hub and says so. If that restart also fails, the error says both.
 6. **Clean up.** The environment before the previous one is deleted.
 
 **Moving from a hand-written unit.** If `~/.config/systemd/user/agent-harness-hub.service` exists and
 `install-unit.sh` did not write it, the deployment stops before any downtime and changes nothing. First put the old
 unit's host-specific values in arguments: `--port`, `--daemon-url`, and `--public-url` for its `--public-url`. Then run
 the deployment again with `--replace-unit`. The new unit has no ordering on the daemon. Run
-`systemctl --user cat agent-harness-hub` first to see the old unit.
+`systemctl --user cat agent-harness-hub` first to see the old unit. Check that its `--state-dir` is
+`<deploy-dir>/state`, the directory that holds the Hub key and the claim. A Hub on another state directory starts
+unclaimed. If this deployment fails, it puts the old unit file back and restarts its Hub.
 
 ### Check it
 

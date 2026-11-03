@@ -203,6 +203,9 @@ class Host:
         return self.run("deploy-hub.sh", "--release-root", str(self.release), "--deploy-dir", str(self.deploy),
                         "--python", str(self.python), *args, check=check)
 
+    def run_fake_systemctl(self, *args: str):
+        subprocess.run([str(self.bin / "systemctl"), "--user", *args], env=self.env, check=True, timeout=60)
+
     def check(self) -> subprocess.CompletedProcess[str]:
         return self.run("check-hub.sh", "--deploy-dir", str(self.deploy), check=False)
 
@@ -295,6 +298,38 @@ def test_a_hand_written_unit_is_replaced_only_when_asked(host):
     assert not (host.deploy / "venvs" / a).exists()
     host.deploy_at(a, "--replace-unit")
     assert "After=" not in host.unit_file.read_text(encoding="utf-8")
+
+
+def test_a_failed_first_deployment_over_a_hand_written_unit_puts_it_back_and_restarts_its_hub(host):
+    # The tower's move to these scripts: a running Hub from a hand-written unit, no .venv-path yet. A deployment that
+    # fails after the stop must not leave the Hub down or the owner's unit overwritten.
+    hand_hub = write_executable(host.root / "hand-hub.sh", "#!/usr/bin/env bash\n"
+                                "printf '{\"ok\":true,\"version\":\"0.9.0\"}' >\"$FAKE_SYSTEMD/healthz.8120\"\n")
+    original = f"[Unit]\nAfter=agent-harness.service\n[Service]\nExecStart=/usr/bin/env bash {hand_hub}\n"
+    host.unit_file.parent.mkdir(parents=True)
+    host.unit_file.write_text(original, encoding="utf-8")
+    (host.systemd / "enabled").touch()
+    host.run_fake_systemctl("start", UNIT)
+    assert host.healthz() == {"ok": True, "version": "0.9.0"}
+    broken = host.commit("1.0.0", "BROKEN")
+    failed = host.deploy_at(broken, "--replace-unit", check=False)
+    assert failed.returncode != 0 and "the previous deployment is restored" in failed.stderr, failed.stderr
+    assert host.unit_file.read_text(encoding="utf-8") == original
+    assert (host.systemd / "enabled").exists()
+    assert host.healthz() == {"ok": True, "version": "0.9.0"}  # the hand-written unit's Hub runs again
+    for name in (".venv-path", "deployed.json", "hub.env"):
+        assert host.read(name) is None, name
+
+
+def test_a_failed_upgrade_leaves_the_unit_and_hub_env_as_they_were(host):
+    a, broken = host.commit("1.0.0"), host.commit("1.1.0", "BROKEN")
+    host.deploy_at(a)
+    unit, env = host.unit_file.read_text(encoding="utf-8"), host.read("hub.env")
+    failed = host.deploy_at(broken, "--port", "8130", check=False)
+    assert failed.returncode != 0
+    assert host.read("hub.env") == env and "HUB_PORT=8120" in env
+    assert host.unit_file.read_text(encoding="utf-8") == unit
+    assert host.healthz() == {"ok": True, "version": "1.0.0"}
 
 
 # -- deploy, roll back, roll forward ----------------------------------------------------------------------------------
@@ -469,6 +504,12 @@ def test_the_check_reports_an_enabled_unit_that_was_stopped(deployed):
     assert result.returncode == 1
     assert f"FAIL  {UNIT} is enabled but inactive: it was stopped" in result.stdout
     assert "/healthz on 127.0.0.1:8120 does not answer" in result.stdout
+
+
+def test_the_check_reports_a_unit_restarting_after_exits(deployed):
+    deployed.set_unit(active="activating")
+    result = deployed.check()
+    assert result.returncode == 1 and f"FAIL  {UNIT} is restarting after the Hub exited" in result.stdout
 
 
 def test_the_check_reports_a_failed_unit(deployed):
