@@ -4,12 +4,17 @@ The Hub runs on the tower next to the agent-harness daemon, as a logon task, so 
 ([production-signals.md](production-signals.md)). The scripts are in `ops/hub/` and are modelled on agent-harness
 `ops/harness/` (`deploy-ci.ps1`, `run-daemon.ps1`, `install-task.ps1`).
 
+Commands below use placeholders for values that differ from one machine to another. `<checkout>` is the clone of this
+repository on the tower, `<deploy-dir>` is the install folder (`-DeployDir`, whose default is in the `param` block of
+`ops/hub/deploy-hub.ps1`), `<python>` is a Python 3.12 or later `python.exe`, and `<tailnet-hostname>` is the tower's
+name on your tailnet. Fill each one in with your own value.
+
 **Rules**
 
 - **Loopback or tailnet only.** The Hub listens on `127.0.0.1:8120` and nothing else (`hub-common.ps1` pins the host;
   there is no switch for another). A browser on the tailnet reaches it through `tailscale serve`'s HTTPS proxy (step
   5). Never `--host 0.0.0.0`, never a LAN address, never `tailscale funnel`.
-- **No secrets in the repo.** Everything secret stays in `D:\Agents\agent-harness-hub\state` (owner-only ACL): the Hub
+- **No secrets in the repo.** Everything secret stays in `<deploy-dir>\state` (owner-only ACL): the Hub
   key and sign-in codes. The scripts, `deployed.json` and `status.json` hold none.
 - **The daemon is never touched.** Every process match in `hub-common.ps1` names the Hub's own state directory, and the
   daemon's `-m harness` command line cannot match it. Deploying, rolling back and restarting the Hub never stop,
@@ -18,7 +23,7 @@ The Hub runs on the tower next to the agent-harness daemon, as a logon task, so 
 
 ## Layout
 
-`D:\Agents\agent-harness-hub` (`-DeployDir`):
+`<deploy-dir>` (`-DeployDir`):
 
 | Path | What |
 | --- | --- |
@@ -35,9 +40,9 @@ Run from a clean checkout of the commit to deploy (on `main`), in PowerShell as 
 elevation is needed: the logon task is per-user, like the daemon's.
 
 ```powershell
-git -C D:\Projects\agent-harness-hub pull --ff-only          # the stable checkout, on main
-D:\Projects\agent-harness-hub\ops\hub\deploy-hub.ps1 `
-    -Python C:\Users\dflip\AppData\Roaming\uv\python\cpython-3.12.14-windows-x86_64-none\python.exe
+git -C "<checkout>" pull --ff-only  # the stable checkout, on main
+& "<checkout>\ops\hub\deploy-hub.ps1" `
+    -Python "<python>"
 ```
 
 `-Python` is needed only the first time (any Python 3.12 or later; later deployments reuse the active environment's).
@@ -66,9 +71,9 @@ Hub comes back after every restart, next to the daemon.
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8120/healthz                  # ok true, version
-Get-Content D:\Agents\agent-harness-hub\deployed.json            # commit, version, deployed_at, unmerged
-Get-Content D:\Agents\agent-harness-hub\state\status.json        # heartbeat, claim, last daemon answer
-Get-Content D:\Agents\agent-harness-hub\logs\hub.log -Tail 50
+Get-Content "<deploy-dir>\deployed.json"                         # commit, version, deployed_at, unmerged
+Get-Content "<deploy-dir>\state\status.json"                     # heartbeat, claim, last daemon answer
+Get-Content "<deploy-dir>\logs\hub.log" -Tail 50
 ```
 
 Every read-only fetch the sweep uses is in [production-signals.md](production-signals.md).
@@ -78,7 +83,7 @@ Every read-only fetch the sweep uses is in [production-signals.md](production-si
 A fresh Hub is `unclaimed`. On the tower, as the same account:
 
 ```powershell
-D:\Agents\agent-harness-hub\venvs\<sha>\Scripts\python.exe -m harness_hub signin-link --state-dir D:\Agents\agent-harness-hub\state
+& "<deploy-dir>\venvs\<sha>\Scripts\python.exe" -m harness_hub signin-link --state-dir "<deploy-dir>\state"
 ```
 
 Open the printed link in a browser on the tower, choose **Start claim**, check the six-digit match code, and run the
@@ -90,9 +95,9 @@ command the Hub shows on the daemon host (`harness hub approve <id> --match <cod
 Deploy a tested commit on `main`, the same way as the first install:
 
 ```powershell
-git -C D:\Projects\agent-harness-hub pull --ff-only
-D:\Projects\agent-harness-hub\ops\hub\deploy-hub.ps1                 # HEAD of that checkout
-D:\Projects\agent-harness-hub\ops\hub\deploy-hub.ps1 -Commit <sha>   # or a named commit (HEAD must equal it)
+git -C "<checkout>" pull --ff-only
+& "<checkout>\ops\hub\deploy-hub.ps1"                # HEAD of that checkout
+& "<checkout>\ops\hub\deploy-hub.ps1" -Commit <sha>  # or a named commit (HEAD must equal it)
 ```
 
 "Tested" means CI is green on the commit (`gate` and `gate-guard`) and the verify skill passes on it
@@ -103,7 +108,7 @@ survives because the key is in `state\`.
 ## Roll back
 
 ```powershell
-D:\Projects\agent-harness-hub\ops\hub\deploy-hub.ps1 -Rollback
+& "<checkout>\ops\hub\deploy-hub.ps1" -Rollback
 ```
 
 Stops the Hub, swaps `.venv-path` with `.venv-previous`, `deployed.json` with `deployed.previous.json` and `ops\` with
@@ -118,7 +123,7 @@ Stop-ScheduledTask AgentHarness-Hub                              # the superviso
 Unregister-ScheduledTask AgentHarness-Hub -Confirm:$false        # no start at logon
 ```
 
-`state\` is kept; delete `D:\Agents\agent-harness-hub` to remove everything. The daemon's own Hub record remains until
+`state\` is kept; delete `<deploy-dir>` to remove everything. The daemon's own Hub record remains until
 you run `harness hub release --confirm` on the daemon host.
 
 ## Tailnet access
@@ -129,7 +134,7 @@ and give the Hub that address, so its cookies are `Secure` and the Host check al
 
 ```powershell
 tailscale serve --bg --https=8120 http://127.0.0.1:8120
-D:\Projects\agent-harness-hub\ops\hub\install-task.ps1 -PublicUrl https://dflippotower.tail7c9f1e.ts.net:8120
+& "<checkout>\ops\hub\install-task.ps1" -PublicUrl https://<tailnet-hostname>:8120
 Stop-ScheduledTask AgentHarness-Hub; Start-ScheduledTask AgentHarness-Hub   # the Hub reads --public-url at start
 ```
 
