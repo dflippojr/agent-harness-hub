@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from urllib.parse import urlencode, urlsplit
 
+import pytest
 from starlette.routing import Match
 
 from harness_hub.daemon import ADMIN_ROUTES
@@ -157,4 +158,36 @@ def test_oversized_write_bodies_are_refused(claimed, fake_daemon):
     for row in ROUTES:
         if row[3] == "write" and key(row) not in NO_BODY:
             assert send(claimed, row, content=BIGGER_THAN_ANY_LIMIT).status_code == 413, label(row)
+    assert fake_daemon.sent == before
+
+
+# The five routes that read a JSON body after their own same-origin check: (row, byte cap, 403 detail, 413 detail,
+# 400 detail). Administration answers an unparsable body with the same 400 as an invalid field.
+BODY_READERS = [
+    (("POST", "/api/marketplace/arm", ARM, "write"), 4096, "Setting up an app requires a same-origin Origin",
+     "Set-up body is too large", "Set-up body must be JSON"),
+    (("PUT", "/api/apps/k-minute/limits", {"max_running": 3}, "write"), 1024,
+     "Apps writes require a same-origin Origin", "Apps body is too large", "Apps body must be JSON"),
+    (("POST", "/api/pairing/pr-synthetic/approve", MATCH, "write"), 1024,
+     "Pairing decisions require a same-origin Origin", "Pairing body is too large", "Pairing body must be JSON"),
+    (manage("google_invite"), 65536, "Administration writes require a same-origin Origin",
+     "Administration body is too large", "Invalid administration fields; check required values and confirmation"),
+    (("POST", "/api/settings/validate", {"revision": 3, "changes": {}}, "write"), 262144,
+     "Settings writes require a same-origin Origin", "Settings body is too large", "Settings body must be JSON"),
+]
+
+
+@pytest.mark.parametrize(("row", "cap", "no_origin", "too_large", "not_json"), BODY_READERS,
+                         ids=[label(reader[0]) for reader in BODY_READERS])
+def test_each_body_reader_keeps_its_refusals(claimed, fake_daemon, row, cap, no_origin, too_large, not_json):
+    before = list(fake_daemon.sent)
+    nested = b"[" * 10_000  # deeper than json's recursion limit; over the cap of the routes that take 4 KiB or less
+    cases = [({"X-Hub-Request": "1"}, b"{}", 403, no_origin),
+             (WRITE, b" " * cap, 400, not_json),  # the cap itself is read, then refused only as empty JSON
+             (WRITE, b" " * (cap + 1), 413, too_large),
+             (WRITE, nested, 413 if len(nested) > cap else 400, too_large if len(nested) > cap else not_json),
+             (WRITE, b"{", 400, not_json)]
+    for headers, content, status, detail in cases:
+        reply = send(claimed, row, headers, content)
+        assert (reply.status_code, reply.json()["detail"]) == (status, detail), f"{label(row)} {content[:8]!r}"
     assert fake_daemon.sent == before

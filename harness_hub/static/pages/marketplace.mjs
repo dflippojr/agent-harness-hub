@@ -5,12 +5,10 @@
 // image shown is an inline one the server already checked. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
-import { banner, blocked, blockedKey, blockedState, clear, command, emphasis, h, icon, pill, placeNotice, sectionHead, sentence, when }
-  from "../lib/dom.mjs";
-import { expiry, matchField, pairingRecovery, tickExpiries } from "../lib/pairing.mjs";
-import { poller } from "../lib/poll.mjs";
+import { banner, blocked, blockedState, button, clear, command, emphasis, facts, h, icon, pill, placeNotice,
+  sectionHead, sentence, when } from "../lib/dom.mjs";
+import { expiry, matchField, pairingRecovery, requestPage, tier, verbButton } from "../lib/pairing.mjs";
 
-const POLL_MS = 5000;
 const STATES = { paired: ["Paired", "ok"], not_paired: ["Not paired", "muted"], pending: ["Pending", "warn"] };
 const SLOT_LABELS = { armed: "Waiting for the app", claimed: "Needs confirmation", approved: "Approved" };
 const SLOT_TEXT = { armed: "Armed: waiting for the app to claim it.",
@@ -27,22 +25,20 @@ export function armCommand(entry, origin) {
     (origin ? ` --origin ${origin}` : "") + (acknowledgedScopes(entry).length ? " --acknowledge-elevated" : "");
 }
 
-const tier = (item) => item.tier === "elevated" ? pill("Elevated", "bad") : pill("Standard", "muted");
-
 export function renderMarketplace(main) {
-  let stopped = false, busy = false, ticker, data = null, offset = 0, signature = "";
   // { id, node, handoff }: the consent or hand-off open inside the card of entry `id`. A hand-off stays until Done,
   // even if its entry leaves the list: the slot is armed, and the owner still needs its request id.
   let open = null;
   let confirming = null; // the slot whose Withdraw is asking for confirmation, inside its own card (decision 5 of #65)
-  let acted = null; // the entry the last action was on: its card holds the notice while it is on the page
-  let readError = null; // why the last read failed, or null once one succeeds
   const drafts = new Map();
-  const poll = poller(() => load());
-  const notice = h("p", { class: "notice", "aria-live": "polite", hidden: true, "data-field": "notice" });
-  const problem = h("p", { class: "notice bad", role: "alert", hidden: true });
   const count = h("div");
   const list = h("div", { class: "market-list" });
+  const page = requestPage({ path: "marketplace", root: list, owners: ["data-slot", "data-entry"], controls: "button:not(.copy), input",
+    watched: (data) => [data?.entries ?? null, data?.withheld ?? 0], onRead, paint, onRefused,
+    onAction: () => { confirming = null; },
+    refusals: { 409: (error) => error.message + " The entries were refreshed; check them again.",
+      404: (error) => error.message + " The entries were refreshed." } });
+  const { notice, problem, message, now, load, perform, draw, keepFocus, focus } = page;
   const refresh = h("button", { type: "button", class: "btn ghost refresh", onclick: () => load(true) },
     icon("refresh"), "Refresh entries");
   clear(main, h("header", { class: "page-head" }, h("h1", {}, "Marketplace"), refresh),
@@ -53,42 +49,14 @@ export function renderMarketplace(main) {
     command(["harness hub status", "harness hub entries validate"], { parity: true }), notice, problem, count, list,
     pairingRecovery());
 
-  function button(text, action, extra = {}) {
-    return h("button", { type: "button", class: "btn", onclick: action, ...extra }, text);
-  }
-  // A button whose visible text is a verb; the rest of its accessible name sits in a span the class may hide.
-  function verbButton(verb, rest, action, extra = {}, restClass = "visually-hidden") {
-    return button([`${verb} `, h("span", { class: restClass }, rest)], action, extra);
-  }
-  function message(value, bad = false) {
-    notice.textContent = value;
-    notice.className = bad ? "notice bad" : "notice";
-    notice.hidden = !value;
-  }
-  function now() { return Date.now() / 1000 + offset; }
-  async function load(force = false) {
-    if (stopped || busy && !force) return;
-    poll.cancel();
-    let failure = "";
-    try {
-      const result = await api("marketplace");
-      if (stopped) return;
-      data = result;
-      readError = null;
-      offset = typeof result.now === "number" ? result.now - Date.now() / 1000 : 0;
-    } catch (error) {
-      if (stopped) return;
-      readError = error;
-      // With no entries yet, a read that could not run at all is shown as its state in place of the list.
-      if (data?.entries || !blocked(error)) {
-        failure = error.message + (data?.entries ? " Showing the last entries this page read." : "");
-      }
-    }
-    showProblems(failure);
-    draw(force);
-    poll.schedule(POLL_MS);
+  function onRead(error) {
+    const entries = page.data?.entries;
+    // With no entries yet, a read that could not run at all is shown as its state in place of the list.
+    showProblems(error && (entries || !blocked(error)) ?
+      error.message + (entries ? " Showing the last entries this page read." : "") : "");
   }
   function showProblems(failure) {
+    const { data } = page;
     const lines = [];
     if (failure) lines.push(failure);
     else if (data && data.state !== "ready") {
@@ -101,20 +69,16 @@ export function renderMarketplace(main) {
     problem.textContent = lines.join(" ");
     problem.hidden = !lines.length;
   }
-  function draw(force) {
-    const next = JSON.stringify([data?.entries ?? null, data?.withheld ?? 0, blockedKey(readError)]);
-    if (!force && next === signature) return;
-    signature = next;
+  function paint() {
+    const { data } = page;
     const entries = data?.entries || [];
     const listed = open && entries.some((entry) => entry.catalog_app_id === open.id);
     if (open && !listed && !open.handoff) open = null;
     if (confirming && !entries.some((entry) => entry.slots?.some((slot) => slot.id === confirming))) confirming = null;
-    // Keep the owner's typing and focus across a poll that changed the list. The open consent is the same node, put
-    // back in its new card; any other control is found again by its slot or entry and its data-field.
-    const active = document.activeElement;
-    const kept = open?.node.contains(active) ? active : null;
-    const focused = !kept && active?.dataset?.field && list.contains(active) ?
-      [owner(active), active.dataset.field, active.selectionStart] : null;
+    // The open consent is the same node, put back in its new card.
+    keepFocus(() => drawEntries(data, entries, listed), open?.node);
+  }
+  function drawEntries(data, entries, listed) {
     clear(count, data?.entries ? sectionHead("Entries", entries.length) : null);
     clear(list, open && !listed ? h("section", { class: "card market-entry open", "data-entry": open.id }, open.node) : null,
       entries.map(card));
@@ -123,36 +87,17 @@ export function renderMarketplace(main) {
         "entries were"} withheld: the daemon's answer did not match the entries contract.`));
     }
     if (!entries.length) list.append(empty());
-    placeNotice(notice, acted && [...list.querySelectorAll("[data-entry]")].find((el) => el.dataset.entry === acted),
+    placeNotice(notice, page.acted && [...list.querySelectorAll("[data-entry]")].find((el) => el.dataset.entry === page.acted),
       problem);
-    if (kept) kept.focus();
-    else if (focused) focus(...focused);
-    tickExpiries(list, now());
-  }
-  // The slot or entry a control belongs to, as [attribute, value].
-  function owner(el) {
-    const box = el.closest("[data-slot], [data-entry]");
-    if (!box) return [];
-    return box.dataset.slot ? ["data-slot", box.dataset.slot] : ["data-entry", box.dataset.entry];
-  }
-  function focus([attribute, value], field, caret) {
-    const target = [...list.querySelectorAll("[data-field]")].find((el) => el.dataset.field === field &&
-      el.closest("[data-slot], [data-entry]")?.getAttribute(attribute) === value);
-    if (!target) return;
-    target.focus();
-    if (typeof caret === "number" && target.setSelectionRange) target.setSelectionRange(caret, caret);
   }
   function empty() {
-    if (!data?.entries) {
-      return blockedState(readError, "Marketplace entries", () => load(true)) ??
+    if (!page.data?.entries) {
+      return blockedState(page.readError, "Marketplace entries", () => load(true)) ??
         h("p", { class: "muted" }, "No entries to show.");
     }
     return h("section", { class: "card empty" }, icon("marketplace"), h("h2", {}, "No entries yet"),
       h("p", {}, "The entries file lists no apps. Create it on the daemon host with harness hub entries init."),
       command("harness hub entries init"));
-  }
-  function facts(rows) {
-    return h("dl", { class: "facts" }, rows.map(([key, value]) => [h("dt", {}, key), h("dd", {}, value)]));
   }
   function entryIcon(entry) {
     // Only a data: raster image survives the server's allowlist, so this never loads anything from the network.
@@ -237,6 +182,7 @@ export function renderMarketplace(main) {
       if (submit.disabled) return;
       const match = input.value.trim();
       void perform(entry.catalog_app_id, async () => {
+        open = null;
         await api(`pairing/${slot.id}/confirm`, { method: "POST", body: { match } });
         drafts.delete(slot.id);
         message(`Confirmed ${name}. The app now fetches its own token from the daemon.`);
@@ -244,16 +190,16 @@ export function renderMarketplace(main) {
     }, { class: "btn primary", "data-action": "confirm", "data-field": "confirm" }, "button-name");
     const update = () => {
       drafts.set(slot.id, input.value);
-      submit.disabled = busy || !input.value.trim();
+      submit.disabled = page.busy || !input.value.trim();
     };
     input.addEventListener("input", update);
-    submit.disabled = busy || !input.value.trim();
+    submit.disabled = page.busy || !input.value.trim();
     return h("div", { class: "slot-decision" }, field.nodes, h("div", { class: "decision-buttons" }, withdraw, submit),
       command([`harness pairing-requests confirm ${slot.id} --match <code>`, `harness pairing-requests deny ${slot.id}`],
         { parity: true }));
   }
   function askWithdraw(slot) {
-    if (busy) return;
+    if (page.busy) return;
     confirming = slot.id;
     draw(true);
     focus(["data-slot", slot.id], "confirm-withdraw");
@@ -266,6 +212,7 @@ export function renderMarketplace(main) {
       focus(["data-slot", slot.id], "withdraw");
     }, { "data-field": "cancel" });
     const ok = button("Confirm withdraw", () => perform(entry.catalog_app_id, async () => {
+      open = null;
       await api(`pairing/${slot.id}/deny`, { method: "POST", body: { confirm: true } });
       message(`Withdrew the slot for ${name}.`);
     }), { class: "btn destructive", "data-field": "confirm-withdraw" });
@@ -279,7 +226,7 @@ export function renderMarketplace(main) {
   // The consent screen, inside the card of the entry it sets up. It shows the copy the owner reviews (`entry`), which a
   // poll does not change: Approve sends that copy's digest, and the server refuses it if the entry has moved on.
   function consent(entry) {
-    if (busy) return;
+    if (page.busy) return;
     message("");
     const id = entry.catalog_app_id, name = entry.name || id;
     const origins = entry.browser_origins;
@@ -296,10 +243,10 @@ export function renderMarketplace(main) {
       void perform(id, async () => {
         const armed = await api("marketplace/arm", { method: "POST", body });
         handoff(id, armed, origin);
-      }, true);
+      });
     }, { class: "btn primary", "data-action": "approve" });
     const update = () => {
-      approve.disabled = busy || Boolean(origins.length && !origin) || Boolean(ack && !ack.checked);
+      approve.disabled = page.busy || Boolean(origins.length && !origin) || Boolean(ack && !ack.checked);
       clear(cli, command(armCommand(entry, origin || (origins.length ? "<origin>" : "")),
         { parity: true, key: `arm ${id}` }));
     };
@@ -367,41 +314,20 @@ export function renderMarketplace(main) {
     draw(true);
     focus(["data-entry", id], "setup");
   }
-  // An action on entry `id`: its outcome shows in that entry's card, or under the page head once the card is gone.
-  async function perform(id, action, keepOpen = false) {
-    if (busy || stopped) return;
-    busy = true;
-    acted = id;
-    poll.cancel();
-    for (const control of list.querySelectorAll("button:not(.copy), input")) control.disabled = true;
-    confirming = null;
-    if (!keepOpen) open = null;
-    let reviewed = null, reviewMessage = "";
-    try {
-      await action();
-    } catch (error) {
-      if (stopped) return;
-      open = null;
-      if (error.status === 409 && error.body.consent_entry) {
-        reviewed = error.body.consent_entry;
-        reviewMessage = error.message;
-      }
-      if (error.status === 409) message(error.message + " The entries were refreshed; check them again.", true);
-      else if (error.status === 404) message(error.message + " The entries were refreshed.", true);
-      else message(error.message, true);
-    }
-    if (stopped) return;
-    busy = false;
-    await load(true);
-    if (reviewed) {
-      const current = data?.entries?.find((entry) => entry.catalog_app_id === reviewed.catalog_app_id);
+  // A refused action closes the consent. A 409 that carries the entry as the daemon has it now reopens it after the
+  // reload: on the listed copy if it says the same, else on the daemon's, for the owner to review what changed.
+  function onRefused(error) {
+    open = null;
+    if (error.status !== 409 || !error.body.consent_entry) return null;
+    const reviewed = error.body.consent_entry;
+    return () => {
+      const current = page.data?.entries?.find((entry) => entry.catalog_app_id === reviewed.catalog_app_id);
       const sameCopy = current && JSON.stringify(current.scopes) === JSON.stringify(reviewed.scopes) &&
         Boolean(current.acknowledgement_required) === Boolean(reviewed.acknowledgement_required);
       consent(sameCopy ? current : reviewed);
-      message(reviewMessage, true);
-    }
+      message(error.message, true);
+    };
   }
-  ticker = setInterval(() => tickExpiries(list, now()), 1000);
   void load(true);
-  return () => { stopped = true; poll.stop(); clearInterval(ticker); };
+  return page.stop;
 }
