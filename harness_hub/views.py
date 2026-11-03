@@ -14,7 +14,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from . import __version__
-from .administration import TARGET
+from .administration import CONTENT_HASH, TARGET
 from .claim import CLAIMED, PENDING, RELEASE_COMMAND, ClaimManager
 from .guard import KEY_PREFIX_SHAPE, LINK_CODE, TOKEN_SHAPE, leaks
 
@@ -93,6 +93,14 @@ def _int(value: Any) -> int | None:
     return value if type(value) is int else None
 
 
+def _dict(value: Any) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _list(value: Any) -> list:
+    return value if isinstance(value, list) else []
+
+
 def _flags(value: Any) -> dict[str, bool]:
     if not isinstance(value, dict):
         return {}
@@ -101,8 +109,7 @@ def _flags(value: Any) -> dict[str, bool]:
 
 
 def _names(value: Any) -> list[str]:
-    return [display_text(v, 64, redact=GUARD) for v in value[:32]
-            if isinstance(v, str)] if isinstance(value, list) else []
+    return [display_text(v, 64, redact=GUARD) for v in _list(value)[:32] if isinstance(v, str)]
 
 
 def _protocols(value: Any) -> dict[str, dict[str, int]]:
@@ -130,9 +137,9 @@ def claim_view(claims: ClaimManager) -> dict:
 
 
 def health_view(body: Any) -> dict:
-    body = body if isinstance(body, dict) else {}
-    caps = body.get("capabilities") if isinstance(body.get("capabilities"), dict) else {}
-    config = body.get("config") if isinstance(body.get("config"), dict) else {}
+    body = _dict(body)
+    caps = _dict(body.get("capabilities"))
+    config = _dict(body.get("config"))
     return {
         "daemon": {
             "release": display_text(body.get("release"), 64, redact=GUARD),
@@ -177,8 +184,8 @@ def owner_api_compatibility(version: Any) -> str:
 
 def ownership_view(discovery: Any, hub_claim: Any, key_id: str) -> dict:
     """Whether the daemon has a Hub, and whether it is this one. Only the record's display fields are kept."""
-    discovery = discovery if isinstance(discovery, dict) else {}
-    hub_claim = hub_claim if isinstance(hub_claim, dict) else {}
+    discovery = _dict(discovery)
+    hub_claim = _dict(hub_claim)
     record = hub_claim.get("hub") if isinstance(hub_claim.get("hub"), dict) else None
     shown = None
     if record:
@@ -228,9 +235,9 @@ def field_errors(value: Any) -> dict:
 
 
 def settings_error(body: Any, status: int) -> dict:
-    body = body if isinstance(body, dict) else {}
-    error = body.get("error") if isinstance(body.get("error"), dict) else {}
-    details = error.get("details") if isinstance(error.get("details"), dict) else {}
+    body = _dict(body)
+    error = _dict(body.get("error"))
+    details = _dict(error.get("details"))
     return {"detail": display_text(body.get("detail"), 2000, redact=WORD) or f"The daemon answered HTTP {status}",
             "error": {"code": display_text(error.get("code"), 64, redact=GUARD),
                       "keys": field_errors(error.get("keys")),
@@ -240,7 +247,7 @@ def settings_error(body: Any, status: int) -> dict:
 
 
 def registry_entry(body: Any) -> dict:
-    body = body if isinstance(body, dict) else {}
+    body = _dict(body)
     out = {key: display_text(body.get(key), 4000, redact=GUARD) for key in
            ("key", "label", "help", "category", "type", "scope", "apply", "sensitivity", "guidance", "source")}
     out.update({key: _bool(body.get(key)) for key in ("readable", "writable", "available", "file_only")})
@@ -254,9 +261,9 @@ def registry_entry(body: Any) -> dict:
 
 
 def registry_view(body: Any) -> dict:
-    body = body if isinstance(body, dict) else {}
-    rows = body.get("settings") if isinstance(body.get("settings"), list) else []
-    changes = body.get("changes") if isinstance(body.get("changes"), list) else []
+    body = _dict(body)
+    rows = _list(body.get("settings"))
+    changes = _list(body.get("changes"))
     return {
         **{key: _int(body.get(key)) for key in
            ("schema_version", "revision", "pending_revision", "target_revision")},
@@ -285,15 +292,15 @@ def recovery_view(value: Any) -> dict | None:
 def preflight_view(value: Any) -> dict | None:
     if not isinstance(value, dict):
         return None
-    problems = value.get("problems") if isinstance(value.get("problems"), list) else []
+    problems = _list(value.get("problems"))
     return {"ok": _bool(value.get("ok")),
             "problems": [display_text(v, 64, redact=WORD) for v in problems[:32] if isinstance(v, str)],
             "checked_at": _num(value.get("checked_at"))}
 
 
 def backend_view(value: Any) -> dict:
-    value = value if isinstance(value, dict) else {}
-    models = value.get("popular_models") if isinstance(value.get("popular_models"), list) else []
+    value = _dict(value)
+    models = _list(value.get("popular_models"))
     return {"name": display_text(value.get("name"), 80, redact=GUARD),
             "model": display_text(value.get("model"), 200, redact=GUARD),
             "effort": display_text(value.get("effort"), 32, redact=GUARD), "available": _bool(value.get("available")),
@@ -310,16 +317,16 @@ def memory_route_absent(body: Any) -> bool:
 
 def control_view(operation: str, body: Any, installed: bool = True) -> Any:
     if operation == "backends":
-        return [backend_view(row) for row in body] if isinstance(body, list) else []
+        return [backend_view(row) for row in _list(body)]
     if operation == "backend_save":
         return backend_view(body)
-    body = body if isinstance(body, dict) else {}
+    body = _dict(body)
     if operation in ("smart", "smart_save"):
         return {"mode": display_text(body.get("mode"), 32, redact=GUARD), "enabled": _bool(body.get("enabled")),
                 "configured": _bool(body.get("configured")),
                 "secret_ref": display_text(body.get("secret_ref"), 4000, redact=WORD)}
     if operation in ("memory", "memory_save"):
-        commit = body.get("last_commit") if isinstance(body.get("last_commit"), dict) else {}
+        commit = _dict(body.get("last_commit"))
         return {"installed": installed, "enabled": _bool(body.get("enabled")),
                 "profile": body.get("profile") if isinstance(body.get("profile"), str) else "",
                 "profile_max_chars": _num(body.get("profile_max_chars")),
@@ -340,7 +347,7 @@ def control_view(operation: str, body: Any, installed: bool = True) -> Any:
 
 def module_view(body: Any) -> list[dict]:
     """Only module identity, presence and up to eight scalar status fields reach the browser."""
-    rows = body.get("modules", []) if isinstance(body, dict) else []
+    rows = _dict(body).get("modules", [])
     out = []
     for row in rows:
         shown = {"name": display_text(row.get("name"), 200, redact=GUARD), "state": row.get("state")}
@@ -380,10 +387,10 @@ def _app_id(value: Any) -> str:
 
 
 def app_view(row: Any, key_id: str = "", secrets: tuple[str, ...] = ()) -> dict:
-    row = row if isinstance(row, dict) else {}
-    store = row.get("store") if isinstance(row.get("store"), dict) else {}
+    row = _dict(row)
+    store = _dict(row.get("store"))
     usage = store.get("usage")
-    sessions = store.get("sessions") if isinstance(store.get("sessions"), dict) else {}
+    sessions = _dict(store.get("sessions"))
     out = {key: display_text(row.get(key), 200, redact=GUARD)
            for key in ("id", "name", "kind", "role", "catalog_app_id")}
     out["id"] = _app_id(row.get("id"))
@@ -393,8 +400,8 @@ def app_view(row: Any, key_id: str = "", secrets: tuple[str, ...] = ()) -> dict:
                 ("created_at", "last_used_at", "token_age_seconds", "revoked_at", "erase_after", "erased_at",
                  "retention_days")})
     out["scopes"] = display_text(row.get("scopes"), 2000, secrets=secrets)
-    out["origins"] = [display_text(origin, 2000, secrets=secrets) for origin in row.get("origins", [])[:32]
-                      if isinstance(origin, str)] if isinstance(row.get("origins"), list) else []
+    out["origins"] = [display_text(origin, 2000, secrets=secrets) for origin in _list(row.get("origins"))[:32]
+                      if isinstance(origin, str)]
     state = row.get("state")
     out["state"] = state if isinstance(state, str) and state in APP_STATES else "unknown"
     out["errors"] = row.get("errors") is True
@@ -410,13 +417,12 @@ def app_view(row: Any, key_id: str = "", secrets: tuple[str, ...] = ()) -> dict:
 
 
 def apps_view(body: Any, key_id: str, secrets: tuple[str, ...] = ()) -> dict:
-    body = body if isinstance(body, dict) else {}
+    body = _dict(body)
     entries = []
     for row in body.get("entries", []):
         if not isinstance(row, dict):
             continue
-        manifest = row.get("manifest") if isinstance(row.get("manifest"), dict) else {}
-        app = manifest.get("app") if isinstance(manifest.get("app"), dict) else {}
+        app = _dict(_dict(row.get("manifest")).get("app"))
         entries.append({"catalog_app_id": display_text(row.get("catalog_app_id"), 200, secrets=secrets),
                         "name": display_text(app.get("display_name"), 200, secrets=secrets),
                         "state": display_text(row.get("state"), 32, redact=GUARD), "paired": _names(row.get("paired")),
@@ -429,7 +435,7 @@ def erasures_view(body: Any, secrets: tuple[str, ...] = ()) -> list[dict]:
     return [{"id": _app_id(row.get("id")),
              **{key: display_text(row.get(key), 200, secrets=secrets) for key in ("name", "kind")},
              **{key: _finite(row.get(key)) for key in ("revoked_at", "erase_after")}}
-            for row in body if isinstance(row, dict) and _app_id(row.get("id"))] if isinstance(body, list) else []
+            for row in _list(body) if isinstance(row, dict) and _app_id(row.get("id"))]
 
 
 def valid_limits(body: Any) -> bool:
@@ -452,10 +458,10 @@ def valid_limits(body: Any) -> bool:
 
 
 def limits_view(body: Any) -> dict:
-    body = body if isinstance(body, dict) else {}
+    body = _dict(body)
     out = {"app_id": display_text(body.get("app_id"), 200, redact=GUARD)}
     for group in ("configured", "effective"):
-        values = body.get(group) if isinstance(body.get(group), dict) else {}
+        values = _dict(body.get(group))
         out[group] = {key: _int(values.get(key)) for key in ("max_running", "max_queued")}
     out.update({key: _int(body.get(key)) for key in ("running", "queued", "parked")})
     return out
@@ -467,7 +473,7 @@ SPEND_NEAR = 0.8  # an App whose session-cap use reaches this share of a cap is 
 
 def usage_tally(value: Any, local: bool = False) -> dict:
     """One usage tally; a local-model tally shows tokens only, so its cost is None (the owner's choice in #61)."""
-    value = value if isinstance(value, dict) else {}
+    value = _dict(value)
     out = {key: _finite(value.get(key)) for key in USAGE_FIELDS}
     if local:
         out["cost_usd"] = None
@@ -491,7 +497,7 @@ def spend_view(inventory: Any, backends: Any, limits: dict, key_id: str, secrets
     """Every App's lifetime usage and session-cap use, and each backend's today and 7-day usage.
 
     The daemon has no per-App time windows yet (agent-harness#686), so per-App rows carry lifetime totals only."""
-    rows = inventory.get("apps", []) if isinstance(inventory, dict) else []
+    rows = _dict(inventory).get("apps", [])
     apps = []
     for row in rows:
         if not isinstance(row, dict) or row.get("kind") not in ("app", "device") or row.get("role") == "hub":
@@ -502,7 +508,7 @@ def spend_view(inventory: Any, backends: Any, limits: dict, key_id: str, secrets
         apps.append({"id": shown["id"], "name": shown["name"], "kind": shown["kind"], "state": shown["state"],
                      "usage": shown["store"]["usage"], "caps": cap_use(limits.get(shown["id"]))})
     out_backends = []
-    for row in backends if isinstance(backends, list) else []:
+    for row in _list(backends):
         if not isinstance(row, dict):
             continue
         billing = display_text(row.get("billing"), 32, redact=GUARD)
@@ -595,8 +601,8 @@ SCHEMAS = {
     "google_cancel": GOOGLE, "google_revoke": GOOGLE, "google_unlink": GOOGLE,
     "credentials": [CREDENTIAL], "credential_set": CREDENTIAL,
     "skills": {"enabled": BOOL, "proposals": [SKILL], "installed": [SKILL]}, "skills_enabled": [SKILL],
-    **dict.fromkeys(("proposal", "skill_install", "skill_reject", "skill_reopen", "skill_review", "skill_enable",
-                     "skill_disable", "skill_projects", "skill_rollback", "skill_export"), SKILL),
+    **dict.fromkeys(("proposal", "skill_install", "skill_reject", "skill_reopen", "skill_enable", "skill_disable",
+                     "skill_projects", "skill_rollback", "skill_export"), SKILL),
     "skill_review": {"job_id": TEXT, "usage_notice": TEXT, "reviewer_model": TEXT},
     "maintenance": MAINTENANCE, "cleanup": CLEANUP, "backup": BACKUP,
     "retention_preview": RETENTION, "retention_apply": RETENTION,
@@ -628,7 +634,7 @@ def project(value: Any, schema: Any, secrets: tuple[str, ...] = ()) -> Any:
             raise ValueError("Invalid daemon text")
         shown = display_text(value, 262144 if schema == LONG else 32768, secrets=secrets)
         if schema in (IDENTIFIER, HASH) and not any(secret and secret in value for secret in secrets):
-            pattern = TARGET if schema == IDENTIFIER else re.compile(r"[a-fA-F0-9]{64}")
+            pattern = TARGET if schema == IDENTIFIER else CONTENT_HASH
             return value if pattern.fullmatch(value) and shown == value else ""
         return shown
     if schema == BOOL:
@@ -686,13 +692,12 @@ ELEVATED_SCOPES = frozenset({"sessions:all", "approvals", "remote_control", "mem
 
 
 def pairing_request_view(row: Any, secrets: tuple[str, ...] = ()) -> dict:
-    row = row if isinstance(row, dict) else {}
+    row = _dict(row)
     kind = row.get("kind") if row.get("kind") in ("app", "hub") else "unknown"
     state = row.get("state") if row.get("state") in PAIRING_STATES else "unknown"
-    scopes = [display_text(s, 64, secrets=secrets) for s in row.get("scopes", [])[:32]
-              if isinstance(s, str)] if isinstance(row.get("scopes"), list) else []
+    scopes = [display_text(s, 64, secrets=secrets) for s in _list(row.get("scopes"))[:32] if isinstance(s, str)]
     disclosures = []
-    for item in row.get("disclosures", [])[:32] if isinstance(row.get("disclosures"), list) else []:
+    for item in _list(row.get("disclosures"))[:32]:
         if isinstance(item, dict) and isinstance(item.get("scope"), str):
             disclosures.append({"scope": display_text(item["scope"], 64, secrets=secrets),
                                 "tier": "elevated" if item.get("tier") == "elevated" else "standard",
@@ -729,8 +734,7 @@ def pairing_attention(body: Any, now: float) -> dict | None:
 
 
 def pairing_view(body: Any, secrets: tuple[str, ...] = ()) -> dict:
-    rows = [pairing_request_view(row, secrets) for row in body if isinstance(row, dict)] if isinstance(
-        body, list) else []
+    rows = [pairing_request_view(row, secrets) for row in _list(body) if isinstance(row, dict)]
     rows = [row for row in rows if row["id"]]
     rows.sort(key=lambda row: row["created_at"] or 0, reverse=True)
     return {"requests": rows, "now": time.time()}
@@ -770,7 +774,7 @@ SLOT_STATES = ("armed", "claimed", "approved")
 
 
 def _key_ids(value: Any) -> list[str]:
-    return [_app_id(v) for v in value[:64] if _app_id(v)] if isinstance(value, list) else []
+    return [_app_id(v) for v in _list(value)[:64] if _app_id(v)]
 
 
 def normalize_origin(value: str) -> str:
@@ -818,13 +822,12 @@ def entry_view(row: Any, secrets: tuple[str, ...] = (), guarded: tuple[str, ...]
     publisher_text = {"secrets": secrets, "guarded": guarded, "strip_controls": True}
     if not isinstance(row, dict) or row.get("verified") is not False or row.get("state") not in ENTRY_STATES:
         return None
-    manifest = row.get("manifest") if isinstance(row.get("manifest"), dict) else {}
-    app = manifest.get("app") if isinstance(manifest.get("app"), dict) else {}
+    app = _dict(_dict(row.get("manifest")).get("app"))
     catalog_app_id = row.get("catalog_app_id")
     if not isinstance(catalog_app_id, str) or not CATALOG_APP_ID.fullmatch(catalog_app_id) or (
             app.get("app_id") != catalog_app_id) or not isinstance(app.get("display_name"), str):
         return None
-    publisher = app.get("publisher") if isinstance(app.get("publisher"), dict) else {}
+    publisher = _dict(app.get("publisher"))
     declared = app.get("scopes")
     if not isinstance(declared, list) or len(declared) > 16:
         return None
@@ -838,7 +841,7 @@ def entry_view(row: Any, secrets: tuple[str, ...] = (), guarded: tuple[str, ...]
                        "justification": display_text(item.get("justification"), 1000, **publisher_text)})
     if not scopes:
         return None
-    origins = app.get("browser_origins") if isinstance(app.get("browser_origins"), list) else []
+    origins = _list(app.get("browser_origins"))
     # Binding fields must survive the display projection exactly: never arm a prefix or a redacted value.
     if len(origins) > 8 or any(not isinstance(origin, str) or len(origin) > 300
                                or display_text(origin, 300) != origin
@@ -850,7 +853,7 @@ def entry_view(row: Any, secrets: tuple[str, ...] = (), guarded: tuple[str, ...]
             normalize_origin(origin)
     except ValueError:
         return None
-    unverified = row.get("unverified_origin") if isinstance(row.get("unverified_origin"), dict) else {}
+    unverified = _dict(row.get("unverified_origin"))
     icon = app.get("icon")
     shown = {"catalog_app_id": catalog_app_id,
             "name": display_text(app.get("display_name"), 80, **publisher_text),
@@ -872,7 +875,7 @@ def entry_view(row: Any, secrets: tuple[str, ...] = (), guarded: tuple[str, ...]
 
 def entries_view(body: Any, secrets: tuple[str, ...] = ()) -> tuple[list[dict], int]:
     """The entries that match the contract, and how many did not (those are withheld, never shown raw)."""
-    rows = body.get("entries") if isinstance(body, dict) and isinstance(body.get("entries"), list) else []
+    rows = _list(_dict(body).get("entries"))
     shown = [entry_view(row, secrets) for row in rows]
     kept = [row for row in shown if row is not None]
     return kept, len(shown) - len(kept)
@@ -881,7 +884,7 @@ def entries_view(body: Any, secrets: tuple[str, ...] = ()) -> tuple[list[dict], 
 def marketplace_slots(requests: Any, secrets: tuple[str, ...] = ()) -> dict[str, list[dict]]:
     """Armed slots still in play, by catalog app id. App-initiated requests stay on the Pairing requests page."""
     slots: dict[str, list[dict]] = {}
-    for row in requests if isinstance(requests, list) else []:
+    for row in _list(requests):
         if not isinstance(row, dict) or row.get("kind") != "app" or row.get("armed") is not True:
             continue
         shown = pairing_request_view(row, secrets)

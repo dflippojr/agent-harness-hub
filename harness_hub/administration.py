@@ -255,6 +255,7 @@ OPERATIONS: dict[str, Operation] = {
 }
 
 TARGET = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}")
+CONTENT_HASH = re.compile(r"[a-fA-F0-9]{64}")
 DAEMON_CONFIRM = {"github_reset", "google_unlink"}
 
 
@@ -279,7 +280,7 @@ def validate_fields(operation: str, body: Any) -> dict:
             if kind == "name":
                 valid = valid and (bool(TARGET.fullmatch(value)) or key == "secret_ref" and value == "")
             if kind == "hash":
-                valid = valid and bool(re.fullmatch(r"[a-fA-F0-9]{64}", value))
+                valid = valid and bool(CONTENT_HASH.fullmatch(value))
         elif kind == "boolean":
             valid = type(value) is bool
         elif kind == "integer":
