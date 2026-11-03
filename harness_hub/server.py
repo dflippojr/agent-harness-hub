@@ -31,6 +31,11 @@ from .config import Settings
 from .daemon import ADMIN_ROUTES, DaemonClient, DaemonUnreachable, route_targets
 from .guard import TOKEN_SHAPE, ResponseGuard, leaks
 from .inventory import InventoryCache, valid_inventory
+from .routes import session as session_routes
+from .routes.common import HubContext
+from .routes.common import error as _error
+from .routes.common import unreachable as _unreachable
+from .routes.session import SESSION_HEADER, SIGNIN_COMMAND
 from .state import SERVER_FILE, StateStore, write_private
 from .status import StatusReporter
 from .tailnet import PeerCheck, TailnetIdentity, login
@@ -68,12 +73,10 @@ from .views import (
 log = logging.getLogger("harness_hub")
 
 STATIC = resources.files("harness_hub") / "static"
-SIGNIN_COMMAND = "python -m harness_hub signin-link"
 REQUEST_HEADER = "x-hub-request"
-SESSION_HEADER = "x-hub-session"
 MAX_SIGNIN_BODY = 1024
+# Timing constants stay here for every router, which reads them through `routes.common.tuning()` on each use.
 ALLOWED_LOGINS_SECONDS = 5.0  # how long the Hub reuses the daemon's allowed_logins answer
-UNREACHABLE = 0  # read_logins' answer when the daemon did not answer at all
 OUTAGE_GRACE_SECONDS = 120.0  # how long after the daemon last listed a tailnet tab's login an outage keeps the tab
 PAIRING_COUNT_SECONDS = 5.0  # how long Overview waits for its optional pairing count, consent lock included
 SPEND_CAP_READS = 8  # App session-cap reads in flight at once; every live App is read
@@ -124,10 +127,6 @@ class HostCheck:
         await self.app(scope, receive, with_headers)
 
 
-def _error(status: int, detail: str, **extra: Any) -> JSONResponse:
-    return JSONResponse({"detail": detail, **extra}, status_code=status)
-
-
 def _json_body(data: bytes | bytearray) -> Any:
     """A request body parsed as JSON. Raises ValueError for any body that does not parse, deeply nested arrays included
     (json raises RecursionError for those, which a route's `except ValueError` would miss and answer with a 500)."""
@@ -151,12 +150,6 @@ async def _read_json(request: Request, limit: int, label: str, origin: str, not_
         return _json_body(data or b"{}")
     except ValueError:
         raise HTTPException(400, not_json or f"{label} body must be JSON") from None
-
-
-# An error says whether the daemon answered, so the shell's status tells "the Hub could not reach the daemon" (a 503 of
-# the Hub's own, reachable false) from "the daemon answered with an error" (forwarded, any status, reachable true).
-def _unreachable(detail: str, **extra: Any) -> JSONResponse:
-    return _error(503, detail, reachable=False, **extra)
 
 
 # A read or write the Hub refuses because it has not claimed the daemon. claimed false lets a page show its Claim this
@@ -228,6 +221,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     app.state.store = store
     app.state.sessions = sessions
     app.state.inventory = inventory
+    app.state.hub = hub = HubContext(settings=settings, store=store, daemon=daemon, claims=claims, sessions=sessions,
+                                     inventory=inventory, peer_check=peer_check)
     restart = {"active": False, "target": None, "generation": 0, "not_before": 0.0}
     recoveries: list[dict] = []  # the newest distinct recoveries any daemon reply reported, oldest first
 
@@ -267,7 +262,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return _error(403, "cross-origin request refused")
         if path == "/api/session" and request.method in ("GET", "POST"):
             return await call_next(request)
-        if not await signed_in(request):
+        if not await session_routes.signed_in(hub, request):
             return _error(401, "sign in first", signin_command=SIGNIN_COMMAND)
         return await call_next(request)
 
@@ -281,124 +276,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         # it is the owner's is decided at sign-in, against the daemon's list. A token-shaped login is redacted here, so
         # the response guard never withholds this route: the page reads it first on every load.
         caller = TOKEN_SHAPE.sub(REDACTED, login(request.headers))
-        return {"signed_in": await signed_in(request), "signin_command": SIGNIN_COMMAND,
+        return {"signed_in": await session_routes.signed_in(hub, request), "signin_command": SIGNIN_COMMAND,
                 "tailnet_login": caller or None, "version": __version__}
-
-    # The daemon's last allowed_logins answer, kept briefly: {"at", "until", "answer"}, on the sessions' monotonic clock
-    # so the outage grace counts from the read that said yes, not from a request that reused it (#177).
-    owner_logins: dict[str, Any] = {}
-    owner_logins_read = asyncio.Lock()  # one read at a time; requests that waited for it take its answer
-
-    async def read_logins(token: str, *, failures: bool) -> list[str] | int | None:
-        """The daemon's allowed_logins: the list, the HTTP status of a non-2xx reply, UNREACHABLE, or None for a 2xx
-        reply without a list of strings. Every answer is kept for ALLOWED_LOGINS_SECONDS. A sign-in reuses only a
-        list; with `failures`, the session check reuses any answer, so a down daemon is asked once per window, not
-        once per request."""
-        async with owner_logins_read:
-            if owner_logins and sessions.monotonic() < owner_logins["until"] and (
-                    failures or isinstance(owner_logins["answer"], list)):
-                return owner_logins["answer"]
-            try:
-                reply = await daemon.admin(token)
-            except DaemonUnreachable:
-                answer: list[str] | int | None = UNREACHABLE
-            else:
-                allowed = reply.body.get("allowed_logins") if isinstance(reply.body, dict) else None
-                if not reply.ok:
-                    answer = reply.status
-                elif isinstance(allowed, list) and all(isinstance(item, str) for item in allowed):
-                    answer = list(allowed)
-                else:
-                    answer = None
-            at = sessions.monotonic()
-            owner_logins.update(at=at, until=at + ALLOWED_LOGINS_SECONDS, answer=answer)
-            return answer
-
-    async def allowed_logins(token: str) -> list[str] | JSONResponse:
-        answer = await read_logins(token, failures=False)
-        if answer == UNREACHABLE:
-            return _unreachable(f"the daemon at {settings.daemon_url} did not answer; use a sign-in link",
-                                signin_command=SIGNIN_COMMAND)
-        if isinstance(answer, int):
-            return _error(502, f"the owner API answered HTTP {answer}; use a sign-in link",
-                          signin_command=SIGNIN_COMMAND)
-        if answer is None:
-            return _error(502, "the daemon does not list the owner's tailnet logins (it needs Owner API 1.26 or "
-                          "later); use a sign-in link", signin_command=SIGNIN_COMMAND)
-        return answer
-
-    async def still_owner(owner: str) -> bool | None:
-        """Whether the daemon still lists a tailnet session's login, or None when it did not say: it did not answer,
-        or answered 5xx while it restarts. A definite no is an unlisted login, an empty list, a refused Hub key, a
-        reply without a list or no Hub key at all."""
-        key = claims.key()
-        if not key:
-            return False
-        answer = await read_logins(key["token"], failures=True)
-        if isinstance(answer, int):
-            return None if answer == UNREACHABLE or answer >= 500 else False
-        return answer is not None and owner in answer
-
-    async def signed_in(request: Request) -> bool:
-        """Whether the request's cookie and binding name a live session. A binding a tailnet sign-in opened also
-        needs its login still listed by the daemon, the login stored at sign-in, never this request's headers; one
-        that is not ends for good, and the session's other tabs keep working. A daemon that does not say, while it
-        restarts, keeps the binding (#169) only for OUTAGE_GRACE_SECONDS after a read last listed the login, so a tab
-        cannot outlast its removal by timing its checks into outages, ones it asked for included (#177); after
-        that the binding answers 401 until a check finds the login listed again. Every answer is taken against the
-        binding as it is once the read is back: one that expired or was revoked during the read authorizes nothing."""
-        session, binding = request.cookies.get(settings.cookie_name), request.headers.get(SESSION_HEADER)
-        found = sessions.binding(session, binding)
-        if found is None:
-            return False
-        owner, _ = found
-        if owner is None:
-            return True
-        listed = await still_owner(owner)
-        if listed:
-            # The read still_owner took, with no await between; False if the binding ended while it ran (#177).
-            return sessions.confirm(session, binding, owner_logins["at"])
-        if listed is None:
-            found = sessions.binding(session, binding)  # the time since the last listing, after the read's wait
-            return found is not None and found[1] < OUTAGE_GRACE_SECONDS
-        sessions.revoke(session, binding)
-        log.warning("ended a tailnet session: the daemon no longer lists its login as the owner's")
-        return False
-
-    async def tailnet_sign_in(request: Request) -> JSONResponse | None:
-        """Refuse a tailnet sign-in unless the daemon lists this request's trusted login; None means accept. An
-        unclaimed Hub, an open-owner daemon and an unlisted login get the same answer; the log tells them apart."""
-        caller = login(request.headers)
-        if not caller:
-            return _error(401, "this request carries no tailnet identity from tailscaled; use a sign-in link",
-                          signin_command=SIGNIN_COMMAND)
-        if not sessions.tailnet_attempt(caller):
-            return _error(429, "too many tailnet sign-in attempts; wait a minute")
-        refused = _error(403, "this tailnet login cannot sign in to this Hub; use a sign-in link",
-                         signin_command=SIGNIN_COMMAND)
-        # A raw TCP forward lets tailscaled relay a client's own identity headers (tailnet.py). Only where the peer
-        # was verified: with unverified headers trusted, any local process can sign in anyway.
-        server = request.scope.get("server")
-        if peer_check.platform_ok() and await asyncio.to_thread(peer_check.raw_forward_to,
-                                                                server[1] if server else None):
-            log.warning("refused tailnet sign-in: this node's tailscale serve config has a raw TCP forward to the "
-                        "Hub's port, or could not be read")
-            return refused
-        key = claims.key()
-        if not key:
-            log.warning("refused tailnet sign-in: this Hub has not claimed its daemon")
-            return refused
-        allowed = await allowed_logins(key["token"])
-        if isinstance(allowed, JSONResponse):
-            return allowed
-        if not allowed:
-            # Open-owner legacy mode: the daemon names no owner, so no tailnet login proves ownership.
-            log.warning("refused tailnet sign-in: the daemon has no owner allowlist (allowed_logins)")
-            return refused
-        if caller not in allowed:
-            log.warning("refused tailnet sign-in for a login the daemon does not list as the owner's")
-            return refused
-        return None
 
     @app.post("/api/session")
     async def sign_in(request: Request):
@@ -421,12 +300,12 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         except ValueError:
             body = None
         if isinstance(body, dict) and body.get("method") == "tailnet":
-            refusal = await tailnet_sign_in(request)
+            refusal = await session_routes.tailnet_sign_in(hub, request)
             if refusal is not None:
                 return refusal
             # The read tailnet_sign_in took, with no await between, so the grace counts from the daemon's yes.
             credentials = sessions.create(request.cookies.get(settings.cookie_name), login(request.headers),
-                                          owner_logins["at"])
+                                          hub.owner_logins["at"])
         else:
             code = body.get("code") if isinstance(body, dict) else None
             was_throttled = sessions.throttled()
