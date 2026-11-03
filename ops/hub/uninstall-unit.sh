@@ -17,7 +17,7 @@ while (($#)); do
         *) hub_die "unknown argument: $1 (see --help)" ;;
     esac
 done
-hub_set_paths "${deploy_dir:-$(hub_default_deploy_dir)}"
+hub_set_paths "${deploy_dir:-$(hub_own_deploy_dir "$here")}"
 hub_stop || hub_die "could not stop the Hub; the unit is left installed"
 if hub_unit_installed; then
     systemctl --user disable "$HUB_UNIT"

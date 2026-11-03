@@ -3,7 +3,7 @@
 # deploy-hub.ps1, fail-closed the same way.
 #
 # Usage: deploy-hub.sh [--commit SHA] [--release-root DIR] [--deploy-dir DIR] [--python PYTHON]
-#                      [--port N] [--daemon-url URL] [--public-url https://...] [--replace-unit]
+#                      [--port N] [--daemon-url URL] [--public-url https://...] [--status-seconds N] [--replace-unit]
 #                      [--allow-unmerged] [--dry-run]
 #        deploy-hub.sh --rollback [--deploy-dir DIR] [--dry-run]
 #
@@ -224,8 +224,7 @@ deploy_swap() {
     copy_ops "$here" || return 1
     bash "$DEPLOY/ops/install-unit.sh" --deploy-dir "$DEPLOY" "${unit_args[@]}" || return 1
     # install-unit.sh may have changed hub.env (--port and the rest): the check reads it again.
-    PORT='' DAEMON_URL='' PUBLIC_URL='' STATUS_SECONDS=''
-    hub_load_env
+    hub_reload_env
     hub_stop || return 1
     STOPPED=1
     if [[ -n $previous_venv ]]; then hub_write_file "$PREVIOUS" "$previous_venv" || return 1; fi
@@ -250,8 +249,7 @@ if ! deploy_swap; then
     hub_stop || errors+=("stop failed")
     undo_ops || errors+=("restoring ops failed")
     restore_unit || errors+=("restoring the records, the unit file or hub.env failed")
-    PORT='' DAEMON_URL='' PUBLIC_URL='' STATUS_SECONDS=''
-    hub_load_env
+    hub_reload_env
     if [[ -n $previous_venv ]] || ((HUB_WAS_ACTIVE)); then
         # A Hub this script did not deploy has no deployed.json: then any healthy answer will do.
         if hub_start "$(hub_json_field "$STAMP" version)"; then

@@ -27,7 +27,7 @@ while (($#)); do
         *) hub_die "unknown argument: $1 (see --help)" ;;
     esac
 done
-hub_set_paths "${deploy_dir:-$(hub_default_deploy_dir)}"
+hub_set_paths "${deploy_dir:-$(hub_own_deploy_dir "$here")}"
 public_given=0
 for key in "${given[@]}"; do [[ $key == HUB_PUBLIC_URL ]] && public_given=1; done
 explicit_public=$PUBLIC_URL
@@ -35,7 +35,7 @@ hub_load_env
 # An explicit empty --public-url clears the address (back to loopback only).
 ((public_given)) && PUBLIC_URL=$explicit_public
 
-[[ -x $DEPLOY/ops/run-hub.sh || -f $DEPLOY/ops/run-hub.sh ]] ||
+[[ -f $DEPLOY/ops/run-hub.sh ]] ||
     hub_die "run-hub.sh is not deployed yet: $DEPLOY/ops/run-hub.sh (run deploy-hub.sh)"
 
 # A unit this script did not write (a hand-written one) may hold values that belong in hub.env; it is replaced only when

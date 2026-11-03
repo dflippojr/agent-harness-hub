@@ -25,6 +25,13 @@ hub_die() {
 }
 
 hub_default_deploy_dir() { printf '%s\n' "${HOME:?HOME is not set}/.local/share/agent-harness-hub"; }
+# The deploy directory for a script run without --deploy-dir: the deployment it was copied into (<deploy-dir>/ops,
+# beside deployed.json), else the default.
+hub_own_deploy_dir() {
+    local parent
+    parent=$(dirname -- "$1")
+    if [[ $(basename -- "$1") == ops && -f $parent/deployed.json ]]; then printf '%s\n' "$parent"; else hub_default_deploy_dir; fi
+}
 hub_unit_dir() { printf '%s\n' "${XDG_CONFIG_HOME:-${HOME:?HOME is not set}/.config}/systemd/user"; }
 
 # Sets the deployment's paths from its directory. The names match Get-HubPaths in hub-common.ps1.
@@ -60,6 +67,12 @@ hub_env_value() {
         value=$found
     done <"$ENV_FILE"
     printf '%s\n' "$value"
+}
+
+# hub_load_env again from hub.env alone, after it changed (install-unit.sh rewrites it) or to drop earlier arguments.
+hub_reload_env() {
+    PORT='' DAEMON_URL='' PUBLIC_URL='' STATUS_SECONDS=''
+    hub_load_env
 }
 
 # PORT, DAEMON_URL, PUBLIC_URL and STATUS_SECONDS: a value the caller already set (a command-line argument) wins, then
@@ -178,17 +191,20 @@ hub_status_names() {  # status.json names this commit as its build
 
 hub_unit_property() { systemctl --user show "$HUB_UNIT" -p "$1" --value 2>/dev/null || true; }
 
+# One line of hub_check's report; a FAIL line marks the check failed.
+CHECK_FAILED=0
+check_ok() { printf 'ok    %s\n' "$*"; }
+check_fail() {
+    printf 'FAIL  %s\n' "$*"
+    CHECK_FAILED=1
+}
+
 # The deployment check: the unit is enabled, running and ordered on no other service; /healthz answers ok with the
 # deployed version; status.json is fresh and names the deployed commit. Prints one line per check and fails if any does.
 # Deploy and rollback end with it.
 hub_check() {
-    local failed=0 enabled active started result deps dep linger commit version written written_epoch age=0 max_age
-    check_ok() { printf 'ok    %s\n' "$*"; }
-    check_fail() {
-        printf 'FAIL  %s\n' "$*"
-        failed=1
-    }
-
+    local enabled active started result deps dep linger commit version written written_epoch age=0 max_age
+    CHECK_FAILED=0
     enabled=$(systemctl --user is-enabled "$HUB_UNIT" 2>/dev/null) || true
     if [[ $enabled == enabled ]]; then
         check_ok "$HUB_UNIT is enabled"
@@ -266,6 +282,5 @@ hub_check() {
             check_fail "status.json names build $(hub_json_field "$STATE/status.json" build), not the deployed $commit"
         fi
     fi
-    unset -f check_ok check_fail
-    return "$failed"
+    return "$CHECK_FAILED"
 }

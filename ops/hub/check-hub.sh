@@ -4,7 +4,7 @@
 # version in deployed.json; status.json is fresh and names the deployed commit. Exits 1 if any check fails.
 # deploy-hub.sh ends every deployment and rollback with the same check.
 #
-# Usage: check-hub.sh [--deploy-dir DIR]
+# Usage: check-hub.sh [--deploy-dir DIR]   (default: the deployment it runs from, else ~/.local/share/agent-harness-hub)
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=hub-common.sh
@@ -18,7 +18,6 @@ while (($#)); do
         *) hub_die "unknown argument: $1 (see --help)" ;;
     esac
 done
-hub_set_paths "${deploy_dir:-$(hub_default_deploy_dir)}"
-PORT='' DAEMON_URL='' PUBLIC_URL='' STATUS_SECONDS=''
-hub_load_env
+hub_set_paths "${deploy_dir:-$(hub_own_deploy_dir "$here")}"
+hub_reload_env
 hub_check

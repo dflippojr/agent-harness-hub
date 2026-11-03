@@ -538,6 +538,15 @@ def test_the_check_reports_a_disabled_unit_and_a_wrong_build(deployed):
     assert f"names build {'f' * 40}, not the deployed" in result.stdout
 
 
+def test_the_deployed_check_finds_its_own_deployment_without_arguments(host):
+    host.deploy = host.root / "custom-deploy"  # not the default under HOME
+    host.deploy_at(host.commit("1.0.0"))
+    result = subprocess.run(["bash", str(host.deploy / "ops" / "check-hub.sh")], cwd=host.root, env=host.env,
+                            capture_output=True, text=True, timeout=60, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"{host.deploy}/state/status.json" not in result.stdout and "status.json was written" in result.stdout
+
+
 # -- stop and uninstall -----------------------------------------------------------------------------------------------
 
 
