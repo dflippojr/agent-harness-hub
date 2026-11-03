@@ -18,22 +18,22 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__
-from .administration import OPERATIONS, TARGET, validate_fields
 from .auth import Sessions
 from .claim import CLAIMED, ClaimError, ClaimManager
 from .config import Settings
-from .daemon import ADMIN_ROUTES, DaemonClient, DaemonUnreachable, route_targets
+from .daemon import DaemonClient, DaemonUnreachable
 from .guard import ResponseGuard, leaks
 from .inventory import InventoryCache, valid_inventory
 from .routes import apps as apps_routes
 from .routes import common
 from .routes import marketplace as marketplace_routes
 from .routes import session as session_routes
+from .routes import settings as settings_routes
 from .routes.common import HubContext, concurrently, settled
 from .routes.common import error as _error
 from .routes.common import forwarded as _forwarded
@@ -48,9 +48,7 @@ from .status import StatusReporter
 from .tailnet import PeerCheck, TailnetIdentity
 from .views import (
     ID_SEGMENT,
-    administration_view,
     apps_view,
-    claim_view,
     control_view,
     health_view,
     memory_route_absent,
@@ -361,81 +359,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     apps_routes.add_routes(app)
 
-    @app.get("/api/manage/catalog")
-    async def administration_catalog():
-        return {"operations": [{"id": name, "group": spec.group, "label": spec.label, "cli": spec.cli,
-                                "fields": [{"name": field, "type": kind, "required": field in spec.required}
-                                           for field, kind in spec.fields.items()],
-                                "confirmation": spec.confirmation, "method": ADMIN_ROUTES[name][0],
-                                "targets": route_targets(ADMIN_ROUTES[name][1])}
-                               for name, spec in OPERATIONS.items()],
-                "not_offered": [
-                    {"label": "Mac runner pairing codes", "reason": "A Hub key cannot mint owner keys "
-                               "(daemon refuses with hub_key).",
-                     "cli": "harness runner-pairing-codes create"},
-                    {"label": "Creating owner keys",
-                     "reason": "A Hub key cannot mint owner keys (daemon refuses with hub_key).",
-                     "cli": "harness keys create"}]}
-
-    @app.api_route("/api/manage/{operation}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
-    async def administration_action(operation: str, request: Request):
-        if operation not in OPERATIONS or request.method != ADMIN_ROUTES[operation][0]:
-            return _error(404, "Unknown administration operation")
-        key = claims.key()
-        if key is None:
-            return _unclaimed("Claim this Hub on Overview before administering the daemon.")
-        target_names = route_targets(ADMIN_ROUTES[operation][1])
-        targets = {name: request.query_params.get(name, "") for name in target_names}
-        if any(not TARGET.fullmatch(value) for value in targets.values()):
-            return _error(400, "A valid target identifier is required")
-        if len(request.query_params.multi_items()) != len(set(request.query_params)):
-            return _error(400, "Repeated query fields are refused")
-        params = {name: value for name, value in request.query_params.items() if name not in targets}
-        body, invalid = None, "Invalid administration fields; check required values and confirmation"
-        try:
-            if request.method == "GET":
-                fields = OPERATIONS[operation].fields
-                if set(params) - set(fields):
-                    return _error(400, "Unexpected query fields")
-                for name, value in params.items():
-                    if fields[name] == "integer":
-                        params[name] = int(value)
-                    elif fields[name] == "number":
-                        params[name] = float(value)
-                params = validate_fields(operation, params)
-            else:
-                if params:
-                    return _error(400, "Unexpected query fields")
-                body = validate_fields(operation, await _read_json(
-                    request, 65536, "Administration", "Administration writes require a same-origin Origin", invalid))
-        except (ValueError, OverflowError):
-            return _error(400, invalid)
-        try:
-            if operation == "skill_install":
-                review = await daemon.administration(key["token"], "proposal", targets)
-                try:
-                    reviewed = administration_view("proposal", review.body, tuple(store.secrets())) if review.ok else {}
-                except ValueError:
-                    reviewed = {}
-                if not reviewed.get("review_complete") or reviewed.get("content_hash") != body["content_hash"]:
-                    return _error(409, "The complete proposal must be reviewed at this hash. Review on the host CLI.")
-            reply = await daemon.administration(key["token"], operation, targets, body, params)
-            if reply.status == 401:
-                return await refused(key["token"])
-            if not reply.ok:
-                return _forwarded(reply)
-            if reply.status == 204:
-                return Response(status_code=204)
-            try:
-                shown = administration_view(operation, reply.body, tuple(store.secrets()))
-            except ValueError:
-                return _error(502, "The daemon returned invalid administration data. Refresh before repeating a write.")
-            if operation in ("google_invite", "account"):
-                # The page times the link code and its "open until" against this clock, not the browser's (#132).
-                shown["now"] = time.time()
-            return JSONResponse(shown, status_code=reply.status)
-        except DaemonUnreachable:
-            return _unreachable("The daemon did not answer. Read its current state before repeating a write.")
+    settings_routes.add_routes(app)
 
     @app.get("/api/settings/health")
     async def settings_health():
@@ -516,27 +440,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             shown["known_recoveries"] = known
         return JSONResponse(shown, status_code=reply.status)
 
-    @app.get("/api/claim")
-    async def get_claim():
-        return claim_view(claims)
-
-    @app.post("/api/claim")
-    async def start_claim():
-        try:
-            await claims.start()
-        except ClaimError as exc:
-            status = exc.status or {"refused": 409, "rate_limited": 429, "claimed": 409,
-                      "persisting": 503, "pending": 503}.get(exc.state, 502)
-            return JSONResponse({"detail": str(exc), "claim": claim_view(claims)}, status_code=status)
-        return JSONResponse(claim_view(claims), status_code=201)
-
-    @app.delete("/api/claim")
-    async def forget_claim():
-        try:
-            await claims.forget()
-        except ClaimError as exc:
-            return _error(503, str(exc), claim=claim_view(claims))
-        return claim_view(claims)
+    session_routes.add_claim_routes(app)
 
     @app.get("/", include_in_schema=False)
     async def index():
