@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from types import ModuleType
 from typing import Any
 
+from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from ..auth import Sessions
@@ -35,11 +37,25 @@ class HubContext:
     owner_logins_read: asyncio.Lock = field(default_factory=asyncio.Lock)  # one read at a time; waiters take its answer
 
 
+def hub(request: Request) -> HubContext:
+    """The `HubContext` of the app serving this request: how a router's handlers reach the Hub's state."""
+    return request.app.state.hub
+
+
 def tuning() -> ModuleType:
     """`harness_hub.server`, home of the timing constants: read per use, so a value tests set there applies."""
     from .. import server
 
     return server
+
+
+def json_body(data: bytes | bytearray) -> Any:
+    """A request body parsed as JSON. Raises ValueError for any body that does not parse, deeply nested arrays included
+    (json raises RecursionError for those, which a route's `except ValueError` would miss and answer with a 500)."""
+    try:
+        return json.loads(data)
+    except RecursionError as error:
+        raise ValueError("JSON body is nested too deeply") from error
 
 
 def error(status: int, detail: str, **extra: Any) -> JSONResponse:

@@ -25,23 +25,24 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__
 from .administration import OPERATIONS, TARGET, validate_fields
-from .auth import SESSION_TTL_SECONDS, Sessions
+from .auth import Sessions
 from .claim import CLAIMED, ClaimError, ClaimManager
 from .config import Settings
 from .daemon import ADMIN_ROUTES, DaemonClient, DaemonUnreachable, route_targets
-from .guard import TOKEN_SHAPE, ResponseGuard, leaks
+from .guard import ResponseGuard, leaks
 from .inventory import InventoryCache, valid_inventory
 from .routes import session as session_routes
 from .routes.common import HubContext
 from .routes.common import error as _error
+from .routes.common import json_body as _json_body
 from .routes.common import unreachable as _unreachable
-from .routes.session import SESSION_HEADER, SIGNIN_COMMAND
+from .routes.session import MAX_SIGNIN_BODY as MAX_SIGNIN_BODY  # re-exported: tests import it from here
+from .routes.session import SIGNIN_COMMAND
 from .state import SERVER_FILE, StateStore, write_private
 from .status import StatusReporter
-from .tailnet import PeerCheck, TailnetIdentity, login
+from .tailnet import PeerCheck, TailnetIdentity
 from .views import (
     ID_SEGMENT,
-    REDACTED,
     administration_view,
     app_view,
     apps_view,
@@ -74,7 +75,6 @@ log = logging.getLogger("harness_hub")
 
 STATIC = resources.files("harness_hub") / "static"
 REQUEST_HEADER = "x-hub-request"
-MAX_SIGNIN_BODY = 1024
 # Timing constants stay here for every router, which reads them through `routes.common.tuning()` on each use.
 ALLOWED_LOGINS_SECONDS = 5.0  # how long the Hub reuses the daemon's allowed_logins answer
 OUTAGE_GRACE_SECONDS = 120.0  # how long after the daemon last listed a tailnet tab's login an outage keeps the tab
@@ -125,15 +125,6 @@ class HostCheck:
             await send(message)
 
         await self.app(scope, receive, with_headers)
-
-
-def _json_body(data: bytes | bytearray) -> Any:
-    """A request body parsed as JSON. Raises ValueError for any body that does not parse, deeply nested arrays included
-    (json raises RecursionError for those, which a route's `except ValueError` would miss and answer with a 500)."""
-    try:
-        return json.loads(data)
-    except RecursionError as error:
-        raise ValueError("JSON body is nested too deeply") from error
 
 
 async def _read_json(request: Request, limit: int, label: str, origin: str, not_json: str = "") -> Any:
@@ -270,73 +261,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     async def healthz():
         return {"ok": True, "version": __version__}
 
-    @app.get("/api/session")
-    async def get_session(request: Request):
-        # `tailnet_login` is the caller's own identity, present only when tailscaled added it (tailnet.py). Whether
-        # it is the owner's is decided at sign-in, against the daemon's list. A token-shaped login is redacted here, so
-        # the response guard never withholds this route: the page reads it first on every load.
-        caller = TOKEN_SHAPE.sub(REDACTED, login(request.headers))
-        return {"signed_in": await session_routes.signed_in(hub, request), "signin_command": SIGNIN_COMMAND,
-                "tailnet_login": caller or None, "version": __version__}
-
-    @app.post("/api/session")
-    async def sign_in(request: Request):
-        length = request.headers.get("content-length")
-        if length is not None:
-            try:
-                if int(length) < 0:
-                    return _error(400, "invalid Content-Length")
-                if int(length) > MAX_SIGNIN_BODY:
-                    return _error(413, "sign-in body is too large")
-            except ValueError:
-                return _error(400, "invalid Content-Length")
-        data = bytearray()
-        async for chunk in request.stream():
-            if len(data) + len(chunk) > MAX_SIGNIN_BODY:
-                return _error(413, "sign-in body is too large")
-            data.extend(chunk)
-        try:
-            body = _json_body(data)
-        except ValueError:
-            body = None
-        if isinstance(body, dict) and body.get("method") == "tailnet":
-            refusal = await session_routes.tailnet_sign_in(hub, request)
-            if refusal is not None:
-                return refusal
-            # The read tailnet_sign_in took, with no await between, so the grace counts from the daemon's yes.
-            credentials = sessions.create(request.cookies.get(settings.cookie_name), login(request.headers),
-                                          hub.owner_logins["at"])
-        else:
-            code = body.get("code") if isinstance(body, dict) else None
-            was_throttled = sessions.throttled()
-            try:
-                # Off the event loop: the code file's cross-process lock can be held by a stalled signin-link (#134).
-                credentials = await asyncio.to_thread(sessions.redeem_code, code,
-                                                      request.cookies.get(settings.cookie_name))
-            except OSError as exc:  # SigninBusy included; the code is not spent
-                log.warning("sign-in could not update the sign-in codes: %s", exc)
-                return _error(503, "sign-in is busy; try again in a moment")
-            if credentials is None:
-                if was_throttled:
-                    return _error(429, "too many sign-in attempts; wait a minute")
-                return _error(401, "that sign-in link is not valid; links work once, for ten minutes",
-                              signin_command=SIGNIN_COMMAND)
-        session, binding = credentials
-        response = Response(status_code=204, headers={SESSION_HEADER: binding})
-        if session == request.cookies.get(settings.cookie_name):
-            return response  # another tab of the signed-in session: the cookie and its expiry stay as they were
-        response.set_cookie(settings.cookie_name, session, max_age=SESSION_TTL_SECONDS,
-                            httponly=True, samesite="strict",
-                            secure=settings.secure_cookies, path="/")
-        return response
-
-    @app.delete("/api/session")
-    async def sign_out(request: Request):
-        sessions.end(request.cookies.get(settings.cookie_name))
-        response = Response(status_code=204)
-        response.delete_cookie(settings.cookie_name, path="/", secure=settings.secure_cookies,
-                               httponly=True, samesite="strict")
-        return response
+    session_routes.add_routes(app)
 
     # Listings must not publish a new slot while its disclosures are being checked or it is being withdrawn.
     pairing_consent_lock = asyncio.Lock()

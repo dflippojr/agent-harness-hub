@@ -1,23 +1,29 @@
-"""The session check every `/api/` request passes (`server.require_owner`), and the tailnet sign-in's owner check:
-a tailnet binding lasts only while the daemon lists its login as the owner's (`allowed_logins`)."""
+"""The `/api/session` router (sign-in, session state, sign-out), the session check every `/api/` request passes
+(`server.require_owner`), and the tailnet sign-in's owner check: a tailnet binding lasts only while the daemon lists
+its login as the owner's (`allowed_logins`)."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 
-from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, Response
 
+from .. import __version__
+from ..auth import SESSION_TTL_SECONDS
 from ..daemon import DaemonUnreachable
+from ..guard import TOKEN_SHAPE
 from ..tailnet import login
-from .common import HubContext, error, tuning, unreachable
+from ..views import REDACTED
+from .common import HubContext, error, hub, json_body, tuning, unreachable
 
 log = logging.getLogger("harness_hub")
 
 SIGNIN_COMMAND = "python -m harness_hub signin-link"
 SESSION_HEADER = "x-hub-session"
 UNREACHABLE = 0  # read_logins' answer when the daemon did not answer at all
+MAX_SIGNIN_BODY = 1024
 
 
 async def read_logins(ctx: HubContext, token: str, *, failures: bool) -> list[str] | int | None:
@@ -136,3 +142,83 @@ async def tailnet_sign_in(ctx: HubContext, request: Request) -> JSONResponse | N
         log.warning("refused tailnet sign-in for a login the daemon does not list as the owner's")
         return refused
     return None
+
+
+async def get_session(request: Request):
+    # `tailnet_login` is the caller's own identity, present only when tailscaled added it (tailnet.py). Whether
+    # it is the owner's is decided at sign-in, against the daemon's list. A token-shaped login is redacted here, so
+    # the response guard never withholds this route: the page reads it first on every load.
+    caller = TOKEN_SHAPE.sub(REDACTED, login(request.headers))
+    return {"signed_in": await signed_in(hub(request), request), "signin_command": SIGNIN_COMMAND,
+            "tailnet_login": caller or None, "version": __version__}
+
+
+async def sign_in(request: Request):
+    ctx = hub(request)
+    sessions, settings = ctx.sessions, ctx.settings
+    length = request.headers.get("content-length")
+    if length is not None:
+        try:
+            if int(length) < 0:
+                return error(400, "invalid Content-Length")
+            if int(length) > MAX_SIGNIN_BODY:
+                return error(413, "sign-in body is too large")
+        except ValueError:
+            return error(400, "invalid Content-Length")
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > MAX_SIGNIN_BODY:
+            return error(413, "sign-in body is too large")
+        data.extend(chunk)
+    try:
+        body = json_body(data)
+    except ValueError:
+        body = None
+    if isinstance(body, dict) and body.get("method") == "tailnet":
+        refusal = await tailnet_sign_in(ctx, request)
+        if refusal is not None:
+            return refusal
+        # The read tailnet_sign_in took, with no await between, so the grace counts from the daemon's yes.
+        credentials = sessions.create(request.cookies.get(settings.cookie_name), login(request.headers),
+                                      ctx.owner_logins["at"])
+    else:
+        code = body.get("code") if isinstance(body, dict) else None
+        was_throttled = sessions.throttled()
+        try:
+            # Off the event loop: the code file's cross-process lock can be held by a stalled signin-link (#134).
+            credentials = await asyncio.to_thread(sessions.redeem_code, code,
+                                                  request.cookies.get(settings.cookie_name))
+        except OSError as exc:  # SigninBusy included; the code is not spent
+            log.warning("sign-in could not update the sign-in codes: %s", exc)
+            return error(503, "sign-in is busy; try again in a moment")
+        if credentials is None:
+            if was_throttled:
+                return error(429, "too many sign-in attempts; wait a minute")
+            return error(401, "that sign-in link is not valid; links work once, for ten minutes",
+                         signin_command=SIGNIN_COMMAND)
+    session, binding = credentials
+    response = Response(status_code=204, headers={SESSION_HEADER: binding})
+    if session == request.cookies.get(settings.cookie_name):
+        return response  # another tab of the signed-in session: the cookie and its expiry stay as they were
+    response.set_cookie(settings.cookie_name, session, max_age=SESSION_TTL_SECONDS,
+                        httponly=True, samesite="strict",
+                        secure=settings.secure_cookies, path="/")
+    return response
+
+
+async def sign_out(request: Request):
+    ctx = hub(request)
+    settings = ctx.settings
+    ctx.sessions.end(request.cookies.get(settings.cookie_name))
+    response = Response(status_code=204)
+    response.delete_cookie(settings.cookie_name, path="/", secure=settings.secure_cookies,
+                           httponly=True, samesite="strict")
+    return response
+
+
+def add_routes(app: FastAPI) -> None:
+    """Add the `/api/session` routes to the app itself, in this order. Not `include_router`: FastAPI 0.162 puts one
+    nested entry in `app.routes` for an included router, which would change the route table (#190)."""
+    app.add_api_route("/api/session", get_session, methods=["GET"])
+    app.add_api_route("/api/session", sign_in, methods=["POST"])
+    app.add_api_route("/api/session", sign_out, methods=["DELETE"])
