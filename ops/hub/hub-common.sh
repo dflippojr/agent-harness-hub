@@ -204,6 +204,25 @@ hub_status_names() {  # status.json names this commit as its build
     [[ $(hub_json_field "$STATE/status.json" build) == "$1" ]]
 }
 
+# Brings back the Hub the restored records name, after a failed deployment or rollback. It restarts rather than starts:
+# when a stop reported an error the failed Hub may still be running, and `start` would leave it in place. Then the Hub
+# must prove it is the restored one: /healthz with the restored version and, when the records name a commit, status.json
+# naming that commit (a failed build with the same version answers /healthz just the same). With no records (a Hub
+# this script did not deploy), any healthy answer will do.
+hub_restore_start() {
+    local version commit
+    version=$(hub_json_field "$STAMP" version)
+    commit=$(hub_json_field "$STAMP" commit)
+    systemctl --user restart "$HUB_UNIT" || { hub_warn "could not restart $HUB_UNIT"; return 1; }
+    hub_wait "$HUB_START_TIMEOUT" hub_health "$version" ||
+        { hub_warn "the restored Hub did not answer /healthz${version:+ with $version} within $HUB_START_TIMEOUT s"; return 1; }
+    if [[ -n $commit ]] && ! hub_wait "$HUB_START_TIMEOUT" hub_status_names "$commit"; then
+        hub_warn "status.json does not name the restored commit $commit: the Hub running is not the restored one"
+        return 1
+    fi
+    hub_say "The restored Hub answers /healthz${version:+ with $version}${commit:+ and runs $commit}."
+}
+
 hub_unit_property() { systemctl --user show "$HUB_UNIT" -p "$1" --value 2>/dev/null || true; }
 
 # One line of hub_check's report; a FAIL line marks the check failed.

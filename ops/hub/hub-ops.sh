@@ -37,13 +37,17 @@ copy_ops() {
 
 # Puts ops and ops.previous back as they were before copy_ops (no ops/ at all, on a first install). Does nothing if
 # copy_ops did not start.
+#
+# Each step that succeeds clears its own flag, and a step that fails is reported, never swallowed (callers run this in a
+# condition, where errexit is off): on a failure undo_ops returns 1 and keeps what is left to undo, so a second call
+# retries only that, and the caller can say the scripts were not restored.
 undo_ops() {
     [[ ${OPS_UNDO:-0} == 1 ]] || return 0
     local target=$DEPLOY/ops old=$DEPLOY/ops.previous parked=$DEPLOY/ops.previous.bak
-    ops_remove_tree "$DEPLOY/ops.new"
-    if [[ $OPS_CREATED == 1 ]]; then ops_remove_tree "$target"; fi
-    if [[ $OPS_MOVED == 1 ]]; then mv -- "$old" "$target"; fi
-    if [[ $OPS_PARKED == 1 ]]; then mv -- "$parked" "$old"; fi
+    ops_remove_tree "$DEPLOY/ops.new" || return 1
+    if [[ $OPS_CREATED == 1 ]]; then ops_remove_tree "$target" || return 1; OPS_CREATED=0; fi
+    if [[ $OPS_MOVED == 1 ]]; then mv -- "$old" "$target" || return 1; OPS_MOVED=0; fi
+    if [[ $OPS_PARKED == 1 ]]; then mv -- "$parked" "$old" || return 1; OPS_PARKED=0; fi
     OPS_UNDO=0
 }
 

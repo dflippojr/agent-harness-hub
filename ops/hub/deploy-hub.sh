@@ -124,7 +124,7 @@ if ((ROLLBACK)); then
         # A stop can take effect and still report an error: never assume the Hub is still running. Nothing else has
         # changed yet, so start what was running and say which state it is in.
         rm -rf -- "$SNAPSHOT"
-        if hub_start "$(hub_json_field "$STAMP" version)"; then
+        if hub_restore_start; then
             hub_die "rollback not done: stopping the Hub reported an error; nothing was changed and the current Hub" \
                 "answers /healthz again"
         fi
@@ -156,7 +156,7 @@ if ((ROLLBACK)); then
     hub_stop || notes+=("stopping the failed rollback reported an error")
     if ((OPS_SWAPPED)); then swap_ops || errors+=("swapping ops/ back failed"); fi
     restore_records || errors+=("restoring the records failed")
-    hub_start "$(hub_json_field "$STAMP" version)" || errors+=("the Hub that ran before does not answer /healthz")
+    hub_restore_start || errors+=("the Hub that ran before is not confirmed running")
     rm -rf -- "$SNAPSHOT"
     ((${#errors[@]} == 0)) || hub_die "rollback failed; restoring what ran before also failed: ${errors[*]}"
     hub_die "rollback failed; the previous state is restored and its Hub answers /healthz${notes[*]:+ (${notes[*]})}"
@@ -279,19 +279,23 @@ if ! deploy_swap; then
     # everything, and start what ran before. Only the restart's result decides whether it is back.
     errors=() notes=() restarted=0
     hub_stop || notes+=("stopping the Hub reported an error")
-    undo_ops || errors+=("restoring ops/ failed")
+    undo_ops || errors+=("restoring ops/ and ops.previous/ failed (see $DEPLOY; ops.previous.bak may hold the older copy)")
     restore_unit || errors+=("restoring the records, the unit file or hub.env failed")
     hub_reload_env
     if [[ -n $previous_venv ]] || ((HUB_WAS_ACTIVE)); then
-        # A Hub this script did not deploy has no deployed.json: then any healthy answer will do.
-        if hub_start "$(hub_json_field "$STAMP" version)"; then
+        if hub_restore_start; then
             restarted=1
             hub_say '[rollback] previous Hub started and healthy'
         else
-            errors+=("the previous Hub does not answer /healthz: it is down")
+            errors+=("the previous Hub is not confirmed running")
         fi
     fi
-    rm -rf -- "$staged" || errors+=("removing $staged failed")
+    if ((${#errors[@]} == 0)); then
+        rm -rf -- "$staged" || errors+=("removing $staged failed")
+    else
+        # It may be what is running now: keep it, and say so.
+        errors+=("kept $staged, which may still be running")
+    fi
     rm -rf -- "$SNAPSHOT" "$ops_source"
     ((${#errors[@]} == 0)) || hub_die "deployment failed after the Hub was stopped; restoring also failed: ${errors[*]}"
     if ((restarted)); then

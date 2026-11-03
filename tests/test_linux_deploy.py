@@ -48,6 +48,8 @@ case $command in
     stop) [[ -e $state/fail-stop ]] && exit 1; echo inactive >"$state/active"; rm -f "$state"/healthz.* ;;
     start | restart)
         [[ -e $state/fail-start ]] && exit 1
+        # As systemd: start on an active unit does nothing; restart always runs it again.
+        [[ $command == start && $(cat "$state/active" 2>/dev/null) == active ]] && exit 0
         echo active >"$state/active"
         echo 4242 >"$state/prop.ExecMainStartTimestampMonotonic"
         environment=() exec_start=''
@@ -211,21 +213,24 @@ class Host:
         return self.run("deploy-hub.sh", "--release-root", str(self.release), "--deploy-dir", str(self.deploy),
                         "--python", str(self.python), *args, check=check)
 
-    def fail_systemctl(self, command: str, times: int = 0):
-        """Fault injection: `systemctl --user <command>` takes effect and then reports an error, on every call
-        (times=0) or only the first `times` calls, so recovery that runs it again can succeed."""
+    def fail_systemctl(self, command: str, times: int = 0, *, skip: int = 0, effect: bool = True):
+        """Fault injection: `systemctl --user <command>` reports an error after taking effect (or, with effect=False,
+        without doing anything). The first `skip` calls work; after them, every call fails (times=0) or only the next
+        `times`, so recovery that runs it again can succeed."""
         real = self.bin / "systemctl-real"
         if not real.exists():
             (self.bin / "systemctl").rename(real)
         write_executable(self.bin / "systemctl", f"""#!/usr/bin/env bash
-"$(dirname "$0")/systemctl-real" "$@"
-status=$?
 if [[ $2 == {command} ]]; then
     count=$(cat "$FAKE_SYSTEMD/faults.{command}" 2>/dev/null || echo 0)
     echo $((count + 1)) >"$FAKE_SYSTEMD/faults.{command}"
-    if ((({times} == 0) || count < {times})); then exit 1; fi
+    if ((count >= {skip} && ({times} == 0 || count < {skip} + {times}))); then
+        {"" if effect else "exit 1"}
+        "$(dirname "$0")/systemctl-real" "$@"
+        exit 1
+    fi
 fi
-exit "$status"
+exec "$(dirname "$0")/systemctl-real" "$@"
 """)
 
     def run_fake_systemctl(self, *args: str):
@@ -660,6 +665,55 @@ def test_uninstall_says_what_a_failed_stop_leaves(deployed):
     assert deployed.unit_file.exists()
 
 
+def test_recovery_replaces_a_failed_hub_that_its_stop_left_running(host):
+    # The failed build has the previous version, so /healthz alone cannot tell them apart. Its check fails (stale
+    # status.json); the recovery stop then reports an error without stopping it. Recovery must still end with the
+    # previous commit running, not report the failed one as restored.
+    a, c = host.commit("1.0.0"), host.commit("1.0.0", "STALE")
+    host.deploy_at(a)
+    before = host.records()
+    host.fail_systemctl("stop", skip=1, effect=False)  # the swap's stop works; the recovery's does nothing
+    failed = host.deploy_at(c, check=False)
+    assert failed.returncode != 0
+    assert "the previous deployment is restored and answers /healthz" in failed.stderr, failed.stderr
+    assert host.records() == before
+    status = json.loads((host.deploy / "state" / "status.json").read_text(encoding="utf-8"))
+    assert status["build"] == a  # the previous commit runs, not the failed one
+
+
+def test_recovery_that_cannot_replace_the_failed_hub_says_so_and_keeps_its_environment(host):
+    a, c = host.commit("1.0.0"), host.commit("1.0.0", "STALE")
+    host.deploy_at(a)
+    host.fail_systemctl("stop", skip=1, effect=False)
+    restart = host.bin / "systemctl-real"  # restart, too, now does nothing and fails
+    text = restart.read_text(encoding="utf-8")
+    restart.write_text(text.replace("    start | restart)", "    restart) exit 1 ;;\n    start)"), encoding="utf-8")
+    failed = host.deploy_at(c, check=False)
+    assert failed.returncode != 0
+    assert "restoring also failed" in failed.stderr and "not confirmed running" in failed.stderr, failed.stderr
+    assert f"kept {host.deploy}/venvs/{c}, which may still be running" in failed.stderr
+    assert (host.deploy / "venvs" / c).is_dir()
+
+
+def test_a_failed_restore_of_the_previous_scripts_is_reported(host):
+    # A, B, then C fails; putting ops.previous back from ops.previous.bak fails. The deployment must say the scripts
+    # were not restored, not report a clean restore.
+    a, b, broken = host.commit("1.0.0"), host.commit("1.1.0"), host.commit("1.2.0", "BROKEN")
+    host.deploy_at(a)
+    host.deploy_at(b)
+    write_executable(host.bin / "mv", """#!/usr/bin/env bash
+for arg in "$@"; do
+    [[ $arg == */ops.previous.bak ]] && [[ $arg != "${*: -1}" ]] && { echo "mv: injected failure" >&2; exit 1; }
+done
+exec /bin/mv "$@"
+""")
+    failed = host.deploy_at(broken, check=False)
+    assert failed.returncode != 0
+    assert "restoring also failed" in failed.stderr and "restoring ops/ and ops.previous/ failed" in failed.stderr, \
+        failed.stderr
+    assert (host.deploy / "ops.previous.bak").is_dir()  # the older copy is kept, not lost
+
+
 # -- guards -----------------------------------------------------------------------------------------------------------
 
 
@@ -831,6 +885,35 @@ def test_an_ops_swap_that_fails_part_way_changes_nothing(tmp_path, fail_into):
                             env={**os.environ, "HUB_OPS": str(OPS), "FAIL_INTO": fail_into}, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.splitlines() == ["refused", "ops,ops.previous,clean"]
+
+
+UNDO_FAULT = r"""
+set -euo pipefail
+source "$HUB_OPS/hub-ops.sh"
+DEPLOY=$1
+for name in ops ops.previous; do mkdir -p "$DEPLOY/$name"; printf '%s' "$name" >"$DEPLOY/$name/run-hub.sh"; done
+mkdir -p "$DEPLOY/src"; printf new >"$DEPLOY/src/run-hub.sh"
+copy_ops "$DEPLOY/src"
+mv() {
+    if [[ $1 == -- ]]; then shift; fi
+    if [[ $1 == "$DEPLOY/ops.previous.bak" && ! -e $DEPLOY/fault-done ]]; then : >"$DEPLOY/fault-done"; return 1; fi
+    command mv -- "$@"
+}
+if undo_ops; then echo undone; else echo "failed undo=$OPS_UNDO"; fi
+if undo_ops; then echo undone; else echo failed; fi
+printf '%s,%s\n' "$(cat "$DEPLOY/ops/run-hub.sh")" "$(cat "$DEPLOY/ops.previous/run-hub.sh")"
+"""
+
+
+def test_undo_ops_reports_a_failed_step_and_retries_only_what_is_left(tmp_path):
+    script = tmp_path / "undo.sh"
+    script.write_text(UNDO_FAULT, encoding="utf-8")
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    result = subprocess.run(["bash", str(script), str(deploy)], capture_output=True, text=True, timeout=60,
+                            env={**os.environ, "HUB_OPS": str(OPS)}, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.splitlines() == ["failed undo=1", "undone", "ops,ops.previous"]
 
 
 # -- the scripts themselves -------------------------------------------------------------------------------------------
