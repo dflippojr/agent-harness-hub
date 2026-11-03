@@ -37,6 +37,7 @@ from .routes import marketplace as marketplace_routes
 from .routes import session as session_routes
 from .routes.common import HubContext, concurrently, settled
 from .routes.common import error as _error
+from .routes.common import error_status as _error_status
 from .routes.common import json_body as _json_body  # noqa: F401 (re-exported: tests import it from here)
 from .routes.common import read_json as _read_json
 from .routes.common import unclaimed as _unclaimed
@@ -53,22 +54,17 @@ from .views import (
     apps_view,
     claim_view,
     control_view,
-    display_text,
-    entry_digest,
-    entry_view,
     erasures_view,
     health_view,
     limits_view,
     memory_route_absent,
     module_view,
-    normalize_origin,
     overview,
     ownership_view,
     pairing_attention,
     pairing_request_view,
     pairing_view,
     registry_view,
-    scope_disclosures,
     settings_error,
     spend_view,
     valid_limits,
@@ -128,12 +124,6 @@ class HostCheck:
             await send(message)
 
         await self.app(scope, receive, with_headers)
-
-
-def _error_status(status: int) -> int:
-    """The status for the browser when the daemon refused. A redirect, which the daemon client never follows, is the
-    daemon misbehaving: the browser gets 502, never a 3xx from the Hub's API."""
-    return status if 400 <= status < 600 else 502
 
 
 def _forwarded(reply: Any) -> JSONResponse:
@@ -380,123 +370,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 "backends_error": "" if backend_rows is not None else "The daemon's backend usage was unavailable.",
                 **shown}
 
-    consent_entry = partial(marketplace_routes.consent_entry, hub)
-    remember_consent = partial(marketplace_routes.remember_consent, hub)
-
-    marketplace_routes.add_routes(app)
-
-    @app.post("/api/marketplace/arm")
-    async def arm_slot(request: Request):
-        async with pairing_consent_lock:
-            return await checked_arm_slot(request)
-
-    async def checked_arm_slot(request: Request):
-        """Arm a pre-approved slot for one entry once the owner approved its consent screen (#519, flow 4).
-
-        The scopes and origin must be exactly what the entry declares as the daemon validates it now, so a stale page
-        or a crafted body can neither widen what the owner saw nor arm a slot for an id that is not listed."""
-        key = claims.key()
-        if key is None:
-            return _unclaimed("Claim this Hub on Overview before setting up an app.")
-        body = await _read_json(request, 4096, "Set-up", "Setting up an app requires a same-origin Origin")
-        if not isinstance(body, dict) or set(body) - {"catalog_app_id", "scopes", "origin", "acknowledge_elevated",
-                                                               "consent_digest"}:
-            return _error(400, "Unexpected set-up fields")
-        catalog_app_id, scopes = body.get("catalog_app_id"), body.get("scopes")
-        origin, acknowledged = body.get("origin", ""), body.get("acknowledge_elevated", False)
-        if not isinstance(catalog_app_id, str) or not isinstance(scopes, list) or not all(
-                isinstance(scope, str) for scope in scopes) or not isinstance(origin, str) or (
-                type(acknowledged) is not bool):
-            return _error(400, "catalog_app_id, scopes, origin or acknowledge_elevated has the wrong type")
-        try:
-            reply = await daemon.inventory(key["token"])
-            if reply.status == 401:
-                return await refused(key["token"])
-            if not reply.ok:
-                detail = settings_error(reply.body, reply.status)["detail"]
-                return _error(409, f"The entries could not be read ({detail}). Fix them before setting up an app.")
-            if not valid_inventory(reply.body):
-                return _error(502, "The daemon returned an invalid inventory.")
-            raw_entry = next((row for row in reply.body.get("entries", [])
-                              if isinstance(row, dict) and row.get("catalog_app_id") == catalog_app_id), None)
-            entry = entry_view(raw_entry, guarded=tuple(store.secrets()))  # Its digest has no secrets.
-            if entry is None:
-                return _error(404, "No local entry has that catalog app id. Refresh the Marketplace.")
-            baseline = {**entry, "scopes": [dict(item) for item in entry["scopes"]]}
-            consent_entry(entry, key["key_id"])
-            raw_app = raw_entry["manifest"]["app"]
-            declared = [item["scope"] for item in raw_app["scopes"]]
-            if sorted(scopes) != sorted(declared):
-                return _error(409, "The entry's scopes changed since the consent screen was shown. Review it again.")
-            declared_origins = raw_app.get("browser_origins") or []
-            try:
-                bound_origin = normalize_origin(origin) if origin else ""
-                allowed = {normalize_origin(value) for value in declared_origins}
-            except ValueError:
-                return _error(400, "Choose one of the entry's browser origins.")
-            if allowed and bound_origin not in allowed:
-                return _error(400, "Choose one of the entry's browser origins.")
-            if not allowed and origin:
-                return _error(400, "This entry declares no browser origin: it is set up as a native app.")
-            if body.get("consent_digest") != entry_digest(entry):
-                return _error(409, "The entry changed since the consent screen was shown. Review it again.")
-            if (entry["elevated"] or entry.get("acknowledgement_required") or any(
-                    not item["text"] for item in entry["scopes"])) and not acknowledged:
-                return _error(400, "Elevated scopes or scopes without a Hub description need the separate "
-                              "acknowledgement before setup.",
-                              error={"code": "acknowledgement_required"})
-            arm = {"catalog_app_id": catalog_app_id, "scopes": declared,
-                   "name": display_text(raw_app["display_name"], 80, strip_controls=True).strip()[:60]}
-            if bound_origin:
-                arm["origin"] = bound_origin
-            if acknowledged:
-                arm["acknowledge_elevated"] = True
-            reply = await daemon.pairing(key["token"], "arm", body=arm)
-            if reply.status == 401:
-                return await refused(key["token"])
-        except DaemonUnreachable:
-            return _unreachable("The daemon did not answer. Refresh the Marketplace before setting up again.")
-        if not reply.ok:
-            error = settings_error(reply.body, reply.status)
-            # The daemon refuses an unacknowledged arm with HTTP 400 `invalid_request` and this detail; the code
-            # `acknowledgement_required` is only in its audit row (agent-harness harness/pairing_requests.py).
-            if error["error"]["code"] == "acknowledgement_required" or (
-                    reply.status == 400 and "acknowledge_elevated" in error["detail"]):
-                # A newer daemon may elevate a scope our pinned table does not yet know. It armed nothing.
-                shown = [{k: item[k] for k in ("scope", "tier", "text")} for item in entry["scopes"]]
-                remember_consent(baseline, key["key_id"], shown, acknowledge=True)
-                return _error(409, "The daemon requires a separate acknowledgement for these scopes. "
-                              "Review the consent screen again.", consent_entry=consent_entry(baseline, key["key_id"]))
-            return JSONResponse(error, status_code=_error_status(reply.status))
-        actual = scope_disclosures(reply.body.get("disclosures") if isinstance(reply.body, dict) else None,
-                                   declared, tuple(store.secrets()))
-        shown = [{k: item[k] for k in ("scope", "tier", "text")} for item in entry["scopes"]]
-        if actual != shown or any(not item["text"].strip() for item in shown):
-            # The id stays inside this server until it has been withdrawn: no hand-off on drift, including add-ons.
-            unsafe = pairing_request_view(reply.body)
-            if not unsafe["id"]:
-                return _error(502, "The daemon returned an invalid armed slot. Review Pairing requests on the host.")
-            try:
-                denied = await daemon.pairing(key["token"], "deny", rid=unsafe["id"])
-            except DaemonUnreachable:
-                return _unreachable("Disclosure review failed and the slot could not be withdrawn. "
-                                    "Withdraw it on Pairing requests before trying again.")
-            if not denied.ok or pairing_request_view(denied.body)["state"] != "denied":
-                return _error(502, "Disclosure review failed and the daemon refused to withdraw the slot. "
-                              "Withdraw it on Pairing requests before trying again.")
-            if actual is not None:
-                remember_consent(baseline, key["key_id"], actual)
-                reviewed = consent_entry(baseline, key["key_id"])
-                return _error(409, "The daemon describes these scopes differently from what you saw. "
-                              "Review the consent screen again.", consent_entry=reviewed)
-            return _error(409, "The daemon's scope disclosures could not be displayed safely. "
-                          "The slot was withdrawn. Review Pairing requests on the host.")
-        slot = pairing_request_view(reply.body, tuple(store.secrets()))
-        if not slot["id"] or slot["state"] != "armed":
-            return _error(502, "The daemon returned an invalid armed slot. Refresh the Marketplace.")
-        observe_browser_slots([slot], key["key_id"])
-        return JSONResponse({"request": slot, "daemon_url": settings.daemon_url, "name": entry["name"]},
-                            status_code=201)
+    marketplace_routes.add_routes(app, hub)
 
     @app.api_route("/api/apps/{resource:path}", methods=["GET", "PUT", "DELETE", "POST"])
     async def apps_action(resource: str, request: Request):

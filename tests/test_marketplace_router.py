@@ -26,3 +26,12 @@ def test_the_marketplace_listing_is_the_routers_handler(tmp_path):
     app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).fastapi
     [route] = [route for route in app.routes if getattr(route, "path", "") == "/api/marketplace"]
     assert route.endpoint is marketplace_routes.get_marketplace and route.methods == {"GET"}
+
+
+def test_arming_is_the_routers_handler_under_the_hubs_lock(tmp_path):
+    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).fastapi
+    [route] = [route for route in app.routes if getattr(route, "path", "") == "/api/marketplace/arm"]
+    arm = route.endpoint
+    assert arm.__module__ == marketplace_routes.__name__ and arm.__name__ == "arm_slot" and route.methods == {"POST"}
+    cells = dict(zip(arm.__code__.co_freevars, arm.__closure__ or (), strict=True))
+    assert cells["pairing_consent_lock"].cell_contents is app.state.hub.pairing_consent_lock
