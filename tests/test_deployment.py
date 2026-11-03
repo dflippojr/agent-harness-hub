@@ -175,10 +175,16 @@ def test_signals_read_the_files_and_fields_the_hub_writes(tmp_path):
     assert json.loads((tmp_path / STATUS_FILE).read_text(encoding="utf-8")) == status
     block = signal_block()
     status_fields = set(re.findall(r"state/status\.json, field: (\w+)", block))
-    assert status_fields == {"written_at", "daemon_last_ok_at", "claim"}
+    assert status_fields == {"written_at", "daemon_last_ok_at", "claim", "build"}
     assert status_fields <= set(status)
-    assert "path: D:/Agents/agent-harness-hub/deployed.json, field: commit" in block
-    assert "http://127.0.0.1:8120/healthz" in block and "logs/hub.log" in block
+    assert "path: ~/.local/share/agent-harness-hub/state/status.json, field: build" in block
+    assert "http://127.0.0.1:8120/healthz" in block
+    assert "path: ~/.local/share/agent-harness-hub/logs/hub.log" in block
+    # the Hub runs on the Linux tower: no signal still points at the Windows D: install
+    assert "D:/" not in block and "D:\\" not in block
+    # the state directory holds the Hub key and sign-in codes: the sweep may read only status.json from it
+    state_paths = {path.strip() for path in re.findall(r"path: ([^,}\n]+)", block) if "/state/" in path}
+    assert state_paths == {"~/.local/share/agent-harness-hub/state/status.json"}
     # the Hub's own claim states are the values the claim signal may publish
     listed = re.search(r"values: \[([^\]]+)\]", block)
     assert listed
