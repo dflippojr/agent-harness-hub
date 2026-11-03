@@ -70,35 +70,35 @@ signals:
     expect: {equals: true}
   - id: deployed-sha
     kind: deployed_sha
-    description: Commit the deployed Hub runs (deployed.json, written by ops/hub/deploy-hub.ps1).
-    fetch: {type: file, path: D:/Agents/agent-harness-hub/deployed.json, field: commit}
+    description: Commit the deployed Hub runs, its build in status.json (the commit the deploy recorded in HUB_BUILD_COMMIT, or unknown).
+    fetch: {type: file, path: ~/.local/share/agent-harness-hub/state/status.json, field: build}
   - id: heartbeat
     kind: freshness
     description: The Hub's status.json was rewritten recently (it is written every 60 s).
     max_age: 5m
-    hint: The Hub process or its supervisor stopped; see logs/supervisor.log and docs/deployment.md.
-    fetch: {type: file, path: D:/Agents/agent-harness-hub/state/status.json, field: written_at}
+    hint: The Hub process stopped; see `systemctl --user status agent-harness-hub`, `journalctl --user -u agent-harness-hub` and docs/deployment.md.
+    fetch: {type: file, path: ~/.local/share/agent-harness-hub/state/status.json, field: written_at}
   - id: daemon-poll
     kind: freshness
     description: The last time the Hub's poll of the daemon's /health succeeded.
     max_age: 10m
     hint: The Hub is up but the daemon is not answering it; check the daemon at 127.0.0.1:8100.
-    fetch: {type: file, path: D:/Agents/agent-harness-hub/state/status.json, field: daemon_last_ok_at}
+    fetch: {type: file, path: ~/.local/share/agent-harness-hub/state/status.json, field: daemon_last_ok_at}
   - id: claim
     kind: health
     description: The Hub has claimed its daemon.
-    fetch: {type: file, path: D:/Agents/agent-harness-hub/state/status.json, field: claim}
+    fetch: {type: file, path: ~/.local/share/agent-harness-hub/state/status.json, field: claim}
     expect: {equals: claimed}
     public: {values: [unclaimed, pending, claimed, refused, expired, denied, released, rate_limited, failed, lost, persisting]}
   - id: hub-errors
     kind: errors
     description: ERROR and CRITICAL records in the deployed Hub's log.
-    fetch: {type: log, path: D:/Agents/agent-harness-hub/logs/hub.log, window: 24h}
+    fetch: {type: log, path: ~/.local/share/agent-harness-hub/logs/hub.log, window: 24h}
     public: {loggers: [harness_hub.status, harness_hub.server, harness_hub.claim, uvicorn.error]}
 ```
 
-`deployed.json` and `status.json` hold no secrets, so the sweep may read them. The Hub's state directory also holds
-the Hub key (`hub-state.json`) and sign-in codes; no signal reads those.
+`status.json` holds no secrets, so the sweep may read it. The Hub's state directory also holds the Hub key
+(`hub-state.json`), `server.json`, `signin-codes.json` and `.signin.lock`; no signal reads those.
 
 ## When to file an issue
 
