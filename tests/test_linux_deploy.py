@@ -442,6 +442,36 @@ def test_rollback_without_a_previous_deployment_changes_nothing(host):
     assert host.records() == before
 
 
+def test_stale_status_cannot_pass_with_zero_padded_interval(host):
+    a = host.commit("1.0.0")
+    stale = host.commit("1.1.0", "STALE")
+    host.deploy_at(a)
+    before = host.records()
+
+    result = host.deploy_at(
+        stale, "--status-seconds", "08", check=False
+    )
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert host.records() == before
+
+
+def test_upgrade_from_deployed_scripts(host):
+    a, b = host.commit("1.0.0"), host.commit("1.1.0")
+    host.deploy_at(a)
+    git(host.release, "checkout", "-q", b)
+
+    result = host.run(
+        str(host.deploy / "ops" / "deploy-hub.sh"),
+        "--release-root", str(host.release),
+        "--deploy-dir", str(host.deploy),
+        "--python", str(host.python),
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 # -- guards -----------------------------------------------------------------------------------------------------------
 
 
