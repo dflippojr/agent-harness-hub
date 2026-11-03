@@ -270,9 +270,14 @@ deploy_swap() {
 }
 if ! deploy_swap; then
     if ((!STOP_ATTEMPTED)); then
-        undo_ops
-        restore_unit || hub_warn "restoring the unit file or hub.env failed"
-        rm -rf -- "$staged" "$SNAPSHOT" "$ops_source"
+        # Every restore step runs, whatever an earlier one returned (a bare failing call would end the script under
+        # set -e and skip the rest); the failures are collected and reported together.
+        errors=()
+        undo_ops || errors+=("restoring ops/ and ops.previous/ failed (see $DEPLOY; ops.previous.bak may hold the older copy)")
+        restore_unit || errors+=("restoring the records, the unit file or hub.env failed")
+        rm -rf -- "$staged" "$SNAPSHOT" "$ops_source" || errors+=("removing $staged failed")
+        ((${#errors[@]} == 0)) ||
+            hub_die "deployment failed before the Hub was stopped (it still runs); restoring failed: ${errors[*]}"
         hub_die "deployment failed before the Hub was stopped; nothing else was changed"
     fi
     # The stop was attempted, so the Hub may be down whatever hub_stop returned: stop whatever runs now, restore
@@ -306,8 +311,9 @@ if ! deploy_swap; then
         "before, so none was started${notes[*]:+ (${notes[*]})}"
 fi
 
-# The deployment stands: ops.previous goes with the environment it replaced, and the older copy is dropped.
-complete_ops
+# The deployment stands: ops.previous goes with the environment it replaced, and the older copy is dropped. A failure to
+# delete that copy does not undo a deployment that passed its check.
+complete_ops || hub_warn "could not delete $DEPLOY/ops.previous.bak; delete it yourself"
 rm -rf -- "$SNAPSHOT" "$ops_source"
 # Keep the environment this replaced for --rollback; delete the one before it.
 if [[ -n $previous_of_previous && $previous_of_previous != "$staged" && $previous_of_previous != "$previous_venv" &&

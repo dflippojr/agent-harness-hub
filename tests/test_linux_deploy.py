@@ -714,6 +714,45 @@ exec /bin/mv "$@"
     assert (host.deploy / "ops.previous.bak").is_dir()  # the older copy is kept, not lost
 
 
+def test_a_failure_before_the_stop_restores_the_unit_even_when_the_scripts_cannot_be(host):
+    # install-unit.sh rewrites the unit and hub.env, then daemon-reload fails; putting ops.previous back fails too. The
+    # unit and hub.env must still be restored, and the message must say the scripts were not.
+    a, b, c = host.commit("1.0.0"), host.commit("1.1.0"), host.commit("1.2.0")
+    host.deploy_at(a)
+    host.deploy_at(b)
+    unit, env = host.unit_file.read_text(encoding="utf-8"), host.read("hub.env")
+    host.fail_systemctl("daemon-reload", times=1)
+    write_executable(host.bin / "mv", """#!/usr/bin/env bash
+for arg in "$@"; do
+    [[ $arg == */ops.previous.bak ]] && [[ $arg != "${*: -1}" ]] && { echo "mv: injected failure" >&2; exit 1; }
+done
+exec /bin/mv "$@"
+""")
+    failed = host.deploy_at(c, "--port", "8130", check=False)
+    assert failed.returncode != 0
+    assert "failed before the Hub was stopped (it still runs); restoring failed" in failed.stderr, failed.stderr
+    assert "restoring ops/ and ops.previous/ failed" in failed.stderr
+    assert host.unit_file.read_text(encoding="utf-8") == unit and host.read("hub.env") == env
+    assert host.healthz() == {"ok": True, "version": "1.1.0"}
+    assert not (host.deploy / "venvs" / c).exists()
+
+
+def test_a_deployment_that_cannot_delete_the_older_scripts_still_stands(host):
+    a, b, c = host.commit("1.0.0"), host.commit("1.1.0"), host.commit("1.2.0")
+    host.deploy_at(a)
+    host.deploy_at(b)
+    # only the cleanup after the check passed (deployed.json names 1.2.0), not copy_ops's own clearing of the copy
+    write_executable(host.bin / "rm", f"""#!/usr/bin/env bash
+if [[ ${{*: -1}} == */ops.previous.bak ]] && grep -q '"1.2.0"' "{host.deploy}/deployed.json" 2>/dev/null; then
+    echo "rm: injected failure" >&2; exit 1
+fi
+exec /bin/rm "$@"
+""")
+    result = host.deploy_at(c)
+    assert "could not delete" in result.stderr and f"Deployed {c}" in result.stdout
+    assert host.stamp()["commit"] == c and host.healthz() == {"ok": True, "version": "1.2.0"}
+
+
 # -- guards -----------------------------------------------------------------------------------------------------------
 
 
