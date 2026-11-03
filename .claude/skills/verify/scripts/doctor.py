@@ -34,6 +34,9 @@ SECRET_NAME = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|AUTH|CREDENTIAL
 # Variables that name a data location; in the instance's processes each must point inside the instance directory.
 PATH_VARS = ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "HARNESS_CONFIG_DIR")
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "scripts"))
+import ui_instance  # noqa: E402 - scripts/ui_instance.py, for its recorded-process check
+
 
 @dataclass
 class Check:
@@ -162,12 +165,11 @@ def recorded_processes(handle: dict) -> list:
     import psutil
     found = []
     for child in handle.get("children", []):
+        proc = ui_instance.recorded(child, unknown_start_ok=True)
         try:
-            proc = psutil.Process(int(child["pid"]))
-            if child.get("created") is not None and abs(proc.create_time() - float(child["created"])) > 0.01:
-                continue
-            found += [(child["name"], p) for p in [proc, *proc.children(recursive=True)]]
-        except (psutil.Error, KeyError, TypeError, ValueError):
+            if proc is not None:
+                found += [(child["name"], p) for p in [proc, *proc.children(recursive=True)]]
+        except (psutil.Error, KeyError):
             continue
     return found
 

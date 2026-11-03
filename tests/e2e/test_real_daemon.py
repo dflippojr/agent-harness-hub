@@ -33,7 +33,7 @@ from harness_hub.views import ELEVATED_SCOPES, SCOPE_DISCLOSURES, owner_api_comp
 
 from ..conftest import assert_no_secrets
 from ..response_capture import capture_response
-from .conftest import daemon_logs, started_logs
+from .conftest import daemon_logs, notes, started_logs
 
 pytestmark = pytest.mark.e2e
 
@@ -60,6 +60,30 @@ def wait(check, timeout: float, what: str):
     raise AssertionError(f"timed out waiting for {what}")
 
 
+def start_docker_once(env: dict) -> float | None:
+    """Start the Docker CLI once, so no daemon read pays for its first, cold start (#215), and return when it finished,
+    or None if there is no CLI to start. `ps` exits at once: this environment has no engine to reach."""
+    try:
+        subprocess.run(["docker", "ps", "-a"], env=env, capture_output=True, timeout=120)
+    except FileNotFoundError:  # no Docker CLI on this host: nothing to wait on
+        return None
+    return time.monotonic()
+
+
+def record_docker_calls(root: Path, env: dict) -> Path:
+    """Put a recording stand-in first on `env`'s PATH, and return the file it appends to. Windows can't have one:
+    docker.exe is in System32, which CreateProcess searches before any PATH."""
+    calls = root / "docker-calls.txt"
+    if os.name != "nt":
+        shim = root / "docker-shim"
+        shim.mkdir()
+        (shim / "docker").write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\n'
+                                     f'PATH="{os.environ["PATH"]}" exec docker "$@"\n', encoding="utf-8")
+        (shim / "docker").chmod(0o755)
+        env["PATH"] = f"{shim}{os.pathsep}{os.environ['PATH']}"
+    return calls
+
+
 @pytest.fixture(scope="module")
 def daemon(tmp_path_factory):
     if not SRC:
@@ -83,11 +107,16 @@ def daemon(tmp_path_factory):
                  else f"unix://{(root / 'no-docker.sock').as_posix()}")
     daemon_env = dict(os.environ, HARNESS_SUPERVISED="1", DOCKER_HOST=no_engine)
     daemon_env.pop("DOCKER_CONTEXT", None)
+    docker_calls = record_docker_calls(root, daemon_env)
+    started = time.monotonic()
+    docker_finished = start_docker_once(daemon_env)
+    notes.append(f"first docker CLI start (cold): {time.monotonic() - started:.2f} s")
     log = (root / "daemon.log").open("w")
     def launch():
         return subprocess.Popen([DAEMON_PYTHON, "-m", "harness", "--config-dir", str(config)], cwd=src,
                                 env=daemon_env, stdout=log, stderr=subprocess.STDOUT)
 
+    daemon_launched = time.monotonic()
     processes = [launch()]
     proc = processes[0]
     stopping = threading.Event()
@@ -114,7 +143,9 @@ def daemon(tmp_path_factory):
     env.pop("HARNESS_TOKEN", None)
     env.pop("HARNESS_LOCAL_TOKEN", None)
     daemon_logs.append(root / "daemon.log")
-    yield {"url": url, "src": src, "env": env, "daemon_env": daemon_env, "root": root, "processes": processes}
+    yield {"url": url, "src": src, "env": env, "daemon_env": daemon_env, "root": root, "processes": processes,
+           "docker_calls": docker_calls, "docker_finished": docker_finished,
+           "daemon_launched": daemon_launched}
     daemon_logs.remove(root / "daemon.log")
     stopping.set()
     proc = processes[-1]
@@ -666,3 +697,18 @@ def test_the_daemon_has_no_docker_engine_to_wait_on(daemon):
     except FileNotFoundError:
         return  # no Docker CLI on this host: nothing to wait on
     assert reply.returncode != 0, f"the daemon's Docker CLI reached an engine: {reply.stdout.strip()}"
+
+
+def test_the_first_docker_start_is_not_inside_a_request(daemon):
+    """Several daemon reads start `docker` (Backends' sign-in probes, Maintenance's `docker ps`). The job's first, cold
+    docker.exe start on windows-latest took up to over 10 s with no engine to reach, past the Hub's and this module's
+    10 s read timeouts (#215), so the fixture starts it before the daemon runs."""
+    if shutil.which("docker", path=daemon["daemon_env"]["PATH"]):
+        assert daemon["docker_finished"] is not None and daemon["docker_finished"] <= daemon["daemon_launched"]
+    host_cli(daemon, "backends", "list")
+    if os.name == "nt":
+        return  # docker.exe is in System32, ahead of any PATH, so only POSIX can also record its calls
+    calls = daemon["docker_calls"].read_text(encoding="utf-8").splitlines()
+    assert calls[0] == "ps -a"  # the fixture's, before the daemon ran
+    # The reason it has to come first: this read does start docker, once per hosted backend.
+    assert any(call.startswith("run ") for call in calls[1:]), calls

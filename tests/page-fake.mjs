@@ -32,7 +32,8 @@ export const response = (data, status = 200) => new Response(JSON.stringify(data
 // A turn of the event loop drains promise continuations; no wall-clock waits or real timers.
 export const settle = () => new Promise(setImmediate);
 
-export function mount(t, render, fetcher) {
+// elementClass replaces Element for a test that needs more of the DOM (request-page.test.mjs).
+export function mount(t, render, fetcher, elementClass = Element) {
   const names = ["document", "Node", "sessionStorage", "fetch", "setTimeout", "clearTimeout", "setInterval", "clearInterval"];
   const originals = names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]);
   // Tear the page down while the fakes are still installed, then restore the globals.
@@ -51,16 +52,16 @@ export function mount(t, render, fetcher) {
   let next = 0, clock = 0;
   const document = {
     visibilityState: "visible",
-    createElement: (tag) => new Element(tag),
-    createElementNS: (namespace, tag) => new Element(tag),
-    createTextNode: (text) => Object.assign(new Element("text"), { text }),
+    createElement: (tag) => new elementClass(tag),
+    createElementNS: (namespace, tag) => new elementClass(tag),
+    createTextNode: (text) => Object.assign(new elementClass("text"), { text }),
     addEventListener: (name, fn) => { listeners.add([name, fn]); },
     removeEventListener: (name, fn) => {
       for (const entry of listeners) if (entry[0] === name && entry[1] === fn) listeners.delete(entry);
     },
   };
   Object.assign(globalThis, {
-    Node: Element,
+    Node: elementClass,
     document,
     sessionStorage: { getItem: () => null },
     fetch: (url, options) => { calls.push({ url, method: options.method }); return fetcher(url, options); },
@@ -69,7 +70,7 @@ export function mount(t, render, fetcher) {
     setInterval: (callback, delay) => { const id = ++next; intervals.set(id, { callback, delay }); return id; },
     clearInterval: (id) => intervals.delete(id),
   });
-  const main = new Element("main");
+  const main = new elementClass("main");
   stop = render(main);
 
   // Fire every timer that comes due within ms, in order, letting each callback's work finish first.
