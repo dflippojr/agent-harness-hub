@@ -85,3 +85,15 @@ def test_kill_recorded_kills_only_the_right_start_time(children, kind):
         assert proc.wait(timeout=15) is not None
     elif kind != "exited":
         assert proc.poll() is None, f"kill_recorded killed the process of an entry with {kind} start time"
+
+
+def test_kill_recorded_skips_an_entry_whose_start_time_is_denied(children, monkeypatch):
+    proc = children()
+    handle = {"children": [entry("right", proc)]}  # the real start time, so only the lookup below can refuse it
+
+    def denied(self):
+        raise psutil.AccessDenied(self.pid)
+
+    monkeypatch.setattr(psutil.Process, "create_time", denied)
+    assert ui.kill_recorded(handle)
+    assert proc.poll() is None, "kill_recorded killed a process whose start time it could not read"
