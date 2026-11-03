@@ -88,6 +88,12 @@ async def read_json(request: Request, limit: int, label: str, origin: str, not_j
         raise HTTPException(400, not_json or f"{label} body must be JSON") from None
 
 
+def error_status(status: int) -> int:
+    """The status for the browser when the daemon refused. A redirect, which the daemon client never follows, is the
+    daemon misbehaving: the browser gets 502, never a 3xx from the Hub's API."""
+    return status if 400 <= status < 600 else 502
+
+
 # An error says whether the daemon answered, so the shell's status tells "the Hub could not reach the daemon" (a 503 of
 # the Hub's own, reachable false) from "the daemon answered with an error" (forwarded, any status, reachable true).
 def unreachable(detail: str, **extra: Any) -> JSONResponse:
