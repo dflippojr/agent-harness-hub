@@ -96,7 +96,8 @@ logs in, and the check warns. The script, in order:
    name the new commit, each within 60 s. Then the full [check](#check-it) must pass. It runs as its own process and
    counts only when it exits 0 with its closing `check: all passed` line, so a check that cannot evaluate fails the
    deployment instead of being skipped.
-5. **Roll back on failure.** After the stop, any failure, a failed check included, restores the previous pointers,
+5. **Roll back on failure.** Once the stop has been attempted (a stop that reports an error may still have stopped
+   the Hub, so it counts), any failure, a failed check included, restores the previous pointers,
    records, scripts, unit file and `hub.env`, restarts the previous Hub and says so. If that restart also fails, the error says both.
 6. **Clean up.** The environment before the previous one is deleted.
 

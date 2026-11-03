@@ -53,12 +53,19 @@ complete_ops() {
     ops_remove_tree "$DEPLOY/ops.previous.bak"
 }
 
-# ops and ops.previous trade places (a rollback, or the undo of one).
+# ops and ops.previous trade places (a rollback, or the undo of one). All or nothing: a move that fails undoes the moves
+# before it, so a caller that sees a failure knows nothing was swapped.
 swap_ops() {
-    local current=$DEPLOY/ops other=$DEPLOY/ops.previous temporary=$DEPLOY/ops.swap
+    local current=$DEPLOY/ops other=$DEPLOY/ops.previous temporary=$DEPLOY/ops.swap parked=0
     [[ -e $other ]] || return 0
     ops_remove_tree "$temporary" || return 1
-    if [[ -e $current ]]; then mv -- "$current" "$temporary" || return 1; fi
-    mv -- "$other" "$current" || return 1
-    if [[ -e $temporary ]]; then mv -- "$temporary" "$other" || return 1; fi
+    if [[ -e $current ]]; then mv -- "$current" "$temporary" || return 1; parked=1; fi
+    if ! mv -- "$other" "$current"; then
+        if ((parked)); then mv -- "$temporary" "$current"; fi
+        return 1
+    fi
+    if ((parked)) && ! mv -- "$temporary" "$other"; then
+        mv -- "$current" "$other" && mv -- "$temporary" "$current"
+        return 1
+    fi
 }

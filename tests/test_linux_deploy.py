@@ -211,6 +211,23 @@ class Host:
         return self.run("deploy-hub.sh", "--release-root", str(self.release), "--deploy-dir", str(self.deploy),
                         "--python", str(self.python), *args, check=check)
 
+    def fail_systemctl(self, command: str, times: int = 0):
+        """Fault injection: `systemctl --user <command>` takes effect and then reports an error, on every call
+        (times=0) or only the first `times` calls, so recovery that runs it again can succeed."""
+        real = self.bin / "systemctl-real"
+        if not real.exists():
+            (self.bin / "systemctl").rename(real)
+        write_executable(self.bin / "systemctl", f"""#!/usr/bin/env bash
+"$(dirname "$0")/systemctl-real" "$@"
+status=$?
+if [[ $2 == {command} ]]; then
+    count=$(cat "$FAKE_SYSTEMD/faults.{command}" 2>/dev/null || echo 0)
+    echo $((count + 1)) >"$FAKE_SYSTEMD/faults.{command}"
+    if ((({times} == 0) || count < {times})); then exit 1; fi
+fi
+exit "$status"
+""")
+
     def run_fake_systemctl(self, *args: str):
         subprocess.run([str(self.bin / "systemctl"), "--user", *args], env=self.env, check=True, timeout=60)
 
@@ -571,6 +588,78 @@ exit "$status"
     }, result.stderr
 
 
+def test_a_start_that_reports_an_error_after_starting_is_rolled_back(host):
+    a, b = host.commit("1.0.0"), host.commit("1.1.0")
+    host.deploy_at(a)
+    before = host.records()
+    host.fail_systemctl("start", times=1)  # the new Hub starts, then systemctl says it failed
+    failed = host.deploy_at(b, check=False)
+    assert failed.returncode != 0
+    assert "the previous deployment is restored and answers /healthz" in failed.stderr, failed.stderr
+    assert host.records() == before and host.healthz() == {"ok": True, "version": "1.0.0"}
+
+
+def test_a_failed_daemon_reload_while_installing_the_unit_changes_nothing(host):
+    a, b = host.commit("1.0.0"), host.commit("1.1.0")
+    host.deploy_at(a)
+    before, unit, env = host.records(), host.unit_file.read_text(encoding="utf-8"), host.read("hub.env")
+    host.fail_systemctl("daemon-reload", times=1)  # --port changes the unit, so install-unit.sh reloads
+    failed = host.deploy_at(b, "--port", "8130", check=False)
+    assert failed.returncode != 0
+    assert "failed before the Hub was stopped; nothing else was changed" in failed.stderr, failed.stderr
+    assert host.records() == before and host.read("hub.env") == env
+    assert host.unit_file.read_text(encoding="utf-8") == unit
+    assert host.healthz() == {"ok": True, "version": "1.0.0"}  # never stopped
+
+
+def test_a_failed_stop_over_a_hand_written_unit_restarts_its_hub(host):
+    hand_hub = write_executable(host.root / "hand-hub.sh", "#!/usr/bin/env bash\n"
+                                "printf '{\"ok\":true,\"version\":\"0.9.0\"}' >\"$FAKE_SYSTEMD/healthz.8120\"\n")
+    original = f"[Service]\nExecStart=/usr/bin/env bash {hand_hub}\n"
+    host.unit_file.parent.mkdir(parents=True)
+    host.unit_file.write_text(original, encoding="utf-8")
+    (host.systemd / "enabled").touch()
+    host.run_fake_systemctl("start", UNIT)
+    host.fail_systemctl("stop")
+    failed = host.deploy_at(host.commit("1.0.0"), "--replace-unit", check=False)
+    assert failed.returncode != 0 and "restored and answers /healthz" in failed.stderr, failed.stderr
+    assert host.unit_file.read_text(encoding="utf-8") == original
+    assert host.healthz() == {"ok": True, "version": "0.9.0"}
+
+
+def test_a_rollback_whose_stop_reports_an_error_brings_the_current_hub_back(host):
+    a, b = host.commit("1.0.0"), host.commit("1.1.0")
+    host.deploy_at(a)
+    host.deploy_at(b)
+    before = host.records()
+    host.fail_systemctl("stop")
+    failed = host.run("deploy-hub.sh", "--rollback", "--deploy-dir", str(host.deploy), check=False)
+    assert failed.returncode != 0
+    assert "rollback not done" in failed.stderr and "answers /healthz again" in failed.stderr, failed.stderr
+    assert host.records() == before and host.healthz() == {"ok": True, "version": "1.1.0"}
+
+
+def test_a_rollback_whose_start_reports_an_error_is_undone(host):
+    a, b = host.commit("1.0.0"), host.commit("1.1.0")
+    host.deploy_at(a)
+    host.tag_ops("A")
+    host.deploy_at(b)
+    host.tag_ops("B")
+    before = host.records()
+    host.fail_systemctl("start", times=1)
+    failed = host.run("deploy-hub.sh", "--rollback", "--deploy-dir", str(host.deploy), check=False)
+    assert failed.returncode != 0
+    assert "the previous state is restored and its Hub answers /healthz" in failed.stderr, failed.stderr
+    assert host.records() == before and host.healthz() == {"ok": True, "version": "1.1.0"}
+
+
+def test_uninstall_says_what_a_failed_stop_leaves(deployed):
+    deployed.fail_systemctl("stop")
+    failed = deployed.run("uninstall-unit.sh", "--deploy-dir", str(deployed.deploy), check=False)
+    assert failed.returncode != 0 and "may be stopped or running" in failed.stderr
+    assert deployed.unit_file.exists()
+
+
 # -- guards -----------------------------------------------------------------------------------------------------------
 
 
@@ -714,6 +803,34 @@ def test_a_failed_deployment_is_never_recorded_as_the_previous_scripts(tmp_path)
     steps = dict(line.split("=", 1) for line in result.stdout.splitlines())
     assert steps == {"deploy A": "A,-", "deploy C": "C,A", "deploy D fails": "C,A", "rollback": "A,C",
                      "rollback again": "C,A"}
+
+
+SWAP_FAULT = r"""
+set -euo pipefail
+source "$HUB_OPS/hub-ops.sh"
+DEPLOY=$1
+for name in ops ops.previous; do mkdir -p "$DEPLOY/$name"; printf '%s' "$name" >"$DEPLOY/$name/run-hub.sh"; done
+# the second move of the swap (ops.previous -> ops), or the third (ops.swap -> ops.previous), fails
+mv() {
+    if [[ ${*: -1} == "$DEPLOY/$FAIL_INTO" && ! -e $DEPLOY/fault-done ]]; then : >"$DEPLOY/fault-done"; return 1; fi
+    command mv "$@"
+}
+if swap_ops; then echo swapped; else echo refused; fi
+printf '%s,%s,%s\n' "$(cat "$DEPLOY/ops/run-hub.sh")" "$(cat "$DEPLOY/ops.previous/run-hub.sh")" \
+    "$([[ -e $DEPLOY/ops.swap ]] && echo left || echo clean)"
+"""
+
+
+@pytest.mark.parametrize("fail_into", ["ops", "ops.previous"])
+def test_an_ops_swap_that_fails_part_way_changes_nothing(tmp_path, fail_into):
+    script = tmp_path / "swap.sh"
+    script.write_text(SWAP_FAULT, encoding="utf-8")
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    result = subprocess.run(["bash", str(script), str(deploy)], capture_output=True, text=True, timeout=60,
+                            env={**os.environ, "HUB_OPS": str(OPS), "FAIL_INTO": fail_into}, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.splitlines() == ["refused", "ops,ops.previous,clean"]
 
 
 # -- the scripts themselves -------------------------------------------------------------------------------------------

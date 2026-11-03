@@ -18,7 +18,8 @@ while (($#)); do
     esac
 done
 hub_set_paths "${deploy_dir:-$(hub_own_deploy_dir "$here")}"
-hub_stop || hub_die "could not stop the Hub; the unit is left installed"
+hub_stop || hub_die "stopping the Hub reported an error, so the unit is left installed; the Hub may be stopped or" \
+    "running (systemctl --user status $HUB_UNIT)"
 if hub_unit_installed; then
     systemctl --user disable "$HUB_UNIT"
     rm -f -- "$UNIT_FILE"
