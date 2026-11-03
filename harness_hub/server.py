@@ -14,11 +14,12 @@ import logging
 import math
 import re
 import time
+from functools import partial
 from importlib import resources
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -31,10 +32,14 @@ from .config import Settings
 from .daemon import ADMIN_ROUTES, DaemonClient, DaemonUnreachable, route_targets
 from .guard import ResponseGuard, leaks
 from .inventory import InventoryCache, valid_inventory
+from .routes import common
+from .routes import marketplace as marketplace_routes
 from .routes import session as session_routes
-from .routes.common import HubContext
+from .routes.common import HubContext, concurrently, settled
 from .routes.common import error as _error
-from .routes.common import json_body as _json_body
+from .routes.common import json_body as _json_body  # noqa: F401 (re-exported: tests import it from here)
+from .routes.common import read_json as _read_json
+from .routes.common import unclaimed as _unclaimed
 from .routes.common import unreachable as _unreachable
 from .routes.session import MAX_SIGNIN_BODY as MAX_SIGNIN_BODY  # re-exported: tests import it from here
 from .routes.session import SIGNIN_COMMAND
@@ -127,28 +132,6 @@ class HostCheck:
         await self.app(scope, receive, with_headers)
 
 
-async def _read_json(request: Request, limit: int, label: str, origin: str, not_json: str = "") -> Any:
-    """A write's JSON body of at most `limit` bytes, {} when empty. Raises the refusal as an HTTPException, answered
-    as {"detail": ...} just as `_error` answers: 403 with no Origin, 413 over the limit, 400 when it does not parse."""
-    if not request.headers.get("origin"):
-        raise HTTPException(403, origin)
-    data = bytearray()
-    async for chunk in request.stream():
-        if len(data) + len(chunk) > limit:
-            raise HTTPException(413, f"{label} body is too large")
-        data.extend(chunk)
-    try:
-        return _json_body(data or b"{}")
-    except ValueError:
-        raise HTTPException(400, not_json or f"{label} body must be JSON") from None
-
-
-# A read or write the Hub refuses because it has not claimed the daemon. claimed false lets a page show its Claim this
-# Hub first state, with a link to Overview, instead of the refusal's sentence.
-def _unclaimed(detail: str) -> JSONResponse:
-    return _error(409, detail, claimed=False)
-
-
 def _error_status(status: int) -> int:
     """The status for the browser when the daemon refused. A redirect, which the daemon client never follows, is the
     daemon misbehaving: the browser gets 502, never a 3xx from the Hub's API."""
@@ -158,22 +141,6 @@ def _error_status(status: int) -> int:
 def _forwarded(reply: Any) -> JSONResponse:
     return JSONResponse({**settings_error(reply.body, reply.status), "reachable": True},
                         status_code=_error_status(reply.status))
-
-
-async def concurrently(*reads: Any) -> list[Any]:
-    """Await independent daemon reads together, so a slow daemon costs one round trip instead of one per read.
-
-    Each item is the read's reply or the exception it raised, and every read has finished when this returns. A caller
-    passes each item through `settled` in the order the reads used to run, so the first failure it raises is the
-    same one a sequential route raised."""
-    return await asyncio.gather(*reads, return_exceptions=True)
-
-
-def settled(result: Any) -> Any:
-    """One item from `concurrently`: the reply, or the exception the read raised, re-raised here."""
-    if isinstance(result, BaseException):
-        raise result
-    return result
 
 
 def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None,
@@ -263,59 +230,11 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     session_routes.add_routes(app)
 
-    # Listings must not publish a new slot while its disclosures are being checked or it is being withdrawn.
-    pairing_consent_lock = asyncio.Lock()
-
-    # A bounded, process-local backstop for an observed browser claim that skipped the confirmation gate.
-    # Share observations across pages/tabs; record successful Hub confirmations under the same lock as polls.
-    browser_slot_states: dict[tuple[str, str], tuple[str, bool]] = {}
-
-    def observe_browser_slots(rows: list, key_id: str, *, confirmed_id: str = "") -> bool:
-        """Whether an observed browser claim looks like it skipped confirmation; `skipped_confirmation` rules on it."""
-        warning = False
-        for raw in rows:
-            row = pairing_request_view(raw)
-            if not (row["id"] and row["kind"] == "app" and row["armed"] and row["browser"]):
-                continue
-            identity = (key_id, row["id"])
-            previous, bypassed = browser_slot_states.get(identity, ("", False))
-            bypassed = bypassed or (previous == "armed" and row["state"] in ("approved", "redeemed")
-                                    and row["id"] != confirmed_id)
-            if identity not in browser_slot_states and len(browser_slot_states) >= 256:
-                browser_slot_states.pop(next(iter(browser_slot_states)))
-            browser_slot_states[identity] = (row["state"], bypassed)
-            warning = warning or bypassed
-        return warning
-
-    async def skipped_confirmation(key: dict, suspected: bool) -> str:
-        """The warning for a suspected bypass, only from a daemon that does not enforce confirmation.
-
-        Owner API 1.24 and later enforce typed-code confirmation, so from them an `armed` slot that turned `approved`
-        between listings was confirmed outside the Hub (the host CLI, another Hub process, a Hub restart): no warning,
-        and the stale suspicion is dropped. A daemon whose version is old or cannot be read keeps it."""
-        if not suspected:
-            return ""
-        try:
-            reply = await daemon.admin(key["token"])
-        except DaemonUnreachable:
-            reply = None
-        if reply is not None and reply.ok and ownership_view(
-                reply.body, {}, "")["compatibility"] in ("supported", "no_tailnet_signin"):
-            for identity, (state, _) in list(browser_slot_states.items()):
-                if identity[0] == key["key_id"]:
-                    browser_slot_states[identity] = (state, False)
-            return ""
-        return "This daemon approved the claim without confirmation; update the daemon."
-
-    async def retained(token: str) -> str:
-        """The daemon answered 401: drop the key only if a second read confirms it, else say it was kept.
-
-        A transient rejection must not destroy the owner's persistent key."""
-        confirmation = await daemon.admin(token)
-        if confirmation.status == 401:
-            await claims.released(token)
-            return ""
-        return "the owner API rejected the key once; retained it pending confirmation"
+    pairing_consent_lock = hub.pairing_consent_lock
+    retained, refused = partial(common.retained, hub), partial(common.refused, hub)
+    read_inventory = partial(common.read_inventory, hub)
+    observe_browser_slots = partial(marketplace_routes.observe_browser_slots, hub)
+    skipped_confirmation = partial(marketplace_routes.skipped_confirmation, hub)
 
     @app.get("/api/overview")
     async def get_overview():
@@ -382,52 +301,6 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         result["restarting"] = restart["active"]
         result["attention"] = attention
         return result
-
-    async def refused(token: str) -> JSONResponse:
-        """The daemon answered 401: drop the key only if a second read confirms it, then point to Overview."""
-        await retained(token)
-        return _error(409, "The daemon refused this Hub's key. Check Overview before trying again.")
-
-    def cacheable(body: Any, key_id: str) -> bool:
-        """Whether no page that reads the shared cache would show a credential-like string from this snapshot."""
-        secrets = tuple(store.secrets())
-        views = (module_view(body), apps_view(body, key_id, secrets), entries_view(body, secrets))
-        return not leaks(json.dumps(views).encode(), store.secrets())
-
-    async def read_inventory(key: dict, shown) -> tuple[dict | None, str, str, bool] | JSONResponse:
-        """The last good inventory (refreshed when the daemon answers with a valid one), its state, any error, and
-        whether the daemon answered at all (the shell's status reads that instead of the error text).
-
-        `shown` projects an inventory into the asking page's browser view; a snapshot whose view would leak is not
-        shown. Modules, Apps and Marketplace share the cache, so a snapshot that would leak on any of them is never
-        cached either: the page whose own view is clean shows it once, and the earlier last-good stays."""
-        good = inventory.get(key["key_id"])
-        state, error, reachable = "ready", "", True
-        try:
-            reply = await daemon.inventory(key["token"])
-            if reply.status == 401:
-                return await refused(key["token"])
-            if reply.ok:
-                if not valid_inventory(reply.body):
-                    state, error = "error", "The daemon returned an invalid inventory."
-                elif leaks(json.dumps(shown(reply.body)).encode(), store.secrets()):
-                    state, error = "error", "Inventory withheld: it contained a credential-like string."
-                elif cacheable(reply.body, key["key_id"]):
-                    good = inventory.save(reply.body, key["key_id"])
-                else:
-                    good = {"inventory": reply.body, "fetched_at": time.time()}
-            elif reply.status == 404:
-                state, error = "absent", "The Hub inventory module is not installed."
-            elif reply.status == 400 and "disabled" in reply.detail.lower():
-                state, error = "disabled", "Hub inventory is disabled. Switch it on below."
-            else:
-                # A stale or unreadable entries file is a named 400 (`hub.entries: invalid JSON`, `entries[0]...`).
-                state, error = "error", settings_error(reply.body, reply.status)["detail"]
-        except DaemonUnreachable:
-            state, error, reachable = "error", "The daemon did not answer.", False
-        except (OSError, ValueError):
-            state, error = "error", "The inventory could not be saved in the private state directory."
-        return good, state, error, reachable
 
     @app.get("/api/apps")
     @app.get("/api/modules")
@@ -509,31 +382,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 "backends_error": "" if backend_rows is not None else "The daemon's backend usage was unavailable.",
                 **shown}
 
-    # Bound to the Hub key and the entry's displayed identity, with a bounded ten-minute lifetime.
-    consent_copies: dict[tuple[str, str], tuple[str, float, list[dict], bool]] = {}
-
-    def consent_identity(entry: dict) -> str:
-        return entry_digest({k: v for k, v in entry.items() if k not in {
-            "state", "paired", "pending_pairing", "unverified_origin", "consent_digest", "slots",
-            "acknowledgement_required"}})
-
-    def consent_entry(entry: dict, key_id: str) -> dict:
-        copied = consent_copies.get((key_id, entry["catalog_app_id"]))
-        if copied and copied[0] == consent_identity(entry) and copied[1] > time.monotonic():
-            entry["scopes"] = [{**item, **disclosure} for item, disclosure in zip(
-                entry["scopes"], copied[2], strict=True)]
-            entry["elevated"] = sorted(set(entry["elevated"]) | {
-                item["scope"] for item in copied[2] if item["tier"] == "elevated"})
-            if copied[3]:
-                entry["acknowledgement_required"] = True
-        entry["consent_digest"] = entry_digest(entry)
-        return entry
-
-    def remember_consent(entry: dict, key_id: str, disclosures: list[dict], *, acknowledge: bool = False):
-        if len(consent_copies) >= 256:
-            consent_copies.pop(next(iter(consent_copies)))
-        consent_copies[(key_id, entry["catalog_app_id"])] = (
-            consent_identity(entry), time.monotonic() + 600, disclosures, acknowledge)
+    consent_entry = partial(marketplace_routes.consent_entry, hub)
+    remember_consent = partial(marketplace_routes.remember_consent, hub)
 
     @app.get("/api/marketplace")
     async def get_marketplace():
