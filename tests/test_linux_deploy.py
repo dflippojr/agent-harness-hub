@@ -176,9 +176,17 @@ class Host:
         git(self.root, "init", "-q", "-b", "main", str(self.release))
         git(self.release, "remote", "add", "origin", str(origin))
 
-    def commit(self, version: str, *markers: str, push: bool = True) -> str:
+    def commit(self, version: str, *markers: str, push: bool = True, scripts: bool = True) -> str:
+        """A commit carrying this checkout's ops/hub/*.sh (each tagged with VERSION, so a test can tell which commit's
+        copy was deployed) and the markers that steer the fake Hub."""
         for name in ("BROKEN", "STALE"):
             (self.release / name).unlink(missing_ok=True)
+        shutil.rmtree(self.release / "ops", ignore_errors=True)
+        if scripts:
+            (self.release / "ops" / "hub").mkdir(parents=True)
+            for path in SHELL_SCRIPTS:
+                text = path.read_text(encoding="utf-8") + f"# test build {version}\n"
+                write_executable(self.release / "ops" / "hub" / path.name, text)
         (self.release / "VERSION").write_text(version, encoding="utf-8")
         (self.release / "requirements.lock").write_text("", encoding="utf-8")
         (self.release / "requirements-build.lock").write_text("", encoding="utf-8")
@@ -232,6 +240,12 @@ class Host:
         if tag.exists():
             return tag.read_text(encoding="utf-8")
         return "untagged" if (self.deploy / name).exists() else None
+
+    def ops_build(self, name: str) -> str | None:
+        """The commit version tagged into the copy of the scripts in ops/ or ops.previous/ (see commit)."""
+        path = self.deploy / name / "check-hub.sh"
+        found = re.search(r"# test build (\S+)", path.read_text(encoding="utf-8")) if path.exists() else None
+        return found.group(1) if found else None
 
     def tag_ops(self, tag: str):
         (self.deploy / "ops" / "TAG").write_text(tag, encoding="utf-8")
@@ -413,8 +427,9 @@ def test_a_failed_first_deployment_leaves_no_records(host):
     assert failed.returncode != 0
     for name in (".venv-path", ".venv-previous", "deployed.json", "deployed.previous.json"):
         assert host.read(name) is None, name
-    # The scripts the unit runs stay (as on Windows), with no older copy recorded; the Hub is stopped.
-    assert host.records()["venvs"] == [] and host.ops_marker("ops.previous") is None
+    # Nothing of the attempt stays: no environment and no copy of the scripts; the Hub is stopped.
+    assert host.records()["venvs"] == [] and host.ops_marker("ops") is None
+    assert host.ops_marker("ops.previous") is None
     assert (host.systemd / "active").read_text(encoding="utf-8").strip() == "inactive"
     assert not (host.deploy / ".snapshot").exists()
 
@@ -470,6 +485,68 @@ def test_upgrade_from_deployed_scripts(host):
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_deployment_installs_the_commits_own_scripts_whichever_copy_runs_it(host):
+    # Run from the deployed copy of A's scripts, deploying B installs B's scripts, and A's become ops.previous.
+    a, b = host.commit("1.0.0"), host.commit("1.1.0")
+    host.deploy_at(a)
+    assert host.ops_build("ops") == "1.0.0"
+    git(host.release, "checkout", "-q", b)
+    host.run(str(host.deploy / "ops" / "deploy-hub.sh"), "--release-root", str(host.release),
+             "--deploy-dir", str(host.deploy))
+    assert (host.ops_build("ops"), host.ops_build("ops.previous")) == ("1.1.0", "1.0.0")
+    assert host.stamp()["commit"] == b and host.healthz() == {"ok": True, "version": "1.1.0"}
+    assert not list(host.deploy.glob(".ops-*")) and not (host.deploy / "ops.new").exists()
+    # and the deployed copy rolls back too
+    host.run(str(host.deploy / "ops" / "deploy-hub.sh"), "--rollback", "--deploy-dir", str(host.deploy))
+    assert (host.ops_build("ops"), host.ops_build("ops.previous")) == ("1.0.0", "1.1.0")
+    assert host.healthz() == {"ok": True, "version": "1.0.0"}
+
+
+def test_a_commit_without_the_linux_scripts_is_refused_before_any_downtime(host):
+    a, bare = host.commit("1.0.0"), host.commit("1.1.0", scripts=False)
+    host.deploy_at(a)
+    before = host.records()
+    refused = host.deploy_at(bare, check=False)
+    assert refused.returncode != 0 and "carries no Linux deployment scripts" in refused.stderr
+    assert host.records() == before and host.healthz() == {"ok": True, "version": "1.0.0"}
+
+
+def test_zero_padded_numbers_are_read_in_base_10(host):
+    # Bash reads 08 as a bad octal number; every number the scripts do arithmetic on is normalized first.
+    host.env.update(HUB_START_TIMEOUT="02", HUB_STATUS_MAX_AGE="0300")
+    host.deploy_at(host.commit("1.0.0"), "--port", "08120", "--status-seconds", "060")
+    env = host.read("hub.env")
+    assert "HUB_PORT=8120" in env and "HUB_STATUS_SECONDS=60" in env
+    assert "--port 8120 --status-interval 60" in (host.systemd / "hub-args").read_text(encoding="utf-8")
+    assert host.check().returncode == 0
+
+
+def test_a_check_that_cannot_evaluate_fails_the_deployment_and_restores(host):
+    # Fail closed: a value the freshness check cannot use fails the check (and so the deployment), never skips it.
+    a, b = host.commit("1.0.0"), host.commit("1.1.0")
+    host.deploy_at(a)
+    before = host.records()
+    host.env["HUB_STATUS_MAX_AGE"] = "1e3"
+    failed = host.deploy_at(b, check=False)
+    assert failed.returncode != 0, failed.stdout + failed.stderr
+    assert "FAIL  HUB_STATUS_MAX_AGE must be a whole number" in failed.stdout
+    assert host.records() == before and host.healthz() == {"ok": True, "version": "1.0.0"}
+
+
+def test_invalid_numbers_are_refused(host):
+    a = host.commit("1.0.0")
+    for args, env, message in ((["--port", "70000"], {}, "invalid port"),
+                               (["--status-seconds", "8s"], {}, "invalid status interval"),
+                               ([], {"HUB_START_TIMEOUT": "09x"}, "HUB_START_TIMEOUT"),
+                               ([], {"HUB_POLL_SECONDS": "0"}, "HUB_POLL_SECONDS")):
+        saved = dict(host.env)
+        host.env.update(env)
+        refused = host.deploy_at(a, *args, check=False)
+        host.env = saved
+        assert refused.returncode != 0 and message in refused.stderr, (args, env, refused.stderr)
+    assert host.read(".venv-path") is None
 
 
 # -- guards -----------------------------------------------------------------------------------------------------------

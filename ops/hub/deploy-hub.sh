@@ -81,6 +81,16 @@ restore_records() {
 }
 saved_record() { [[ -f $SNAPSHOT/$1 ]]; }  # the snapshot holds a copy of this record (it existed)
 
+# The check, run as its own process from the deployment's scripts: check-hub.sh has set -e at its top level, so an
+# error inside the check ends it with a failure instead of being ignored here, where the call is part of a condition
+# (Bash turns errexit off there). It passes only on exit 0 with its closing "all passed" line.
+run_check() {
+    local output status=0
+    output=$(bash "$DEPLOY/ops/check-hub.sh" --deploy-dir "$DEPLOY" 2>&1) || status=$?
+    printf '%s\n' "$output"
+    [[ $status == 0 && $output == *$'\n''check: all passed' ]]
+}
+
 write_stamp() {  # path commit version unmerged(true|false)
     python3 -I -c '
 import json, sys, time
@@ -122,7 +132,7 @@ if ((ROLLBACK)); then
         hub_start "$(hub_json_field "$STAMP" version)" || return 1
         hub_wait "$HUB_START_TIMEOUT" hub_status_names "$(hub_json_field "$STAMP" commit)" ||
             hub_warn 'status.json did not name the restored commit in time'
-        hub_check
+        run_check
     }
     if rollback_swap; then
         rm -rf -- "$SNAPSHOT"
@@ -165,6 +175,9 @@ fi
 staged=$VENVS/$COMMIT
 [[ ! -e $staged ]] || hub_die "staged environment already exists: $staged (is $COMMIT already deployed?)"
 source_dir=$DEPLOY/.source-$COMMIT
+# The scripts deployed with the Hub are the commit's own, from the archive: not the copy running this script, which may
+# be the deployed one (<deploy-dir>/ops) of an older commit.
+ops_source=$DEPLOY/.ops-$COMMIT
 version=dry-run
 stage() {
     local python=$staged/bin/python reported static
@@ -174,6 +187,9 @@ stage() {
         printf '[dry run] git -C %s archive %s | tar -x -C %s\n' "$release" "$COMMIT" "$source_dir"
     else
         git -C "$release" archive --format=tar "$COMMIT" | tar -x -C "$source_dir" || return 1
+        [[ -f $source_dir/ops/hub/deploy-hub.sh && -f $source_dir/ops/hub/run-hub.sh ]] ||
+            { hub_warn "$COMMIT carries no Linux deployment scripts (ops/hub/*.sh)"; return 1; }
+        rm -rf -- "$ops_source" && mkdir -p -- "$ops_source" && cp -- "$source_dir"/ops/hub/*.sh "$ops_source"/ || return 1
     fi
     run "$SEED_PYTHON" -m venv "$staged" || return 1
     run "$python" "${pip[@]}" --require-hashes -r "$source_dir/requirements.lock" \
@@ -187,7 +203,7 @@ stage() {
     [[ $static == True ]] || { hub_warn 'staged Hub carries no UI'; return 1; }
 }
 if ! stage; then
-    ((DRY_RUN)) || rm -rf -- "$staged" "$source_dir"
+    ((DRY_RUN)) || rm -rf -- "$staged" "$source_dir" "$ops_source"
     hub_die "staging $COMMIT failed; nothing else was changed"
 fi
 ((DRY_RUN)) || rm -rf -- "$source_dir"
@@ -221,7 +237,7 @@ restore_unit() {
 }
 STOPPED=0
 deploy_swap() {
-    copy_ops "$here" || return 1
+    copy_ops "$ops_source" || return 1
     bash "$DEPLOY/ops/install-unit.sh" --deploy-dir "$DEPLOY" "${unit_args[@]}" || return 1
     # install-unit.sh may have changed hub.env (--port and the rest): the check reads it again.
     hub_reload_env
@@ -236,13 +252,13 @@ deploy_swap() {
     # The Hub's own heartbeat must name this commit too, not just answer.
     hub_wait "$HUB_START_TIMEOUT" hub_status_names "$COMMIT" ||
         { hub_warn "status.json did not name $COMMIT within $HUB_START_TIMEOUT s"; return 1; }
-    hub_check || return 1
+    run_check || return 1
 }
 if ! deploy_swap; then
     if ((!STOPPED)); then
         undo_ops
         restore_unit || hub_warn "restoring the unit file or hub.env failed"
-        rm -rf -- "$staged" "$SNAPSHOT"
+        rm -rf -- "$staged" "$SNAPSHOT" "$ops_source"
         hub_die "deployment failed before the Hub was stopped; nothing else was changed"
     fi
     errors=()
@@ -259,14 +275,14 @@ if ! deploy_swap; then
         fi
     fi
     rm -rf -- "$staged" || errors+=("removing $staged failed")
-    rm -rf -- "$SNAPSHOT"
+    rm -rf -- "$SNAPSHOT" "$ops_source"
     ((${#errors[@]} == 0)) || hub_die "deployment failed after the stop; rollback also failed: ${errors[*]}"
     hub_die "deployment failed after the stop; the previous deployment is restored"
 fi
 
 # The deployment stands: ops.previous goes with the environment it replaced, and the older copy is dropped.
 complete_ops
-rm -rf -- "$SNAPSHOT"
+rm -rf -- "$SNAPSHOT" "$ops_source"
 # Keep the environment this replaced for --rollback; delete the one before it.
 if [[ -n $previous_of_previous && $previous_of_previous != "$staged" && $previous_of_previous != "$previous_venv" &&
     $previous_of_previous == "$VENVS"/* ]]; then

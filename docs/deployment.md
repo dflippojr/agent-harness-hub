@@ -86,12 +86,16 @@ logs in, and the check warns. The script, in order:
    records `"unmerged": true` in `deployed.json`. One deployment runs at a time (`<deploy-dir>/.deploy.lock`).
 2. **Stage, before any downtime.** `git archive` of the commit, a new `venvs/<sha>`, `pip install --require-hashes`
    of the locked requirements, the Hub installed from the archive, and a check that it reports a version and carries
-   the UI. A failure here deletes the new environment and changes nothing else.
-3. **Swap.** Copy `ops/`, write the unit and `hub.env` and enable the unit (`install-unit.sh`), stop the Hub (the unit
+   the UI. A commit without the Linux scripts is refused here. A failure here deletes the new environment and changes
+   nothing else.
+3. **Swap.** Copy the commit's own `ops/hub/*.sh` from the archive to `ops/` (whichever copy of `deploy-hub.sh` runs,
+   the checkout's or the deployed one in `<deploy-dir>/ops`), write the unit and `hub.env` and enable the unit (`install-unit.sh`), stop the Hub (the unit
    and any process whose command line names its state directory), move `.venv-path` to `.venv-previous`, point
    `.venv-path` at the new environment, and write `deployed.json`.
 4. **Start and check.** Start the unit. `/healthz` must answer `ok` with the new version and `state/status.json` must
-   name the new commit, each within 60 s. Then the full [check](#check-it) must pass.
+   name the new commit, each within 60 s. Then the full [check](#check-it) must pass. It runs as its own process and
+   counts only when it exits 0 with its closing `check: all passed` line, so a check that cannot evaluate fails the
+   deployment instead of being skipped.
 5. **Roll back on failure.** After the stop, any failure, a failed check included, restores the previous pointers,
    records, scripts, unit file and `hub.env`, restarts the previous Hub and says so. If that restart also fails, the error says both.
 6. **Clean up.** The environment before the previous one is deleted.

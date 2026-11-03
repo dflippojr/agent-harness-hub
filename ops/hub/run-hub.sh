@@ -23,7 +23,9 @@ commit=$(hub_json_field "$STAMP" commit)
 
 mkdir -p -- "$LOGS" "$STATE"
 log=$LOGS/hub.log
-if [[ -f $log ]] && (($(stat -c %s -- "$log") > 20 * 1024 * 1024)); then mv -f -- "$log" "$log.prev"; fi
+log_size=0
+[[ -f $log ]] && log_size=$(stat -c %s -- "$log")
+if ((log_size > 20 * 1024 * 1024)); then mv -f -- "$log" "$log.prev"; fi
 printf '%s starting Hub %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$commit" >>"$LOGS/supervisor.log"
 
 args=(--daemon-url "$DAEMON_URL" --state-dir "$STATE" --host "$HUB_HOST" --port "$PORT" --status-interval "$STATUS_SECONDS")

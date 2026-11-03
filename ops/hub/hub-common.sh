@@ -13,16 +13,30 @@ HUB_HOST=127.0.0.1
 HUB_DEFAULT_PORT=8120
 HUB_DEFAULT_DAEMON_URL=http://127.0.0.1:8100
 HUB_DEFAULT_STATUS_SECONDS=60
-# How long a start may take to answer /healthz, and how often it is polled. Tests shorten them.
-HUB_START_TIMEOUT=${HUB_START_TIMEOUT:-60}
-HUB_POLL_SECONDS=${HUB_POLL_SECONDS:-2}
-
 hub_say() { printf '%s\n' "$*"; }
 hub_warn() { printf 'warning: %s\n' "$*" >&2; }
 hub_die() {
     printf 'error: %s\n' "$*" >&2
     exit 1
 }
+
+# A whole number from configuration, printed in base 10, or a failure. Every number these scripts do arithmetic on goes
+# through here first: Bash reads a leading 0 as octal, so `08` is an error, and an arithmetic error inside a condition
+# does not stop the script but quietly takes the other branch (a check that should fail would pass).
+hub_integer() {  # value min max
+    local value=$1
+    [[ $value =~ ^[0-9]{1,9}$ ]] || return 1
+    value=$((10#$value))
+    ((value >= $2 && value <= $3)) || return 1
+    printf '%s\n' "$value"
+}
+
+# How long a start may take to answer /healthz, and how often it is polled. Tests shorten them.
+HUB_START_TIMEOUT=$(hub_integer "${HUB_START_TIMEOUT:-60}" 1 3600) ||
+    hub_die "HUB_START_TIMEOUT must be a whole number of seconds from 1 to 3600: ${HUB_START_TIMEOUT:-}"
+HUB_POLL_SECONDS=${HUB_POLL_SECONDS:-2}
+[[ $HUB_POLL_SECONDS =~ ^[0-9]{1,3}(\.[0-9]{1,3})?$ && ! $HUB_POLL_SECONDS =~ ^0+(\.0*)?$ ]] ||
+    hub_die "HUB_POLL_SECONDS must be a positive number of seconds: $HUB_POLL_SECONDS"
 
 hub_default_deploy_dir() { printf '%s\n' "${HOME:?HOME is not set}/.local/share/agent-harness-hub"; }
 # The deploy directory for a script run without --deploy-dir: the deployment it was copied into (<deploy-dir>/ops,
@@ -85,8 +99,9 @@ hub_load_env() {
     PUBLIC_URL=${PUBLIC_URL:-$(hub_env_value HUB_PUBLIC_URL)}
     STATUS_SECONDS=${STATUS_SECONDS:-$(hub_env_value HUB_STATUS_SECONDS)}
     STATUS_SECONDS=${STATUS_SECONDS:-$HUB_DEFAULT_STATUS_SECONDS}
-    if ! [[ $PORT =~ ^[0-9]{1,5}$ ]] || ((10#$PORT < 1 || 10#$PORT > 65535)); then hub_die "invalid port: $PORT"; fi
-    [[ $STATUS_SECONDS =~ ^[0-9]+$ ]] || hub_die "invalid status interval: $STATUS_SECONDS"
+    PORT=$(hub_integer "$PORT" 1 65535) || hub_die "invalid port: $PORT"
+    STATUS_SECONDS=$(hub_integer "$STATUS_SECONDS" 0 86400) ||
+        hub_die "invalid status interval (whole seconds, 0 to 86400): $STATUS_SECONDS"
     [[ $DAEMON_URL =~ ^https?://[^[:space:]]+$ ]] || hub_die "invalid daemon URL: $DAEMON_URL"
     [[ -z $PUBLIC_URL || $PUBLIC_URL =~ ^https://[^[:space:]]+$ ]] || hub_die "the public URL must be https: $PUBLIC_URL"
 }
@@ -203,7 +218,7 @@ check_fail() {
 # deployed version; status.json is fresh and names the deployed commit. Prints one line per check and fails if any does.
 # Deploy and rollback end with it.
 hub_check() {
-    local enabled active started result deps dep linger commit version written written_epoch age=0 max_age
+    local enabled active started result deps dep linger commit version written written_epoch now age=0 max_age=0
     CHECK_FAILED=0
     enabled=$(systemctl --user is-enabled "$HUB_UNIT" 2>/dev/null) || true
     if [[ $enabled == enabled ]]; then
@@ -261,14 +276,24 @@ hub_check() {
         check_fail "/healthz on $HUB_HOST:$PORT does not answer ok with the deployed version $version"
     fi
 
-    if ((STATUS_SECONDS == 0)); then
+    # STATUS_SECONDS is base 10 (hub_load_env); every value compared below is computed or validated before the
+    # comparison, never inside it, so a bad value fails this check instead of skipping it.
+    if [[ -n ${HUB_STATUS_MAX_AGE:-} ]] && ! max_age=$(hub_integer "$HUB_STATUS_MAX_AGE" 1 864000); then
+        check_fail "HUB_STATUS_MAX_AGE must be a whole number of seconds: $HUB_STATUS_MAX_AGE"
+    elif [[ $STATUS_SECONDS == 0 ]]; then
         check_fail "the status interval is 0, so the Hub writes no status.json (HUB_STATUS_SECONDS in $ENV_FILE)"
     else
-        max_age=${HUB_STATUS_MAX_AGE:-$((STATUS_SECONDS * 5))}
+        [[ -n ${HUB_STATUS_MAX_AGE:-} ]] || max_age=$((STATUS_SECONDS * 5))
         written=$(hub_json_field "$STATE/status.json" written_at)
         written_epoch=''
-        [[ -n $written ]] && written_epoch=$(date -u -d "$written" +%s 2>/dev/null || true)
-        [[ -n $written_epoch ]] && age=$(($(date -u +%s) - written_epoch))
+        if [[ -n $written ]]; then
+            written_epoch=$(date -u -d "$written" +%s 2>/dev/null || true)
+            [[ $written_epoch =~ ^-?[0-9]+$ ]] || written_epoch=''
+        fi
+        if [[ -n $written_epoch ]]; then
+            now=$(date -u +%s)
+            age=$((now - written_epoch))
+        fi
         if [[ -z $written ]]; then
             check_fail "$STATE/status.json is missing or has no written_at"
         elif [[ -z $written_epoch ]]; then
@@ -282,5 +307,6 @@ hub_check() {
             check_fail "status.json names build $(hub_json_field "$STATE/status.json" build), not the deployed $commit"
         fi
     fi
+    if ((CHECK_FAILED)); then hub_say 'check: FAILED'; else hub_say 'check: all passed'; fi
     return "$CHECK_FAILED"
 }
