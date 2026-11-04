@@ -881,13 +881,15 @@ def test_a_hand_written_units_quoted_interpreter_is_found(host):
     assert "# interpreter quoted" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
 
 
-def test_a_hand_written_units_escaped_interpreter_is_found(host):
-    # systemd's C escapes: \x20 is a space in an unquoted word.
+@pytest.mark.parametrize(("assignment", "space"), [("ExecStart=", r"\x20"), ("ExecStart=", r"\s"),
+                                                   ("ExecStart = ", r"\x20")])
+def test_a_hand_written_units_escaped_interpreter_is_found(host, assignment, space):
+    # systemd's escapes for a space in an unquoted word (\x20, \s), and whitespace around the assignment's =.
     without_venv_python3(host)
     hand = venv_python(host, host.root / "hand built venv", "escaped")
     host.unit_file.parent.mkdir(parents=True)
-    escaped = str(hand).replace(" ", r"\x20")
-    host.unit_file.write_text(f"[Service]\nExecStart={escaped} -u -m harness_hub --state-dir {host.deploy}/state\n",
+    escaped = str(hand).replace(" ", space)
+    host.unit_file.write_text(f"[Service]\n{assignment}{escaped} -u -m harness_hub --state-dir {host.deploy}/state\n",
                               encoding="utf-8")
     a = host.commit("1.0.0")
     result = deploy_without_python(host, a, "--replace-unit")

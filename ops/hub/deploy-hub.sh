@@ -174,7 +174,7 @@ venv_interpreter() {
     [[ -f $(dirname -- "$(dirname -- "$path")")/pyvenv.cfg ]] || return 1
     printf '%s\n' "$path"
 }
-# The words of a systemd command line, each ended by a NUL, with systemd's quoting and C escapes (\x20, \\, \" ...)
+# The words of a systemd command line, each ended by a NUL, with systemd's quoting and C escapes (\x20, \s, \\ ...)
 # decoded: a word in "..." or '...' may hold spaces.
 unit_words() {
     local rest=$1 word
@@ -185,7 +185,8 @@ unit_words() {
         [[ $rest =~ $double || $rest =~ $single || $rest =~ $bare ]] || return 0
         rest=${BASH_REMATCH[3]}
         word=${BASH_REMATCH[1]}
-        word=${word//\\\"/\"} word=${word//\\\'/\'}  # \" and \', which printf %b leaves as they are
+        # \s (a space), \" and \': systemd's escapes that printf %b does not decode.
+        word=${word//\\s/ } word=${word//\\\"/\"} word=${word//\\\'/\'}
         word=$(printf '%b.' "$word")
         printf '%s\0' "${word%.}"
     done
@@ -197,7 +198,7 @@ deployed_interpreter() {
     local line command pid word
     if [[ -f $UNIT_FILE ]]; then
         while IFS= read -r line; do
-            [[ $line =~ ^[[:space:]]*ExecStart=[[:space:]]*(.*)$ ]] || continue
+            [[ $line =~ ^[[:space:]]*ExecStart[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
             command=${BASH_REMATCH[1]}
             [[ $command =~ ^[-@:+!]+(.*)$ ]] && command=${BASH_REMATCH[1]}  # systemd's prefixes (-, @, :, +, !)
             while IFS= read -r -d '' word; do venv_interpreter "$word" && return 0; done < <(unit_words "$command")
