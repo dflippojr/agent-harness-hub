@@ -881,6 +881,39 @@ def test_a_hand_written_units_quoted_interpreter_is_found(host):
     assert "# interpreter quoted" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
 
 
+def test_a_hand_written_units_escaped_interpreter_is_found(host):
+    # systemd's C escapes: \x20 is a space in an unquoted word.
+    without_venv_python3(host)
+    hand = venv_python(host, host.root / "hand built venv", "escaped")
+    host.unit_file.parent.mkdir(parents=True)
+    escaped = str(hand).replace(" ", r"\x20")
+    host.unit_file.write_text(f"[Service]\nExecStart={escaped} -u -m harness_hub --state-dir {host.deploy}/state\n",
+                              encoding="utf-8")
+    a = host.commit("1.0.0")
+    result = deploy_without_python(host, a, "--replace-unit")
+    assert str(hand) in result.stdout, result.stdout
+    assert "# interpreter escaped" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
+
+
+def test_a_running_hub_started_by_hand_names_its_interpreter(host):
+    # No unit names the interpreter (a wrapper started the Hub, or no unit at all): the running Hub's first argument,
+    # read with its boundaries (a space in the path), names it. bash stands in for the Hub's process; `exec -a`-style,
+    # its argv[0] is the venv interpreter, and "sleep; :" keeps bash itself running instead of exec-ing sleep.
+    without_venv_python3(host)
+    hand = venv_python(host, host.root / "hand built venv", "running")
+    state = host.deploy / "state"
+    hub = subprocess.Popen([str(hand), "-c", "sleep 60; :", "-m", "harness_hub", "--state-dir", str(state), "--x"],
+                           executable="/bin/bash")
+    try:
+        a = host.commit("1.0.0")
+        result = deploy_without_python(host, a)
+        assert str(hand) in result.stdout, result.stdout
+        assert "# interpreter running" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
+    finally:
+        hub.kill()
+        hub.wait(timeout=10)
+
+
 def test_an_upgrade_without_python_uses_the_active_environments_interpreter(host):
     without_venv_python3(host)
     seed = venv_python(host, host.root / "seed-venv", "seed")

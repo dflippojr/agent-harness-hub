@@ -174,34 +174,38 @@ venv_interpreter() {
     [[ -f $(dirname -- "$(dirname -- "$path")")/pyvenv.cfg ]] || return 1
     printf '%s\n' "$path"
 }
-# The words of a systemd command line, one per line, with systemd's quoting removed: a word in "..." or '...' may hold
-# spaces.
+# The words of a systemd command line, each ended by a NUL, with systemd's quoting and C escapes (\x20, \\, \" ...)
+# decoded: a word in "..." or '...' may hold spaces.
 unit_words() {
-    local rest=$1 double='^"([^"]*)"(.*)$' single="^'([^']*)'(.*)\$" bare='^([^[:space:]]+)(.*)$'
+    local rest=$1 word
+    local double='^"((\\.|[^"\\])*)"(.*)$' single="^'((\\\\.|[^'\\\\])*)'(.*)\$" bare='^((\\.|[^[:space:]\\])+)(.*)$'
     while :; do
         rest=${rest#"${rest%%[![:space:]]*}"}
         [[ -n $rest ]] || return 0
         [[ $rest =~ $double || $rest =~ $single || $rest =~ $bare ]] || return 0
-        printf '%s\n' "${BASH_REMATCH[1]}"
-        rest=${BASH_REMATCH[2]}
+        rest=${BASH_REMATCH[3]}
+        word=${BASH_REMATCH[1]}
+        word=${word//\\\"/\"} word=${word//\\\'/\'}  # \" and \', which printf %b leaves as they are
+        word=$(printf '%b.' "$word")
+        printf '%s\0' "${word%.}"
     done
 }
 # The interpreter of a Hub this script did not deploy (no .venv-path yet): the environment a hand-written unit's
-# ExecStart names, else the one a running Hub on this state directory was started with. Nothing when neither names one.
+# ExecStart names, else the one a running Hub on this state directory was started with (its first argument, read from
+# /proc, where argument boundaries survive). Nothing when neither names one.
 deployed_interpreter() {
-    local line command pid args words word
+    local line command pid word
     if [[ -f $UNIT_FILE ]]; then
         while IFS= read -r line; do
             [[ $line =~ ^[[:space:]]*ExecStart=[[:space:]]*(.*)$ ]] || continue
             command=${BASH_REMATCH[1]}
             [[ $command =~ ^[-@:+!]+(.*)$ ]] && command=${BASH_REMATCH[1]}  # systemd's prefixes (-, @, :, +, !)
-            while IFS= read -r word; do venv_interpreter "$word" && return 0; done < <(unit_words "$command")
+            while IFS= read -r -d '' word; do venv_interpreter "$word" && return 0; done < <(unit_words "$command")
         done <"$UNIT_FILE"
     fi
     for pid in $(hub_processes); do
-        args=$(ps -o args= -p "$pid" 2>/dev/null) || continue
-        read -ra words <<<"$args"
-        ((${#words[@]})) && venv_interpreter "${words[0]}" && return 0
+        IFS= read -r -d '' word <"/proc/$pid/cmdline" 2>/dev/null || continue
+        venv_interpreter "$word" && return 0
     done
     return 0
 }
