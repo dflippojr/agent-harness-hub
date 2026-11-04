@@ -178,28 +178,53 @@ venv_interpreter() {
 # The words of a systemd command line, each ended by a NUL, with systemd's quoting and C escapes (\x20, \s, \\ ...)
 # decoded: a word in "..." or '...' may hold spaces.
 unit_words() {
-    local rest=$1 word
+    local rest=$1
     local double='^"((\\.|[^"\\])*)"(.*)$' single="^'((\\\\.|[^'\\\\])*)'(.*)\$" bare='^((\\.|[^[:space:]\\])+)(.*)$'
     while :; do
         rest=${rest#"${rest%%[![:space:]]*}"}
         [[ -n $rest ]] || return 0
         [[ $rest =~ $double || $rest =~ $single || $rest =~ $bare ]] || return 0
         rest=${BASH_REMATCH[3]}
-        word=${BASH_REMATCH[1]}
-        # \s (a space), \" and \': systemd's escapes that printf %b does not decode.
-        word=${word//\\s/ } word=${word//\\\"/\"} word=${word//\\\'/\'}
-        word=$(printf '%b.' "$word")
-        printf '%s\0' "${word%.}"
+        unit_unescape "${BASH_REMATCH[1]}"
+        printf '%s\0' "$UNESCAPED"
+    done
+}
+# systemd's C escapes decoded in one pass, left to right, into UNESCAPED: \xHH, \NNN (octal), \uXXXX, \s (a space),
+# \n \t \r \a \b \f \v, and a backslash before any other character (\\, \", \') stands for that character.
+unit_unescape() {
+    local rest=$1 char
+    local hex='^\\x([0-9a-fA-F]{2})(.*)$' octal='^\\([0-7]{3})(.*)$' unicode='^\\u([0-9a-fA-F]{4})(.*)$'
+    local other='^\\(.)(.*)$'
+    UNESCAPED=''
+    while [[ -n $rest ]]; do
+        if [[ $rest =~ $hex ]]; then
+            printf -v char %b "\\x${BASH_REMATCH[1]}"
+        elif [[ $rest =~ $octal ]]; then
+            printf -v char %b "\\0${BASH_REMATCH[1]}"
+        elif [[ $rest =~ $unicode ]]; then
+            printf -v char %b "\\u${BASH_REMATCH[1]}"
+        elif [[ $rest =~ $other ]]; then
+            case ${BASH_REMATCH[1]} in
+                s) char=' ' ;; n) char=$'\n' ;; t) char=$'\t' ;; r) char=$'\r' ;;
+                a) char=$'\a' ;; b) char=$'\b' ;; f) char=$'\f' ;; v) char=$'\v' ;;
+                *) char=${BASH_REMATCH[1]} ;;
+            esac
+        else
+            UNESCAPED+=${rest:0:1} rest=${rest:1}
+            continue
+        fi
+        UNESCAPED+=$char rest=${BASH_REMATCH[2]}
     done
 }
 # The command lines the unit's [Service] ExecStart= runs, each ended by a NUL, as systemd reads them: a line ending in \
-# continues on the next, comments are skipped, and an empty ExecStart= clears the ones before it.
+# continues on the next, comment lines are skipped (also inside a continued one), and an empty ExecStart= clears the ones before it.
 unit_exec_starts() {
     local line logical='' section='' commands=()
     while IFS= read -r line || [[ -n $line ]]; do
+        # A comment line is skipped, even between the lines of a continued one.
+        [[ $line =~ ^[[:space:]]*[\#\;] ]] && continue
         if [[ $line == *\\ ]]; then logical+="${line%\\} "; continue; fi
         line=$logical$line logical=''
-        [[ $line =~ ^[[:space:]]*[\#\;] ]] && continue
         if [[ $line =~ ^[[:space:]]*\[(.*)\][[:space:]]*$ ]]; then section=${BASH_REMATCH[1]}; continue; fi
         [[ $section == Service && $line =~ ^[[:space:]]*ExecStart[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
         if [[ -z ${BASH_REMATCH[1]} ]]; then commands=(); else commands+=("${BASH_REMATCH[1]}"); fi

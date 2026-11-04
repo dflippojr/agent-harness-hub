@@ -897,7 +897,7 @@ def test_a_hand_written_units_escaped_interpreter_is_found(host, assignment, spa
     assert "# interpreter escaped" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("layout", ["continued", "reset"])
+@pytest.mark.parametrize("layout", ["continued", "reset", "comment-in-continuation"])
 def test_a_hand_written_unit_is_read_as_systemd_reads_it(host, layout):
     # A command continued on the next line (a trailing \), and an empty ExecStart= that clears an earlier one.
     without_venv_python3(host)
@@ -906,6 +906,8 @@ def test_a_hand_written_unit_is_read_as_systemd_reads_it(host, layout):
     state = f"--state-dir {host.deploy}/state"
     if layout == "continued":
         service = f"# ExecStart={old} {state}\nExecStart=/usr/bin/env \\\n    {hand} -u -m harness_hub {state}\n"
+    elif layout == "comment-in-continuation":
+        service = f"ExecStart=/usr/bin/env \\\n# the interpreter:\n    {hand} -u -m harness_hub {state}\n"
     else:
         service = f"ExecStart={old} -u -m harness_hub {state}\nExecStart=\nExecStart={hand} -u -m harness_hub {state}\n"
     host.unit_file.parent.mkdir(parents=True)
@@ -930,6 +932,18 @@ def test_a_candidate_that_cannot_create_a_venv_is_skipped_for_the_next(host):
     result = deploy_without_python(host, a, "--replace-unit")
     assert f"{broken}/bin/python" in result.stderr and "skipped" in result.stderr, result.stderr
     assert "# interpreter working" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
+
+
+def test_a_hand_written_units_escaped_backslash_is_a_literal_backslash(host):
+    # \\s is a backslash and an s, not a backslash and a space: escapes decode in one pass.
+    without_venv_python3(host)
+    hand = venv_python(host, host.root / "venv\\stable", "backslash")
+    host.unit_file.parent.mkdir(parents=True)
+    escaped = str(hand).replace("\\", "\\\\")
+    host.unit_file.write_text(f"[Service]\nExecStart={escaped} -u -m harness_hub\n", encoding="utf-8")
+    a = host.commit("1.0.0")
+    deploy_without_python(host, a, "--replace-unit")
+    assert "# interpreter backslash" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
 
 
 def test_a_running_hub_started_by_hand_names_its_interpreter(host):
