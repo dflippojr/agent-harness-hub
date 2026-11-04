@@ -7,15 +7,18 @@ file. How the Hub is deployed is in [deployment.md](deployment.md).
 
 ## Where it runs
 
-The Hub runs on the tower, next to the agent-harness daemon, as the `AgentHarness-Hub` logon task. It listens on
-`127.0.0.1:8120` only. Its files are under `D:\Agents\agent-harness-hub`:
+The Hub runs on the tower, next to the agent-harness daemon, as the `agent-harness-hub.service` systemd user unit
+([deployment.md](deployment.md), "Linux"). It listens on `127.0.0.1:8120` only. Its files are under
+`~/.local/share/agent-harness-hub`:
 
 | Path | What |
 | --- | --- |
-| `deployed.json` | `commit`, `version`, `deployed_at`, `unmerged`: written by `ops/hub/deploy-hub.ps1` |
-| `state\status.json` | the Hub's heartbeat, rewritten every 60 s (below). Owner-only; nothing serves it over HTTP |
-| `logs\hub.log` | the Hub's log (Python logging format, plus uvicorn's own lines), rotated at 20 MB |
-| `logs\supervisor.log` | the supervisor's start and exit lines |
+| `deployed.json` | `commit`, `version`, `deployed_at`, `unmerged`: written by `ops/hub/deploy-hub.sh` |
+| `state/status.json` | the Hub's heartbeat, rewritten every 60 s (below). Owner-only; nothing serves it over HTTP |
+| `logs/hub.log` | the Hub's log (Python logging format, plus uvicorn's own lines), rotated at 20 MB |
+| `logs/supervisor.log` | one line per start, with the commit it runs |
+
+`ops/hub/check-hub.sh` checks all of it at once, the unit's state included (deployment.md, "Check it").
 
 `status.json` holds typed values only, never a credential:
 
