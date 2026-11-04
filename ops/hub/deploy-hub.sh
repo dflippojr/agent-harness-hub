@@ -14,6 +14,10 @@
 # previous pointers, records and scripts and restarts the previous Hub; a failed deployment never becomes "previous". It
 # keeps the previous environment for --rollback and deletes older ones.
 #
+# The environment is built with --python, else the interpreter of the deployed Hub's environment (.venv-path, or on a
+# first deployment the one a hand-written unit's ExecStart or a running Hub names), else python3. An interpreter that
+# cannot create a virtual environment (no ensurepip: Debian's python3.X-venv package) is refused before anything changes.
+#
 # By default the commit must already be on origin/main. --allow-unmerged is for a trial deployment of a pull request's
 # head; it is recorded in deployed.json and printed, and the next deployment from main replaces it.
 #
@@ -25,7 +29,7 @@ source "$here/hub-common.sh"
 # shellcheck source=hub-ops.sh
 source "$here/hub-ops.sh"
 
-usage() { sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 COMMIT='' RELEASE_ROOT='' deploy_dir='' SEED_PYTHON='' ALLOW_UNMERGED=0 ROLLBACK=0 DRY_RUN=0
 PORT='' DAEMON_URL='' PUBLIC_URL='' STATUS_SECONDS='' unit_args=()
 while (($#)); do
@@ -162,6 +166,50 @@ if ((ROLLBACK)); then
     hub_die "rollback failed; the previous state is restored and its Hub answers /healthz${notes[*]:+ (${notes[*]})}"
 fi
 
+# -- the interpreter the environment is built with --------------------------------------------------------------------
+# A virtual environment's interpreter (an absolute <venv>/bin/python*, with <venv>/pyvenv.cfg), printed, or a failure.
+venv_interpreter() {
+    local path=$1
+    [[ $path == /* && $(basename -- "$path") == python* && -x $path ]] || return 1
+    [[ -f $(dirname -- "$(dirname -- "$path")")/pyvenv.cfg ]] || return 1
+    printf '%s\n' "$path"
+}
+# The interpreter of a Hub this script did not deploy (no .venv-path yet): the environment a hand-written unit's
+# ExecStart names, else the one a running Hub on this state directory was started with. Nothing when neither names one.
+deployed_interpreter() {
+    local line pid args words word
+    if [[ -f $UNIT_FILE ]]; then
+        while IFS= read -r line; do
+            [[ $line =~ ^[[:space:]]*ExecStart=(.*)$ ]] || continue
+            read -ra words <<<"${BASH_REMATCH[1]}"
+            for word in "${words[@]}"; do venv_interpreter "${word#[-@:+!]}" && return 0; done
+        done <"$UNIT_FILE"
+    fi
+    for pid in $(hub_processes); do
+        args=$(ps -o args= -p "$pid" 2>/dev/null) || continue
+        read -ra words <<<"$args"
+        ((${#words[@]})) && venv_interpreter "${words[0]}" && return 0
+    done
+    return 0
+}
+current_venv=$(hub_read_pointer "$POINTER")
+if [[ -n $SEED_PYTHON ]]; then
+    python_source='--python'
+elif [[ -n $current_venv && -x $current_venv/bin/python ]]; then
+    SEED_PYTHON=$current_venv/bin/python python_source='the deployed environment, .venv-path'
+elif [[ -z $current_venv ]] && SEED_PYTHON=$(deployed_interpreter) && [[ -n $SEED_PYTHON ]]; then
+    python_source='the running Hub'"'"'s environment'
+else
+    SEED_PYTHON=python3 python_source='the default'
+fi
+# ensurepip is what `-m venv` needs and what Debian and Ubuntu leave out of the system Python (python3.X-venv).
+if ! "$SEED_PYTHON" -I -c 'import ensurepip, venv' >/dev/null 2>&1; then
+    hub_die "$SEED_PYTHON ($python_source) cannot create a virtual environment: it is missing, or has no ensurepip" \
+        "(on Debian and Ubuntu, install python3-venv for that version). Pass --python with an interpreter that can," \
+        "such as the Python 3.12 the Hub's CI uses (docs/deployment.md); nothing was changed"
+fi
+hub_say "[deploy] building the environment with $SEED_PYTHON ($python_source)"
+
 # -- guards -----------------------------------------------------------------------------------------------------------
 release=$(cd -- "${RELEASE_ROOT:-$here/../..}" && pwd) || hub_die "no release checkout: ${RELEASE_ROOT:-$here/../..}"
 [[ -e $release/.git ]] || hub_die "release checkout is not a git repository: $release"
@@ -180,10 +228,6 @@ fi
 hub_say '[deploy] guards passed'
 
 # -- stage the environment before any downtime ------------------------------------------------------------------------
-current_venv=$(hub_read_pointer "$POINTER")
-if [[ -z $SEED_PYTHON ]]; then
-    if [[ -n $current_venv && -x $current_venv/bin/python ]]; then SEED_PYTHON=$current_venv/bin/python; else SEED_PYTHON=python3; fi
-fi
 staged=$VENVS/$COMMIT
 [[ ! -e $staged ]] || hub_die "staged environment already exists: $staged (is $COMMIT already deployed?)"
 source_dir=$DEPLOY/.source-$COMMIT
@@ -203,7 +247,8 @@ stage() {
             { hub_warn "$COMMIT carries no Linux deployment scripts (ops/hub/*.sh)"; return 1; }
         rm -rf -- "$ops_source" && mkdir -p -- "$ops_source" && cp -- "$source_dir"/ops/hub/*.sh "$ops_source"/ || return 1
     fi
-    run "$SEED_PYTHON" -m venv "$staged" || return 1
+    run "$SEED_PYTHON" -m venv "$staged" ||
+        { hub_warn "$SEED_PYTHON could not create $staged; choose another interpreter with --python"; return 1; }
     run "$python" "${pip[@]}" --require-hashes -r "$source_dir/requirements.lock" \
         -r "$source_dir/requirements-build.lock" || return 1
     run "$python" "${pip[@]}" --no-deps --no-build-isolation "$source_dir" || return 1
