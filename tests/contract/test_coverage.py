@@ -35,8 +35,10 @@ def hub_calls() -> set[str]:
                                                  daemon.ADMIN_ROUTES) for method, path in table.values()}
     calls |= {"GET /health", f"POST {daemon.CLAIM_REQUESTS}", f"POST {daemon.CLAIM_REQUESTS}/{{}}/token",
               f"GET {a}/hub"}
-    # DaemonClient.admin(token, path) reads; server.py names each path.
-    server = (Path(daemon.__file__).parent / "server.py").read_text(encoding="utf-8")
+    # DaemonClient.admin(token, path) reads; server.py and the routers it adds (#190) name each path.
+    package = Path(daemon.__file__).parent
+    server = "".join(path.read_text(encoding="utf-8")
+                     for path in (package / "server.py", *(package / "routes").glob("*.py")))
     calls |= {f"GET {a}{path}" for path in re.findall(r'daemon\.admin\([^,()]+(?:\[[^]]*\])?(?:, "([^"]*)")?\)',
                                                        server)}
     return {normal(call) for call in calls}

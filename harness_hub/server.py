@@ -14,7 +14,6 @@ import logging
 import time
 from functools import partial
 from importlib import resources
-from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request
@@ -32,9 +31,10 @@ from .inventory import InventoryCache, valid_inventory
 from .routes import apps as apps_routes
 from .routes import common
 from .routes import marketplace as marketplace_routes
+from .routes import overview as overview_routes
 from .routes import session as session_routes
 from .routes import settings as settings_routes
-from .routes.common import HubContext, concurrently, settled
+from .routes.common import HubContext, concurrently
 from .routes.common import error as _error
 from .routes.common import json_body as _json_body  # noqa: F401 (re-exported: tests import it from here)
 from .routes.common import unclaimed as _unclaimed
@@ -45,12 +45,6 @@ from .status import StatusReporter
 from .tailnet import PeerCheck, TailnetIdentity
 from .views import (
     ID_SEGMENT,
-    apps_view,
-    health_view,
-    module_view,
-    overview,
-    ownership_view,
-    pairing_attention,
     settings_error,
     spend_view,
 )
@@ -176,98 +170,9 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
 
     session_routes.add_routes(app)
 
-    pairing_consent_lock = hub.pairing_consent_lock
-    retained, refused = partial(common.retained, hub), partial(common.refused, hub)
-    read_inventory = partial(common.read_inventory, hub)
-    observe_browser_slots = partial(marketplace_routes.observe_browser_slots, hub)
-    observe_recovery = partial(settings_routes.observe_recovery, hub)
-    observe_restart = partial(settings_routes.observe_restart, hub)
+    overview_routes.add_routes(app)
 
-    @app.get("/api/overview")
-    async def get_overview():
-        health, ownership, attention, error, answered = None, None, None, "", False
-        key = claims.key()
-
-        async def read_pairing() -> Any:
-            # Under the consent lock, as the other listings, so no count is published during a withdrawal.
-            async with pairing_consent_lock:
-                reply = await daemon.pairing(key["token"], "list")
-                if reply.ok and isinstance(reply.body, list):
-                    observe_browser_slots(reply.body, key["key_id"])
-                return reply
-
-        # The pairing read can wait on the consent lock for as long as an arm request holds it, so it runs beside the
-        # other reads and is awaited only when all of them succeed, and then only until its deadline; a refused or
-        # failed read, or the deadline, cancels it instead.
-        pairing_task = asyncio.ensure_future(read_pairing()) if key else None
-        deadline = asyncio.get_running_loop().time() + PAIRING_COUNT_SECONDS
-        health_generation = hub.restart["generation"]
-        try:
-            reads = await concurrently(daemon.health(), *(
-                (daemon.admin(key["token"]), daemon.admin(key["token"], "/hub-claim")) if key else ()))
-            reply = settled(reads[0])
-            answered = True
-            if reply.ok:
-                health = health_view(reply.body)
-            else:
-                error = f"the daemon's /health answered HTTP {reply.status}"
-            if key:
-                discovery, record = settled(reads[1]), settled(reads[2])
-                if 401 in (discovery.status, record.status):
-                    error = await retained(key["token"]) or error
-                elif not (discovery.ok and record.ok):
-                    error = f"the owner API answered HTTP {discovery.status if not discovery.ok else record.status}"
-                else:
-                    ownership = ownership_view(discovery.body, record.body, key["key_id"])
-                    if health is not None:
-                        remaining = deadline - asyncio.get_running_loop().time()
-                        await asyncio.wait({pairing_task}, timeout=max(0.0, remaining))
-                        pairing = None
-                        # A missing count never changes what Overview reports about the daemon.
-                        with contextlib.suppress(DaemonUnreachable):
-                            pairing = pairing_task.result() if pairing_task.done() else None
-                        if pairing is not None and pairing.status == 401:
-                            # Outside the suppress above: an unanswered confirmation is the daemon not answering.
-                            refusal = await retained(key["token"])
-                            error, ownership = (refusal, ownership) if refusal else (error, None)
-                        elif pairing is not None and pairing.ok:
-                            attention = pairing_attention(pairing.body, time.time())
-        except DaemonUnreachable:
-            # As after a discovery refusal, ownership the daemon refused once is not shown when it cannot confirm it.
-            ownership = None
-            error = f"the daemon at {settings.daemon_url} did not answer"
-        finally:
-            if pairing_task:
-                pairing_task.cancel()
-                await concurrently(pairing_task)
-        result = overview(claims, settings.daemon_url, health, ownership, error)
-        if health:
-            observe_recovery(health["health"]["recovery"])
-        observe_restart(health["health"] if health else None, health_generation)
-        result["answered"] = answered
-        result["restarting"] = hub.restart["active"]
-        result["attention"] = attention
-        return result
-
-    @app.get("/api/apps")
-    @app.get("/api/modules")
-    async def get_modules(request: Request):
-        key = claims.key()
-        if key is None:
-            return _unclaimed("Claim this Hub on Overview before reading inventory.")
-        apps_page = request.url.path == "/api/apps"
-        result = await read_inventory(key, (lambda body: apps_view(body, key["key_id"], tuple(store.secrets())))
-                                      if apps_page else module_view)
-        if isinstance(result, JSONResponse):
-            return result
-        good, state, error, reachable = result
-        if apps_page:
-            shown = apps_view(good["inventory"], key["key_id"], tuple(store.secrets())) if good else {
-                "apps": None, "entries": []}
-        else:
-            shown = {"modules": module_view(good["inventory"]) if good else None}
-        return {"state": state, "error": error, "stale": state != "ready" and good is not None,
-                "reachable": reachable, "fetched_at": good["fetched_at"] if good else None, **shown}
+    refused = partial(common.refused, hub)
 
     async def refused_spend(token: str) -> JSONResponse:
         """A 401 during a Spend read; the refusal's own confirmation read may also go unanswered."""
