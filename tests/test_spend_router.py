@@ -19,3 +19,11 @@ def test_no_api_route_is_create_apps_own(tmp_path):
     own = sorted(route.path for route in app.routes if getattr(route, "path", "").startswith("/api/")
                  and route.endpoint.__module__ == "harness_hub.server")
     assert own == []
+
+
+def test_spend_that_would_show_a_credential_is_withheld(claimed, fake_daemon, monkeypatch):
+    """The 502 the move had to keep working: `get_spend` calls `common.error`, not its stale-read message (#190)."""
+    monkeypatch.setattr(overview_routes, "spend_view", lambda *args: {"apps": [], "backends": [fake_daemon.hub_token]})
+    reply = claimed.get("/api/spend")
+    assert reply.status_code == 502
+    assert reply.json() == {"detail": "Spend withheld: it contained a credential-like string."}
