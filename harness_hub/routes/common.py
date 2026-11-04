@@ -45,6 +45,11 @@ class HubContext:
     browser_slot_states: dict[tuple[str, str], tuple[str, bool]] = field(default_factory=dict)
     # Bound to the Hub key and the entry's displayed identity, with a bounded ten-minute lifetime.
     consent_copies: dict[tuple[str, str], tuple[str, float, list[dict], bool]] = field(default_factory=dict)
+    # A restart the Hub asked for, until health shows it done: {"active", "target", "generation", "not_before"}.
+    restart: dict[str, Any] = field(
+        default_factory=lambda: {"active": False, "target": None, "generation": 0, "not_before": 0.0})
+    # The newest distinct recoveries any daemon reply reported, oldest first, to name in a restart's 202 (#143).
+    recoveries: list[dict] = field(default_factory=list)
 
 
 def hub(request: Request) -> HubContext:

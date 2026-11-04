@@ -1,5 +1,6 @@
 """The manage router (#190, stage 5a): the daemon-administration handlers live in `routes/settings.py`, and the claim
-routes join the session router in `routes/session.py`, each reaching the Hub's state through its `HubContext`."""
+routes join the session router in `routes/session.py`, each reaching the Hub's state through its `HubContext`. The
+Settings routes (stage 5b) join `routes/settings.py`, with the restart and recovery state on the `HubContext`."""
 
 from __future__ import annotations
 
@@ -17,3 +18,13 @@ def test_the_manage_and_claim_routes_are_the_routers_handlers(tmp_path):
     assert manage == {settings_routes.administration_catalog, settings_routes.administration_action}
     assert {method: handlers[("/api/claim", method)] for method in ("GET", "POST", "DELETE")} == {
         "GET": session_routes.get_claim, "POST": session_routes.start_claim, "DELETE": session_routes.forget_claim}
+
+
+def test_the_settings_routes_are_the_routers_handlers_with_the_restart_state_on_the_hub(tmp_path):
+    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).fastapi
+    handlers = {route.path: route.endpoint for route in app.routes
+                if getattr(route, "path", "").startswith("/api/settings/")}
+    assert handlers == {"/api/settings/health": settings_routes.settings_health,
+                        "/api/settings/{resource:path}": settings_routes.settings_action}
+    assert app.state.hub.restart == {"active": False, "target": None, "generation": 0, "not_before": 0.0}
+    assert app.state.hub.recoveries == []
