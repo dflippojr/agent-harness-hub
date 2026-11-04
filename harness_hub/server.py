@@ -36,11 +36,8 @@ from .routes import session as session_routes
 from .routes import settings as settings_routes
 from .routes.common import HubContext, concurrently, settled
 from .routes.common import error as _error
-from .routes.common import forwarded as _forwarded
 from .routes.common import json_body as _json_body  # noqa: F401 (re-exported: tests import it from here)
-from .routes.common import read_json as _read_json
 from .routes.common import unclaimed as _unclaimed
-from .routes.common import unreachable as _unreachable
 from .routes.session import MAX_SIGNIN_BODY as MAX_SIGNIN_BODY  # re-exported: tests import it from here
 from .routes.session import SIGNIN_COMMAND
 from .state import SERVER_FILE, StateStore, write_private
@@ -49,14 +46,11 @@ from .tailnet import PeerCheck, TailnetIdentity
 from .views import (
     ID_SEGMENT,
     apps_view,
-    control_view,
     health_view,
-    memory_route_absent,
     module_view,
     overview,
     ownership_view,
     pairing_attention,
-    registry_view,
     settings_error,
     spend_view,
 )
@@ -155,28 +149,6 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     app.state.inventory = inventory
     app.state.hub = hub = HubContext(settings=settings, store=store, daemon=daemon, claims=claims, sessions=sessions,
                                      inventory=inventory, peer_check=peer_check)
-    restart = {"active": False, "target": None, "generation": 0, "not_before": 0.0}
-    recoveries: list[dict] = []  # the newest distinct recoveries any daemon reply reported, oldest first
-
-    def observe_recovery(recovery: dict | None) -> None:
-        """Remember a recovery a daemon reply reported. Any reply the Hub has before it asks for a restart was sampled
-        before that restart, so these are the recoveries the shell must not take for one of it (#143). One the response
-        guard would withhold is not kept: the page never had it, and naming it would withhold every restart reply."""
-        if recovery and recovery not in recoveries and not leaks(json.dumps(recovery).encode(), store.secrets()):
-            recoveries.append(recovery)
-            del recoveries[:-KNOWN_RECOVERIES]
-
-    def observe_restart(shown: dict | None, health_generation: int) -> None:
-        """End a restart the Hub started once the daemon answers healthy with confirmed settings, at the target revision
-        or a later one (a save made during the restart, which the restarted daemon reports), or after a recovery. Only
-        a health request begun since this restart can end it. Overview and the Settings health poll both look, so
-        neither page has to stay open."""
-        revision = shown["config_revision"] if shown else None
-        if (health_generation == restart["generation"] and time.monotonic() >= restart["not_before"]
-                and shown and shown["ok"] and shown["config_confirmed"]) and (
-                restart["target"] is None or isinstance(revision, int) and revision >= restart["target"]
-                or shown["recovery"]):
-            restart["active"] = False
 
     @app.middleware("http")
     async def require_owner(request: Request, call_next):
@@ -208,6 +180,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     retained, refused = partial(common.retained, hub), partial(common.refused, hub)
     read_inventory = partial(common.read_inventory, hub)
     observe_browser_slots = partial(marketplace_routes.observe_browser_slots, hub)
+    observe_recovery = partial(settings_routes.observe_recovery, hub)
+    observe_restart = partial(settings_routes.observe_restart, hub)
 
     @app.get("/api/overview")
     async def get_overview():
@@ -227,7 +201,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
         # failed read, or the deadline, cancels it instead.
         pairing_task = asyncio.ensure_future(read_pairing()) if key else None
         deadline = asyncio.get_running_loop().time() + PAIRING_COUNT_SECONDS
-        health_generation = restart["generation"]
+        health_generation = hub.restart["generation"]
         try:
             reads = await concurrently(daemon.health(), *(
                 (daemon.admin(key["token"]), daemon.admin(key["token"], "/hub-claim")) if key else ()))
@@ -271,7 +245,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             observe_recovery(health["health"]["recovery"])
         observe_restart(health["health"] if health else None, health_generation)
         result["answered"] = answered
-        result["restarting"] = restart["active"]
+        result["restarting"] = hub.restart["active"]
         result["attention"] = attention
         return result
 
@@ -360,85 +334,6 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     apps_routes.add_routes(app)
 
     settings_routes.add_routes(app)
-
-    @app.get("/api/settings/health")
-    async def settings_health():
-        health_generation = restart["generation"]
-        try:
-            reply = await daemon.health()
-        except DaemonUnreachable:
-            return {"reachable": False, "answered": False, "restarting": restart["active"], "health": None}
-        shown = health_view(reply.body)["health"] if reply.ok else None
-        if shown:
-            observe_recovery(shown["recovery"])
-        observe_restart(shown, health_generation)
-        # reachable: a health answer was read; answered: the daemon replied at all, a 503 mid-restart included.
-        return {"reachable": reply.ok, "answered": True, "status": reply.status, "restarting": restart["active"],
-                "health": shown}
-
-    @app.api_route("/api/settings/{resource:path}", methods=["GET", "POST", "PUT", "PATCH"])
-    async def settings_action(resource: str, request: Request):
-        operations = {
-            ("GET", "schema"): "schema", ("GET", "config"): "config",
-            ("POST", "validate"): "validate", ("PATCH", "config"): "save",
-            ("POST", "rollback"): "rollback", ("POST", "restart"): "restart",
-            ("GET", "smart-approvals"): "smart", ("PUT", "smart-approvals"): "smart_save",
-            ("GET", "backends"): "backends", ("PUT", "backend"): "backend_save",
-            ("GET", "memory"): "memory", ("PUT", "memory"): "memory_save",
-            ("GET", "github"): "github", ("PUT", "github"): "github_save",
-            ("GET", "google"): "google", ("POST", "notify"): "notify",
-        }
-        operation = operations.get((request.method, resource))
-        if operation is None:
-            return _error(404, "unknown Settings operation")
-        key = claims.key()
-        if key is None:
-            return _unclaimed("Claim this Hub on Overview before administering Settings.")
-        body, name = None, ""
-        if request.method != "GET":
-            body = await _read_json(request, 262144, "Settings", "Settings writes require a same-origin Origin")
-            fields = {"validate": {"revision", "changes"}, "save": {"revision", "changes"},
-                      "rollback": {"revision", "confirm"}, "restart": {"revision", "confirm"},
-                      "smart_save": {"mode"}, "backend_save": {"name", "model", "effort"},
-                      "memory_save": {"content", "summary"}, "github_save": {"enabled"}, "notify": set()}
-            if not isinstance(body, dict) or set(body) - fields[operation]:
-                return _error(400, "unexpected Settings fields")
-            if operation in ("validate", "save", "rollback", "restart") and (
-                    type(body.get("revision")) is not int or body["revision"] < 0):
-                return _error(400, "a non-negative settings revision is required")
-            if operation in ("validate", "save") and not isinstance(body.get("changes"), dict):
-                return _error(400, "changes must be an object")
-            if operation in ("rollback", "restart") and body.get("confirm") is not True:
-                return _error(400, "confirm this action in the page first")
-            if operation == "backend_save":
-                name = body.pop("name", "")
-                if not isinstance(name, str) or not ID_SEGMENT.fullmatch(name):
-                    return _error(400, "invalid backend name")
-            if operation == "github_save" and type(body.get("enabled")) is not bool:
-                return _error(400, "enabled must be a boolean")
-        # Taken before the restart is asked for: a reply that comes in while it is under way may already be from it.
-        known = list(recoveries)
-        try:
-            reply = await daemon.settings(key["token"], operation, body, name)
-            if reply.status == 401:
-                return await refused(key["token"])
-        except DaemonUnreachable:
-            return _unreachable("The daemon did not answer. Check its health before repeating a write.")
-        if operation == "memory" and reply.status == 404 and memory_route_absent(reply.body):
-            return JSONResponse(control_view(operation, {"enabled": False}, installed=False))
-        if not reply.ok:
-            return _forwarded(reply)
-        shown = registry_view(reply.body) if operation in (
-            "schema", "config", "validate", "save", "rollback", "restart") else control_view(operation, reply.body)
-        if operation in ("config", "save", "rollback", "restart"):
-            observe_recovery(shown["recovery"])
-        if operation == "restart" and isinstance(reply.body, dict) and reply.body.get("accepted") is True:
-            accepted_at = time.monotonic()
-            restart.update(active=True, target=reply.body.get("target_revision"), generation=restart["generation"] + 1,
-                           not_before=accepted_at + RESTART_GRACE_SECONDS)
-            # The recoveries known before this restart: the shell keeps them from ending its target (#143).
-            shown["known_recoveries"] = known
-        return JSONResponse(shown, status_code=reply.status)
 
     session_routes.add_claim_routes(app)
 
