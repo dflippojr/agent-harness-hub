@@ -79,16 +79,18 @@ loginctl show-user "$USER" -p Linger  # Linger=yes: the Hub starts at boot witho
 so the interpreter must be Python 3.12 or later and able to create one: it needs the `venv` and `ensurepip` modules.
 Debian and Ubuntu leave `ensurepip` out of the system Python unless the matching `python3-venv` package
 (`python3.X-venv`) is installed, and the system `python3` may be a newer version than the Hub is tested on. Choose the
-Python the Hub's tests and CI use (3.12, `.github/workflows/ci.yml`). Without `--python`, the script uses, in order:
+Python the Hub's tests and CI use (3.12, `.github/workflows/ci.yml`). Without `--python`, the script uses the first
+of these that can create an environment:
 
 1. the interpreter of the active environment (`<deploy-dir>/.venv-path`), so later deployments need no `--python`;
-2. on a first deployment over a Hub this script did not deploy, the virtual environment's `bin/python*` that the
-   hand-written unit's `ExecStart=` names, or that the running Hub on `<deploy-dir>/state` was started with;
+2. on a first deployment over a Hub this script did not deploy (no `.venv-path` yet), the virtual environment's
+   `bin/python*` that the running Hub on `<deploy-dir>/state` was started with, then those the hand-written unit's
+   `ExecStart=` names (read as systemd reads it: quoting, escapes, continued lines, an empty `ExecStart=` reset);
 3. `python3`.
 
-It checks the chosen interpreter can create an environment before the guards, and refuses before anything changes
-(no download, no environment, no service change) with an error naming `--python` and `python3-venv` when it cannot.
-It prints which interpreter it uses.
+It checks this before the guards. When none can (or a `--python` interpreter cannot), it refuses before anything
+changes (no download, no environment, no service change), with an error that lists what it tried and names `--python`
+and `python3-venv`. It prints which interpreter it uses, and warns about any it skipped.
 
 `--dry-run` prints every step without running one. `--port` and `--daemon-url` (defaults `8120` and
 `http://127.0.0.1:8100`) and `--public-url` are written to `hub.env`, and later runs keep them. If `Linger=no`, run

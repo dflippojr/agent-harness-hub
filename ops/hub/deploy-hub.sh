@@ -15,8 +15,9 @@
 # keeps the previous environment for --rollback and deletes older ones.
 #
 # The environment is built with --python, else the interpreter of the deployed Hub's environment (.venv-path, or on a
-# first deployment the one a hand-written unit's ExecStart or a running Hub names), else python3. An interpreter that
-# cannot create a virtual environment (no ensurepip: Debian's python3.X-venv package) is refused before anything changes.
+# first deployment the one a running Hub or a hand-written unit's ExecStart names), else python3: the first of them
+# that can create a virtual environment (it needs ensurepip: Debian's python3.X-venv package). None that can is an error
+# before anything changes.
 #
 # By default the commit must already be on origin/main. --allow-unmerged is for a trial deployment of a pull request's
 # head; it is recorded in deployed.json and printed, and the next deployment from main replaces it.
@@ -191,41 +192,66 @@ unit_words() {
         printf '%s\0' "${word%.}"
     done
 }
-# The interpreter of a Hub this script did not deploy (no .venv-path yet): the environment a hand-written unit's
-# ExecStart names, else the one a running Hub on this state directory was started with (its first argument, read from
-# /proc, where argument boundaries survive). Nothing when neither names one.
-deployed_interpreter() {
-    local line command pid word
-    if [[ -f $UNIT_FILE ]]; then
-        while IFS= read -r line; do
-            [[ $line =~ ^[[:space:]]*ExecStart[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
-            command=${BASH_REMATCH[1]}
-            [[ $command =~ ^[-@:+!]+(.*)$ ]] && command=${BASH_REMATCH[1]}  # systemd's prefixes (-, @, :, +, !)
-            while IFS= read -r -d '' word; do venv_interpreter "$word" && return 0; done < <(unit_words "$command")
-        done <"$UNIT_FILE"
-    fi
-    for pid in $(hub_processes); do
-        IFS= read -r -d '' word <"/proc/$pid/cmdline" 2>/dev/null || continue
-        venv_interpreter "$word" && return 0
-    done
-    return 0
+# The command lines the unit's [Service] ExecStart= runs, each ended by a NUL, as systemd reads them: a line ending in \
+# continues on the next, comments are skipped, and an empty ExecStart= clears the ones before it.
+unit_exec_starts() {
+    local line logical='' section='' commands=()
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ $line == *\\ ]]; then logical+="${line%\\} "; continue; fi
+        line=$logical$line logical=''
+        [[ $line =~ ^[[:space:]]*[\#\;] ]] && continue
+        if [[ $line =~ ^[[:space:]]*\[(.*)\][[:space:]]*$ ]]; then section=${BASH_REMATCH[1]}; continue; fi
+        [[ $section == Service && $line =~ ^[[:space:]]*ExecStart[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+        if [[ -z ${BASH_REMATCH[1]} ]]; then commands=(); else commands+=("${BASH_REMATCH[1]}"); fi
+    done <"$UNIT_FILE"
+    ((${#commands[@]} == 0)) || printf '%s\0' "${commands[@]}"
 }
+# The interpreters to try, in order, with where each came from. --python alone when given. Otherwise the deployed
+# environment's: .venv-path's; or, for a Hub this script did not deploy (no .venv-path yet), the first argument of a
+# running Hub on this state directory (read from /proc, where argument boundaries survive), then the venv interpreters
+# the hand-written unit's ExecStart= names. python3 last.
+CANDIDATES=() CANDIDATE_SOURCES=()
+add_candidate() { CANDIDATES+=("$1") CANDIDATE_SOURCES+=("$2"); }
 current_venv=$(hub_read_pointer "$POINTER")
 if [[ -n $SEED_PYTHON ]]; then
-    python_source='--python'
-elif [[ -n $current_venv && -x $current_venv/bin/python ]]; then
-    SEED_PYTHON=$current_venv/bin/python python_source='the deployed environment, .venv-path'
-elif [[ -z $current_venv ]] && SEED_PYTHON=$(deployed_interpreter) && [[ -n $SEED_PYTHON ]]; then
-    python_source='the running Hub'"'"'s environment'
+    add_candidate "$SEED_PYTHON" --python
 else
-    SEED_PYTHON=python3 python_source='the default'
+    if [[ -n $current_venv ]]; then
+        [[ -x $current_venv/bin/python ]] && add_candidate "$current_venv/bin/python" 'the deployed environment, .venv-path'
+    else
+        for pid in $(hub_processes); do
+            IFS= read -r -d '' word <"/proc/$pid/cmdline" 2>/dev/null || continue
+            word=$(venv_interpreter "$word") && add_candidate "$word" "the running Hub's environment"
+        done
+        if [[ -f $UNIT_FILE ]]; then
+            while IFS= read -r -d '' command; do
+                [[ $command =~ ^[-@:+!]+(.*)$ ]] && command=${BASH_REMATCH[1]}  # systemd's prefixes (-, @, :, +, !)
+                while IFS= read -r -d '' word; do
+                    word=$(venv_interpreter "$word") && add_candidate "$word" "the environment $UNIT_FILE runs"
+                done < <(unit_words "$command")
+            done < <(unit_exec_starts)
+        fi
+    fi
+    add_candidate python3 'the default'
 fi
-# ensurepip is what `-m venv` needs and what Debian and Ubuntu leave out of the system Python (python3.X-venv).
-if ! "$SEED_PYTHON" -I -c 'import ensurepip, venv' >/dev/null 2>&1; then
-    hub_die "$SEED_PYTHON ($python_source) cannot create a virtual environment: it is missing, or has no ensurepip" \
-        "(on Debian and Ubuntu, install python3-venv for that version). Pass --python with an interpreter that can," \
-        "such as the Python 3.12 the Hub's CI uses (docs/deployment.md); nothing was changed"
+# The first that can create a virtual environment. ensurepip is what `-m venv` needs and what Debian and Ubuntu leave
+# out of the system Python (python3.X-venv).
+SEED_PYTHON='' tried=()
+for index in "${!CANDIDATES[@]}"; do
+    if "${CANDIDATES[index]}" -I -c 'import ensurepip, venv' >/dev/null 2>&1; then
+        SEED_PYTHON=${CANDIDATES[index]} python_source=${CANDIDATE_SOURCES[index]}
+        break
+    fi
+    tried+=("${CANDIDATES[index]} (${CANDIDATE_SOURCES[index]})")
+done
+printf -v tried_list '%s; ' "${tried[@]}"
+if [[ -z $SEED_PYTHON ]]; then
+    hub_die "no interpreter can create a virtual environment; tried: ${tried_list%; }." \
+        "Each is missing or has no ensurepip (on Debian and Ubuntu, install python3-venv for that version). Pass" \
+        "--python with an interpreter that can, such as the Python 3.12 the Hub's CI uses (docs/deployment.md);" \
+        "nothing was changed"
 fi
+((${#tried[@]} == 0)) || hub_warn "skipped, as they cannot create a virtual environment: ${tried_list%; }"
 hub_say "[deploy] building the environment with $SEED_PYTHON ($python_source)"
 
 # -- guards -----------------------------------------------------------------------------------------------------------

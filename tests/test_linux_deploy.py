@@ -897,6 +897,41 @@ def test_a_hand_written_units_escaped_interpreter_is_found(host, assignment, spa
     assert "# interpreter escaped" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("layout", ["continued", "reset"])
+def test_a_hand_written_unit_is_read_as_systemd_reads_it(host, layout):
+    # A command continued on the next line (a trailing \), and an empty ExecStart= that clears an earlier one.
+    without_venv_python3(host)
+    hand = venv_python(host, host.root / "hand-venv", "current")
+    old = venv_python(host, host.root / "old-venv", "cleared")
+    state = f"--state-dir {host.deploy}/state"
+    if layout == "continued":
+        service = f"# ExecStart={old} {state}\nExecStart=/usr/bin/env \\\n    {hand} -u -m harness_hub {state}\n"
+    else:
+        service = f"ExecStart={old} -u -m harness_hub {state}\nExecStart=\nExecStart={hand} -u -m harness_hub {state}\n"
+    host.unit_file.parent.mkdir(parents=True)
+    host.unit_file.write_text(f"[Unit]\nDescription=hand\n[Service]\n{service}", encoding="utf-8")
+    a = host.commit("1.0.0")
+    deploy_without_python(host, a, "--replace-unit")
+    assert "# interpreter current" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
+
+
+def test_a_candidate_that_cannot_create_a_venv_is_skipped_for_the_next(host):
+    # The unit names two venv interpreters; the first cannot create an environment, so the second is used, and the
+    # skip is reported.
+    without_venv_python3(host)
+    broken = host.root / "broken-venv"
+    (broken / "bin").mkdir(parents=True)
+    (broken / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    write_executable(broken / "bin" / "python", NO_VENV_PYTHON3)
+    hand = venv_python(host, host.root / "hand-venv", "working")
+    host.unit_file.parent.mkdir(parents=True)
+    host.unit_file.write_text(f"[Service]\nExecStart={broken}/bin/python {hand} -m harness_hub\n", encoding="utf-8")
+    a = host.commit("1.0.0")
+    result = deploy_without_python(host, a, "--replace-unit")
+    assert f"{broken}/bin/python" in result.stderr and "skipped" in result.stderr, result.stderr
+    assert "# interpreter working" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
+
+
 def test_a_running_hub_started_by_hand_names_its_interpreter(host):
     # No unit names the interpreter (a wrapper started the Hub, or no unit at all): the running Hub's first argument,
     # read with its boundaries (a space in the path), names it. bash stands in for the Hub's process; `exec -a`-style,
