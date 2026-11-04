@@ -868,6 +868,19 @@ def test_a_first_deployment_over_a_hand_written_unit_uses_that_units_venv_interp
     assert host.healthz() == {"ok": True, "version": "1.0.0"}
 
 
+def test_a_hand_written_units_quoted_interpreter_is_found(host):
+    # systemd quoting: a "..." word may hold spaces, and a prefix (- ignores the exit status) may precede it.
+    without_venv_python3(host)
+    hand = venv_python(host, host.root / "hand built venv", "quoted")
+    host.unit_file.parent.mkdir(parents=True)
+    host.unit_file.write_text(f'[Service]\nExecStart=-"{hand}" -u -m harness_hub --state-dir {host.deploy}/state\n',
+                              encoding="utf-8")
+    a = host.commit("1.0.0")
+    result = deploy_without_python(host, a, "--replace-unit")
+    assert str(hand) in result.stdout, result.stdout
+    assert "# interpreter quoted" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
+
+
 def test_an_upgrade_without_python_uses_the_active_environments_interpreter(host):
     without_venv_python3(host)
     seed = venv_python(host, host.root / "seed-venv", "seed")
