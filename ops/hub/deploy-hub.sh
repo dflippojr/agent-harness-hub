@@ -230,6 +230,7 @@ unit_unescape() {
 unit_exec_starts() {
     local line logical='' section='' commands=()
     while IFS= read -r line || [[ -n $line ]]; do
+        line=${line%$'\r'}  # a unit written on Windows
         # A comment line is skipped, even between the lines of a continued one.
         [[ $line =~ ^[[:space:]]*[\#\;] ]] && continue
         # An odd number of trailing backslashes continues the line; an even number is escaped backslashes.

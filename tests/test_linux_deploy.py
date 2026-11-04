@@ -899,7 +899,7 @@ def test_a_hand_written_units_escaped_interpreter_is_found(host, assignment, spa
 
 
 @pytest.mark.parametrize("layout", ["continued", "reset", "comment-in-continuation", "escaped-backslash-at-end",
-                                    "quoted-prefix"])
+                                    "quoted-prefix", "crlf"])
 def test_a_hand_written_unit_is_read_as_systemd_reads_it(host, layout):
     # A command continued on the next line (a trailing \), and an empty ExecStart= that clears an earlier one.
     without_venv_python3(host)
@@ -912,6 +912,8 @@ def test_a_hand_written_unit_is_read_as_systemd_reads_it(host, layout):
         # An even number of trailing backslashes is escaped backslashes, not a continuation: the reset still applies.
         service = (f"ExecStart={old} -u -m harness_hub {state} x\\\\\nExecStart=\n"
                    f"ExecStart={hand} -u -m harness_hub {state}\n")
+    elif layout == "crlf":
+        service = f"ExecStart=/usr/bin/env \\\r\n    {hand} -u -m harness_hub {state}\r\n"
     elif layout == "quoted-prefix":
         # systemd strips the prefix from the first word after unquoting it.
         service = f'ExecStart="-{hand}" -u -m harness_hub {state}\n'
