@@ -175,25 +175,32 @@ venv_interpreter() {
     [[ -f $(dirname -- "$(dirname -- "$path")")/pyvenv.cfg ]] || return 1
     printf '%s\n' "$path"
 }
-# The words of a systemd command line, each ended by a NUL, with systemd's quoting and C escapes (\x20, \s, \\ ...)
-# decoded: a word in "..." or '...' may hold spaces.
+# The words of a systemd command line, each ended by a NUL, unquoted and with systemd's C escapes (\x20, \s, \\ ...)
+# decoded. As in a shell, a word is a run of "..." and '...' parts (which may hold spaces) and unquoted text.
 unit_words() {
-    local rest=$1
-    local double='^"((\\.|[^"\\])*)"(.*)$' single="^'((\\\\.|[^'\\\\])*)'(.*)\$" bare='^((\\.|[^[:space:]\\])+)(.*)$'
-    while :; do
+    local rest=$1 word
+    local double='^"((\\.|[^"\\])*)"(.*)$' single="^'((\\\\.|[^'\\\\])*)'(.*)\$"
+    local bare='^((\\.|[^[:space:]"'"'"'\\])+)(.*)$' space='^[[:space:]]'
+    rest=${rest#"${rest%%[![:space:]]*}"}
+    while [[ -n $rest ]]; do
+        word=''
+        # The parts of one word, up to the whitespace after it.
+        while [[ -n $rest && ! $rest =~ $space ]]; do
+            [[ $rest =~ $double || $rest =~ $single || $rest =~ $bare ]] || return 0  # an unterminated quote
+            rest=${BASH_REMATCH[3]}
+            unit_unescape "${BASH_REMATCH[1]}"  # (it uses BASH_REMATCH itself)
+            word+=$UNESCAPED
+        done
+        printf '%s\0' "$word"
         rest=${rest#"${rest%%[![:space:]]*}"}
-        [[ -n $rest ]] || return 0
-        [[ $rest =~ $double || $rest =~ $single || $rest =~ $bare ]] || return 0
-        rest=${BASH_REMATCH[3]}
-        unit_unescape "${BASH_REMATCH[1]}"
-        printf '%s\0' "$UNESCAPED"
     done
 }
-# systemd's C escapes decoded in one pass, left to right, into UNESCAPED: \xHH, \NNN (octal), \uXXXX, \s (a space),
+# systemd's C escapes decoded in one pass, left to right, into UNESCAPED: \xHH, \NNN (octal), \uXXXX, \UXXXXXXXX, \s,
 # \n \t \r \a \b \f \v, and a backslash before any other character (\\, \", \') stands for that character.
 unit_unescape() {
     local rest=$1 char
     local hex='^\\x([0-9a-fA-F]{2})(.*)$' octal='^\\([0-7]{3})(.*)$' unicode='^\\u([0-9a-fA-F]{4})(.*)$'
+    local wide='^\\U([0-9a-fA-F]{8})(.*)$'
     local other='^\\(.)(.*)$'
     UNESCAPED=''
     while [[ -n $rest ]]; do
@@ -201,6 +208,8 @@ unit_unescape() {
             printf -v char %b "\\x${BASH_REMATCH[1]}"
         elif [[ $rest =~ $octal ]]; then
             printf -v char %b "\\0${BASH_REMATCH[1]}"
+        elif [[ $rest =~ $wide ]]; then
+            printf -v char %b "\\U${BASH_REMATCH[1]}"
         elif [[ $rest =~ $unicode ]]; then
             printf -v char %b "\\u${BASH_REMATCH[1]}"
         elif [[ $rest =~ $other ]]; then
@@ -223,7 +232,8 @@ unit_exec_starts() {
     while IFS= read -r line || [[ -n $line ]]; do
         # A comment line is skipped, even between the lines of a continued one.
         [[ $line =~ ^[[:space:]]*[\#\;] ]] && continue
-        if [[ $line == *\\ ]]; then logical+="${line%\\} "; continue; fi
+        # An odd number of trailing backslashes continues the line; an even number is escaped backslashes.
+        if [[ $line =~ (^|[^\\])(\\\\)*\\$ ]]; then logical+="${line%\\} "; continue; fi
         line=$logical$line logical=''
         if [[ $line =~ ^[[:space:]]*\[(.*)\][[:space:]]*$ ]]; then section=${BASH_REMATCH[1]}; continue; fi
         [[ $section == Service && $line =~ ^[[:space:]]*ExecStart[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
@@ -250,8 +260,11 @@ else
         done
         if [[ -f $UNIT_FILE ]]; then
             while IFS= read -r -d '' command; do
-                [[ $command =~ ^[-@:+!]+(.*)$ ]] && command=${BASH_REMATCH[1]}  # systemd's prefixes (-, @, :, +, !)
+                first=1
                 while IFS= read -r -d '' word; do
+                    # systemd's prefixes (-, @, :, +, !, |) on the first word, after it is unquoted.
+                    ((first)) && [[ $word =~ ^[-@:+!|]+(.*)$ ]] && word=${BASH_REMATCH[1]}
+                    first=0
                     word=$(venv_interpreter "$word") && add_candidate "$word" "the environment $UNIT_FILE runs"
                 done < <(unit_words "$command")
             done < <(unit_exec_starts)

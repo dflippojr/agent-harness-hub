@@ -882,6 +882,7 @@ def test_a_hand_written_units_quoted_interpreter_is_found(host):
 
 
 @pytest.mark.parametrize(("assignment", "space"), [("ExecStart=", r"\x20"), ("ExecStart=", r"\s"),
+                                                   ("ExecStart=", r"\U00000020"),
                                                    ("ExecStart = ", r"\x20")])
 def test_a_hand_written_units_escaped_interpreter_is_found(host, assignment, space):
     # systemd's escapes for a space in an unquoted word (\x20, \s), and whitespace around the assignment's =.
@@ -897,7 +898,8 @@ def test_a_hand_written_units_escaped_interpreter_is_found(host, assignment, spa
     assert "# interpreter escaped" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("layout", ["continued", "reset", "comment-in-continuation"])
+@pytest.mark.parametrize("layout", ["continued", "reset", "comment-in-continuation", "escaped-backslash-at-end",
+                                    "quoted-prefix"])
 def test_a_hand_written_unit_is_read_as_systemd_reads_it(host, layout):
     # A command continued on the next line (a trailing \), and an empty ExecStart= that clears an earlier one.
     without_venv_python3(host)
@@ -906,6 +908,13 @@ def test_a_hand_written_unit_is_read_as_systemd_reads_it(host, layout):
     state = f"--state-dir {host.deploy}/state"
     if layout == "continued":
         service = f"# ExecStart={old} {state}\nExecStart=/usr/bin/env \\\n    {hand} -u -m harness_hub {state}\n"
+    elif layout == "escaped-backslash-at-end":
+        # An even number of trailing backslashes is escaped backslashes, not a continuation: the reset still applies.
+        service = (f"ExecStart={old} -u -m harness_hub {state} x\\\\\nExecStart=\n"
+                   f"ExecStart={hand} -u -m harness_hub {state}\n")
+    elif layout == "quoted-prefix":
+        # systemd strips the prefix from the first word after unquoting it.
+        service = f'ExecStart="-{hand}" -u -m harness_hub {state}\n'
     elif layout == "comment-in-continuation":
         service = f"ExecStart=/usr/bin/env \\\n# the interpreter:\n    {hand} -u -m harness_hub {state}\n"
     else:
