@@ -1,10 +1,11 @@
-"""The Overview router: Overview and the inventory listing (`/api/apps`, `/api/modules`), with the Hub's state on
-`HubContext` (#190). Spend joins it next."""
+"""The Overview router: Overview, the inventory listing (`/api/apps`, `/api/modules`) and Spend, with the Hub's state on
+`HubContext` (#190)."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import time
 from typing import Any
 
@@ -12,8 +13,20 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from ..daemon import DaemonUnreachable
-from ..views import apps_view, health_view, module_view, overview, ownership_view, pairing_attention
-from .common import concurrently, hub, read_inventory, retained, settled, tuning, unclaimed
+from ..guard import leaks
+from ..inventory import valid_inventory
+from ..views import (
+    ID_SEGMENT,
+    apps_view,
+    health_view,
+    module_view,
+    overview,
+    ownership_view,
+    pairing_attention,
+    settings_error,
+    spend_view,
+)
+from .common import HubContext, concurrently, error, hub, read_inventory, refused, retained, settled, tuning, unclaimed
 from .marketplace import observe_browser_slots
 from .settings import observe_recovery, observe_restart
 
@@ -105,9 +118,73 @@ async def get_modules(request: Request):
             "reachable": reachable, "fetched_at": good["fetched_at"] if good else None, **shown}
 
 
+async def refused_spend(ctx: HubContext, token: str) -> JSONResponse:
+    """A 401 during a Spend read; the refusal's own confirmation read may also go unanswered."""
+    try:
+        return await refused(ctx, token)
+    except DaemonUnreachable:
+        return error(503, "The daemon did not answer. Spend is unavailable until it does.")
+
+
+async def get_spend(request: Request):
+    """Read-only: each App's usage and session-cap use, and each backend's windows. It writes nothing, not even
+    the inventory cache, so its poll adds no disk writes; a failed read falls back to the cached inventory."""
+    ctx = hub(request)
+    key = ctx.claims.key()
+    if key is None:
+        return unclaimed("Claim this Hub on Overview before reading spend.")
+    secrets = tuple(ctx.store.secrets())
+    good = ctx.inventory.get(key["key_id"])
+    body, read_error, fetched_at = (good["inventory"], "", good["fetched_at"]) if good else (None, "", None)
+    # Each read stands alone: one that fails or times out never hides what another one returned.
+    reply, backends = await concurrently(ctx.daemon.inventory(key["token"]),
+                                         ctx.daemon.settings(key["token"], "backends"))
+    for result in (reply, backends):
+        if isinstance(result, BaseException) and not isinstance(result, DaemonUnreachable):
+            raise result
+    if 401 in (getattr(reply, "status", None), getattr(backends, "status", None)):
+        return await refused_spend(ctx, key["token"])
+    if isinstance(reply, DaemonUnreachable):
+        read_error = "The daemon did not answer."
+    elif reply.ok and valid_inventory(reply.body):
+        body, fetched_at = reply.body, time.time()
+    else:
+        read_error = "The daemon returned an invalid inventory." if reply.ok else settings_error(
+            reply.body, reply.status)["detail"]
+    live = [row["id"] for row in (body or {}).get("apps", []) if isinstance(row, dict)
+            and row.get("kind") == "app" and row.get("revoked_at") is None and row.get("id") != key["key_id"]
+            and isinstance(row.get("id"), str) and ID_SEGMENT.fullmatch(row["id"])]
+    gate = asyncio.Semaphore(tuning().SPEND_CAP_READS)
+
+    async def read_caps(app_id: str):
+        async with gate:
+            return await ctx.daemon.apps(key["token"], "limits", app_id)
+
+    replies = await concurrently(*(read_caps(app_id) for app_id in live))
+    for result in replies:
+        if isinstance(result, BaseException) and not isinstance(result, DaemonUnreachable):
+            raise result
+    if any(getattr(result, "status", None) == 401 for result in replies):
+        return await refused_spend(ctx, key["token"])
+    limits = {app_id: result.body for app_id, result in zip(live, replies, strict=True)
+              if getattr(result, "ok", False)}
+    backend_rows = backends.body if getattr(backends, "ok", False) else None
+    shown = spend_view(body, backend_rows, limits, key["key_id"], secrets)
+    if body is None:
+        shown["apps"] = None
+    if leaks(json.dumps(shown).encode(), ctx.store.secrets()):
+        return error(502, "Spend withheld: it contained a credential-like string.")
+    return {"error": read_error, "stale": bool(read_error) and body is not None, "fetched_at": fetched_at,
+            # Any read the daemon answered shows it is up; the shell's status reads this, not the error text.
+            "reachable": not all(isinstance(result, DaemonUnreachable) for result in (reply, backends)),
+            "backends_error": "" if backend_rows is not None else "The daemon's backend usage was unavailable.",
+            **shown}
+
+
 def add_routes(app: FastAPI) -> None:
-    """Add the Overview and inventory routes to the app itself, in this order, as `session.add_routes` does
+    """Add the Overview, inventory and Spend routes to the app itself, in this order, as `session.add_routes` does
     (#190). `/api/modules` comes before `/api/apps`, as the stacked decorators registered them."""
     app.add_api_route("/api/overview", get_overview, methods=["GET"])
     app.add_api_route("/api/modules", get_modules, methods=["GET"])
     app.add_api_route("/api/apps", get_modules, methods=["GET"])
+    app.add_api_route("/api/spend", get_spend, methods=["GET"])
