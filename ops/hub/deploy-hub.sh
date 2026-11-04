@@ -198,7 +198,7 @@ unit_words() {
 # systemd's C escapes decoded in one pass, left to right, into UNESCAPED: \xHH, \NNN (octal), \uXXXX, \UXXXXXXXX, \s,
 # \n \t \r \a \b \f \v, and a backslash before any other character (\\, \", \') stands for that character.
 unit_unescape() {
-    local rest=$1 char
+    local rest=$1 char LC_ALL=C.UTF-8  # \u and \U decode to UTF-8, as systemd does, whatever the caller's locale
     local hex='^\\x([0-9a-fA-F]{2})(.*)$' octal='^\\([0-7]{3})(.*)$' unicode='^\\u([0-9a-fA-F]{4})(.*)$'
     local wide='^\\U([0-9a-fA-F]{8})(.*)$'
     local other='^\\(.)(.*)$'
@@ -241,6 +241,20 @@ unit_exec_starts() {
     done <"$UNIT_FILE"
     ((${#commands[@]} == 0)) || printf '%s\0' "${commands[@]}"
 }
+# A word with the systemd specifiers a user unit's interpreter path may hold expanded: %h (home), %u (user name),
+# %U (user id) and %% (a percent sign). Any other specifier is left as it is, so that path matches no interpreter.
+unit_specifiers() {
+    local rest=$1 out=''
+    while [[ $rest == *%* ]]; do
+        out+=${rest%%\%*} rest=${rest#*%}
+        case ${rest:0:1} in
+            h) out+=$HOME ;; u) out+=$(id -un) ;; U) out+=$(id -u) ;; %) out+=% ;;
+            *) out+=%${rest:0:1} ;;
+        esac
+        rest=${rest:1}
+    done
+    printf '%s\n' "$out$rest"
+}
 # The interpreters to try, in order, with where each came from. --python alone when given. Otherwise the deployed
 # environment's: .venv-path's; or, for a Hub this script did not deploy (no .venv-path yet), the first argument of a
 # running Hub on this state directory (read from /proc, where argument boundaries survive), then the venv interpreters
@@ -265,7 +279,7 @@ else
                     # systemd's prefixes (-, @, :, +, !, |) on the first word, after it is unquoted.
                     ((first)) && [[ $word =~ ^[-@:+!|]+(.*)$ ]] && word=${BASH_REMATCH[1]}
                     first=0
-                    word=$(venv_interpreter "$word") && add_candidate "$word" "the environment $UNIT_FILE runs"
+                    word=$(venv_interpreter "$(unit_specifiers "$word")") && add_candidate "$word" "the environment $UNIT_FILE runs"
                 done < <(unit_words "$command")
             done < <(unit_exec_starts)
         fi

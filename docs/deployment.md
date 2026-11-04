@@ -85,7 +85,8 @@ of these that can create an environment:
 1. the interpreter of the active environment (`<deploy-dir>/.venv-path`), so later deployments need no `--python`;
 2. on a first deployment over a Hub this script did not deploy (no `.venv-path` yet), the virtual environment's
    `bin/python*` that the running Hub on `<deploy-dir>/state` was started with, then those the hand-written unit's
-   `ExecStart=` names (read as systemd reads it: quoting, escapes, continued lines, an empty `ExecStart=` reset);
+   `ExecStart=` names (read as systemd reads it: quoting, escapes, the `%h`, `%u`, `%U` and `%%` specifiers, continued
+   lines, an empty `ExecStart=` reset);
 3. `python3`.
 
 It checks this before the guards. When none can (or a `--python` interpreter cannot), it refuses before anything

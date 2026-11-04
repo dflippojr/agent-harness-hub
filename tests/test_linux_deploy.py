@@ -955,6 +955,30 @@ def test_a_hand_written_units_escaped_backslash_is_a_literal_backslash(host):
     assert "# interpreter backslash" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
 
 
+def test_a_hand_written_units_specifier_is_expanded(host):
+    # %h is the user's home directory in a user unit.
+    without_venv_python3(host)
+    hand = venv_python(host, host.home / "hub-venv", "specifier")
+    host.unit_file.parent.mkdir(parents=True)
+    host.unit_file.write_text("[Service]\nExecStart=%h/hub-venv/bin/python -u -m harness_hub\n", encoding="utf-8")
+    a = host.commit("1.0.0")
+    result = deploy_without_python(host, a, "--replace-unit")
+    assert str(hand) in result.stdout, result.stdout
+    assert "# interpreter specifier" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
+
+
+def test_a_unicode_escape_decodes_to_utf8_whatever_the_locale(host):
+    without_venv_python3(host)
+    host.env["LC_ALL"] = "C"
+    hand = venv_python(host, host.root / "caf\u00e9-venv", "unicode")
+    host.unit_file.parent.mkdir(parents=True)
+    escaped = str(hand).replace("\u00e9", "\\u00e9")
+    host.unit_file.write_text(f"[Service]\nExecStart={escaped} -u -m harness_hub\n", encoding="utf-8")
+    a = host.commit("1.0.0")
+    deploy_without_python(host, a, "--replace-unit")
+    assert "# interpreter unicode" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
+
+
 def test_a_running_hub_started_by_hand_names_its_interpreter(host):
     # No unit names the interpreter (a wrapper started the Hub, or no unit at all): the running Hub's first argument,
     # read with its boundaries (a space in the path), names it. bash stands in for the Hub's process; `exec -a`-style,
