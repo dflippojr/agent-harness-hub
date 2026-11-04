@@ -14,6 +14,11 @@
 # previous pointers, records and scripts and restarts the previous Hub; a failed deployment never becomes "previous". It
 # keeps the previous environment for --rollback and deletes older ones.
 #
+# The environment is built with --python, else the interpreter of the deployed Hub's environment (.venv-path, or on a
+# first deployment the one a running Hub or a hand-written unit's ExecStart names), else python3: the first of them
+# that can create a virtual environment (it needs ensurepip: Debian's python3.X-venv package). None that can is an error
+# before anything changes.
+#
 # By default the commit must already be on origin/main. --allow-unmerged is for a trial deployment of a pull request's
 # head; it is recorded in deployed.json and printed, and the next deployment from main replaces it.
 #
@@ -25,7 +30,7 @@ source "$here/hub-common.sh"
 # shellcheck source=hub-ops.sh
 source "$here/hub-ops.sh"
 
-usage() { sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 COMMIT='' RELEASE_ROOT='' deploy_dir='' SEED_PYTHON='' ALLOW_UNMERGED=0 ROLLBACK=0 DRY_RUN=0
 PORT='' DAEMON_URL='' PUBLIC_URL='' STATUS_SECONDS='' unit_args=()
 while (($#)); do
@@ -162,6 +167,146 @@ if ((ROLLBACK)); then
     hub_die "rollback failed; the previous state is restored and its Hub answers /healthz${notes[*]:+ (${notes[*]})}"
 fi
 
+# -- the interpreter the environment is built with --------------------------------------------------------------------
+# A virtual environment's interpreter (an absolute <venv>/bin/python*, with <venv>/pyvenv.cfg), printed, or a failure.
+venv_interpreter() {
+    local path=$1
+    [[ $path == /* && $(basename -- "$path") == python* && -x $path ]] || return 1
+    [[ -f $(dirname -- "$(dirname -- "$path")")/pyvenv.cfg ]] || return 1
+    printf '%s\n' "$path"
+}
+# The words of a systemd command line, each ended by a NUL, unquoted and with systemd's C escapes (\x20, \s, \\ ...)
+# decoded. As in a shell, a word is a run of "..." and '...' parts (which may hold spaces) and unquoted text.
+unit_words() {
+    local rest=$1 word
+    local double='^"((\\.|[^"\\])*)"(.*)$' single="^'((\\\\.|[^'\\\\])*)'(.*)\$"
+    local bare='^((\\.|[^[:space:]"'"'"'\\])+)(.*)$' space='^[[:space:]]'
+    rest=${rest#"${rest%%[![:space:]]*}"}
+    while [[ -n $rest ]]; do
+        word=''
+        # The parts of one word, up to the whitespace after it.
+        while [[ -n $rest && ! $rest =~ $space ]]; do
+            [[ $rest =~ $double || $rest =~ $single || $rest =~ $bare ]] || return 0  # an unterminated quote
+            rest=${BASH_REMATCH[3]}
+            unit_unescape "${BASH_REMATCH[1]}"  # (it uses BASH_REMATCH itself)
+            word+=$UNESCAPED
+        done
+        printf '%s\0' "$word"
+        rest=${rest#"${rest%%[![:space:]]*}"}
+    done
+}
+# systemd's C escapes decoded in one pass, left to right, into UNESCAPED: \xHH, \NNN (octal), \uXXXX, \UXXXXXXXX, \s,
+# \n \t \r \a \b \f \v, and a backslash before any other character (\\, \", \') stands for that character.
+unit_unescape() {
+    local rest=$1 char LC_ALL=C.UTF-8  # \u and \U decode to UTF-8, as systemd does, whatever the caller's locale
+    local hex='^\\x([0-9a-fA-F]{2})(.*)$' octal='^\\([0-7]{3})(.*)$' unicode='^\\u([0-9a-fA-F]{4})(.*)$'
+    local wide='^\\U([0-9a-fA-F]{8})(.*)$'
+    local other='^\\(.)(.*)$'
+    UNESCAPED=''
+    while [[ -n $rest ]]; do
+        if [[ $rest =~ $hex ]]; then
+            printf -v char %b "\\x${BASH_REMATCH[1]}"
+        elif [[ $rest =~ $octal ]]; then
+            printf -v char %b "\\0${BASH_REMATCH[1]}"
+        elif [[ $rest =~ $wide ]]; then
+            printf -v char %b "\\U${BASH_REMATCH[1]}"
+        elif [[ $rest =~ $unicode ]]; then
+            printf -v char %b "\\u${BASH_REMATCH[1]}"
+        elif [[ $rest =~ $other ]]; then
+            case ${BASH_REMATCH[1]} in
+                s) char=' ' ;; n) char=$'\n' ;; t) char=$'\t' ;; r) char=$'\r' ;;
+                a) char=$'\a' ;; b) char=$'\b' ;; f) char=$'\f' ;; v) char=$'\v' ;;
+                *) char=${BASH_REMATCH[1]} ;;
+            esac
+        else
+            UNESCAPED+=${rest:0:1} rest=${rest:1}
+            continue
+        fi
+        UNESCAPED+=$char rest=${BASH_REMATCH[2]}
+    done
+}
+# The command lines the unit's [Service] ExecStart= runs, each ended by a NUL, as systemd reads them: a line ending in \
+# continues on the next, comment lines are skipped (also inside a continued one), and an empty ExecStart= clears the ones before it.
+unit_exec_starts() {
+    local line logical='' section='' commands=()
+    while IFS= read -r line || [[ -n $line ]]; do
+        line=${line%$'\r'}  # a unit written on Windows
+        # A comment line is skipped, even between the lines of a continued one.
+        [[ $line =~ ^[[:space:]]*[\#\;] ]] && continue
+        # An odd number of trailing backslashes continues the line; an even number is escaped backslashes.
+        if [[ $line =~ (^|[^\\])(\\\\)*\\$ ]]; then logical+="${line%\\} "; continue; fi
+        line=$logical$line logical=''
+        if [[ $line =~ ^[[:space:]]*\[(.*)\][[:space:]]*$ ]]; then section=${BASH_REMATCH[1]}; continue; fi
+        [[ $section == Service && $line =~ ^[[:space:]]*ExecStart[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+        if [[ -z ${BASH_REMATCH[1]} ]]; then commands=(); else commands+=("${BASH_REMATCH[1]}"); fi
+    done <"$UNIT_FILE"
+    ((${#commands[@]} == 0)) || printf '%s\0' "${commands[@]}"
+}
+# A word with the systemd specifiers a user unit's interpreter path may hold expanded: %h (home), %u (user name),
+# %U (user id) and %% (a percent sign). Any other specifier is left as it is, so that path matches no interpreter.
+unit_specifiers() {
+    local rest=$1 out=''
+    while [[ $rest == *%* ]]; do
+        out+=${rest%%\%*} rest=${rest#*%}
+        case ${rest:0:1} in
+            h) out+=$HOME ;; u) out+=$(id -un) ;; U) out+=$(id -u) ;; %) out+=% ;;
+            *) out+=%${rest:0:1} ;;
+        esac
+        rest=${rest:1}
+    done
+    printf '%s\n' "$out$rest"
+}
+# The interpreters to try, in order, with where each came from. --python alone when given. Otherwise the deployed
+# environment's: .venv-path's; or, for a Hub this script did not deploy (no .venv-path yet), the first argument of a
+# running Hub on this state directory (read from /proc, where argument boundaries survive), then the venv interpreters
+# the hand-written unit's ExecStart= names. python3 last.
+CANDIDATES=() CANDIDATE_SOURCES=()
+add_candidate() { CANDIDATES+=("$1") CANDIDATE_SOURCES+=("$2"); }
+current_venv=$(hub_read_pointer "$POINTER")
+if [[ -n $SEED_PYTHON ]]; then
+    add_candidate "$SEED_PYTHON" --python
+else
+    if [[ -n $current_venv ]]; then
+        [[ -x $current_venv/bin/python ]] && add_candidate "$current_venv/bin/python" 'the deployed environment, .venv-path'
+    else
+        for pid in $(hub_processes); do
+            IFS= read -r -d '' word <"/proc/$pid/cmdline" 2>/dev/null || continue
+            word=$(venv_interpreter "$word") && add_candidate "$word" "the running Hub's environment"
+        done
+        if [[ -f $UNIT_FILE ]]; then
+            while IFS= read -r -d '' command; do
+                first=1
+                while IFS= read -r -d '' word; do
+                    # systemd's prefixes (-, @, :, +, !, |) on the first word, after it is unquoted.
+                    ((first)) && [[ $word =~ ^[-@:+!|]+(.*)$ ]] && word=${BASH_REMATCH[1]}
+                    first=0
+                    word=$(venv_interpreter "$(unit_specifiers "$word")") && add_candidate "$word" "the environment $UNIT_FILE runs"
+                done < <(unit_words "$command")
+            done < <(unit_exec_starts)
+        fi
+    fi
+    add_candidate python3 'the default'
+fi
+# The first that can create a virtual environment. ensurepip is what `-m venv` needs and what Debian and Ubuntu leave
+# out of the system Python (python3.X-venv).
+SEED_PYTHON='' tried=()
+for index in "${!CANDIDATES[@]}"; do
+    if "${CANDIDATES[index]}" -I -c 'import ensurepip, venv' >/dev/null 2>&1; then
+        SEED_PYTHON=${CANDIDATES[index]} python_source=${CANDIDATE_SOURCES[index]}
+        break
+    fi
+    tried+=("${CANDIDATES[index]} (${CANDIDATE_SOURCES[index]})")
+done
+printf -v tried_list '%s; ' "${tried[@]}"
+if [[ -z $SEED_PYTHON ]]; then
+    hub_die "no interpreter can create a virtual environment; tried: ${tried_list%; }." \
+        "Each is missing or has no ensurepip (on Debian and Ubuntu, install python3-venv for that version). Pass" \
+        "--python with an interpreter that can, such as the Python 3.12 the Hub's CI uses (docs/deployment.md);" \
+        "nothing was changed"
+fi
+((${#tried[@]} == 0)) || hub_warn "skipped, as they cannot create a virtual environment: ${tried_list%; }"
+hub_say "[deploy] building the environment with $SEED_PYTHON ($python_source)"
+
 # -- guards -----------------------------------------------------------------------------------------------------------
 release=$(cd -- "${RELEASE_ROOT:-$here/../..}" && pwd) || hub_die "no release checkout: ${RELEASE_ROOT:-$here/../..}"
 [[ -e $release/.git ]] || hub_die "release checkout is not a git repository: $release"
@@ -180,10 +325,6 @@ fi
 hub_say '[deploy] guards passed'
 
 # -- stage the environment before any downtime ------------------------------------------------------------------------
-current_venv=$(hub_read_pointer "$POINTER")
-if [[ -z $SEED_PYTHON ]]; then
-    if [[ -n $current_venv && -x $current_venv/bin/python ]]; then SEED_PYTHON=$current_venv/bin/python; else SEED_PYTHON=python3; fi
-fi
 staged=$VENVS/$COMMIT
 [[ ! -e $staged ]] || hub_die "staged environment already exists: $staged (is $COMMIT already deployed?)"
 source_dir=$DEPLOY/.source-$COMMIT
@@ -203,7 +344,8 @@ stage() {
             { hub_warn "$COMMIT carries no Linux deployment scripts (ops/hub/*.sh)"; return 1; }
         rm -rf -- "$ops_source" && mkdir -p -- "$ops_source" && cp -- "$source_dir"/ops/hub/*.sh "$ops_source"/ || return 1
     fi
-    run "$SEED_PYTHON" -m venv "$staged" || return 1
+    run "$SEED_PYTHON" -m venv "$staged" ||
+        { hub_warn "$SEED_PYTHON could not create $staged; choose another interpreter with --python"; return 1; }
     run "$python" "${pip[@]}" --require-hashes -r "$source_dir/requirements.lock" \
         -r "$source_dir/requirements-build.lock" || return 1
     run "$python" "${pip[@]}" --no-deps --no-build-isolation "$source_dir" || return 1

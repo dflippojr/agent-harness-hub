@@ -14,6 +14,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -781,6 +782,241 @@ def test_a_dry_run_changes_nothing(host):
     assert "[dry run]" in result.stdout
     assert not host.deploy.exists() and not host.unit_file.exists()
     assert not (host.systemd / "calls").exists()
+
+
+# -- the interpreter the environment is built with (#232) -------------------------------------------------------------
+
+# A system `python3` without ensurepip (Debian's python3.X-venv package not installed): it runs the scripts' own JSON
+# helpers (the real interpreter does), but it cannot create a virtual environment.
+NO_VENV_PYTHON3 = r"""#!/usr/bin/env bash
+for arg in "$@"; do
+    [[ $arg == *ensurepip* ]] && { echo "ModuleNotFoundError: No module named 'ensurepip'" >&2; exit 1; }
+done
+if [[ "${1:-} ${2:-}" == "-m venv" ]]; then
+    echo "The virtual environment was not created successfully because ensurepip is not available." >&2
+    exit 1
+fi
+exec "$REAL_PYTHON3" "$@"
+"""
+
+
+def without_venv_python3(host: Host) -> Host:
+    write_executable(host.bin / "python3", NO_VENV_PYTHON3)
+    host.env["REAL_PYTHON3"] = sys.executable
+    return host
+
+
+def venv_python(host: Host, directory: Path, marker: str) -> Path:
+    """A virtual environment whose interpreter is the fake python, tagged so a test can tell which one seeded a new
+    environment (the fake's `-m venv` copies itself)."""
+    (directory / "bin").mkdir(parents=True)
+    (directory / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    return write_executable(directory / "bin" / "python", FAKE_PYTHON + f"# interpreter {marker}\n")
+
+
+def deploy_without_python(host: Host, sha: str, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    git(host.release, "checkout", "-q", sha)
+    return host.run("deploy-hub.sh", "--release-root", str(host.release), "--deploy-dir", str(host.deploy), *args,
+                    check=check)
+
+
+def test_a_default_python3_that_cannot_create_a_venv_fails_before_any_change_and_names_python(host):
+    without_venv_python3(host)
+    a = host.commit("1.0.0")
+    failed = deploy_without_python(host, a, check=False)
+    assert failed.returncode != 0
+    assert "--python" in failed.stderr and "python3-venv" in failed.stderr, failed.stderr
+    assert "nothing was changed" in failed.stderr
+    for name in (".venv-path", ".venv-previous", "deployed.json", "hub.env"):
+        assert host.read(name) is None, name
+    assert not (host.deploy / "venvs").exists() or host.records()["venvs"] == []
+    assert not host.unit_file.exists()
+    assert not (host.systemd / "calls").exists()  # no service was touched
+
+
+def test_an_explicit_python_that_cannot_create_a_venv_fails_before_any_change_and_names_python(host):
+    a = host.commit("1.0.0")
+    host.deploy_at(a)
+    before, unit = host.records(), host.unit_file.read_text(encoding="utf-8")
+    calls = (host.systemd / "calls").read_text(encoding="utf-8")
+    broken = write_executable(host.root / "python-without-venv", NO_VENV_PYTHON3)
+    host.env["REAL_PYTHON3"] = sys.executable
+    b = host.commit("1.1.0")
+    git(host.release, "checkout", "-q", b)
+    failed = host.run("deploy-hub.sh", "--release-root", str(host.release), "--deploy-dir", str(host.deploy),
+                      "--python", str(broken), check=False)
+    assert failed.returncode != 0
+    assert "--python" in failed.stderr and str(broken) in failed.stderr, failed.stderr
+    assert host.records() == before and host.unit_file.read_text(encoding="utf-8") == unit
+    assert (host.systemd / "calls").read_text(encoding="utf-8") == calls  # no stop, no start
+    assert host.healthz() == {"ok": True, "version": "1.0.0"}
+
+
+def test_a_first_deployment_over_a_hand_written_unit_uses_that_units_venv_interpreter(host):
+    # The tower's first deployment (#232): the system python3 cannot create a venv, and the Hub runs from a hand-built
+    # environment that a hand-written unit names. That environment's interpreter seeds the new one.
+    without_venv_python3(host)
+    hand = venv_python(host, host.root / "hand-venv", "hand-built")
+    host.unit_file.parent.mkdir(parents=True)
+    host.unit_file.write_text(f"[Unit]\nAfter=agent-harness.service\n[Service]\nExecStart={hand} -u -m harness_hub "
+                              f"--state-dir {host.deploy}/state --port 8120\n", encoding="utf-8")
+    a = host.commit("1.0.0")
+    result = deploy_without_python(host, a, "--replace-unit")
+    assert str(hand) in result.stdout, result.stdout
+    seeded = Path(venv_of(host, a)) / "bin" / "python"
+    assert "# interpreter hand-built" in seeded.read_text(encoding="utf-8")
+    assert host.healthz() == {"ok": True, "version": "1.0.0"}
+
+
+def test_a_hand_written_units_quoted_interpreter_is_found(host):
+    # systemd quoting: a "..." word may hold spaces, and a prefix (- ignores the exit status) may precede it.
+    without_venv_python3(host)
+    hand = venv_python(host, host.root / "hand built venv", "quoted")
+    host.unit_file.parent.mkdir(parents=True)
+    host.unit_file.write_text(f'[Service]\nExecStart=-"{hand}" -u -m harness_hub --state-dir {host.deploy}/state\n',
+                              encoding="utf-8")
+    a = host.commit("1.0.0")
+    result = deploy_without_python(host, a, "--replace-unit")
+    assert str(hand) in result.stdout, result.stdout
+    assert "# interpreter quoted" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(("assignment", "space"), [("ExecStart=", r"\x20"), ("ExecStart=", r"\s"),
+                                                   ("ExecStart=", r"\U00000020"),
+                                                   ("ExecStart = ", r"\x20")])
+def test_a_hand_written_units_escaped_interpreter_is_found(host, assignment, space):
+    # systemd's escapes for a space in an unquoted word (\x20, \s), and whitespace around the assignment's =.
+    without_venv_python3(host)
+    hand = venv_python(host, host.root / "hand built venv", "escaped")
+    host.unit_file.parent.mkdir(parents=True)
+    escaped = str(hand).replace(" ", space)
+    host.unit_file.write_text(f"[Service]\n{assignment}{escaped} -u -m harness_hub --state-dir {host.deploy}/state\n",
+                              encoding="utf-8")
+    a = host.commit("1.0.0")
+    result = deploy_without_python(host, a, "--replace-unit")
+    assert str(hand) in result.stdout, result.stdout
+    assert "# interpreter escaped" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("layout", ["continued", "reset", "comment-in-continuation", "escaped-backslash-at-end",
+                                    "quoted-prefix", "crlf"])
+def test_a_hand_written_unit_is_read_as_systemd_reads_it(host, layout):
+    # A command continued on the next line (a trailing \), and an empty ExecStart= that clears an earlier one.
+    without_venv_python3(host)
+    hand = venv_python(host, host.root / "hand-venv", "current")
+    old = venv_python(host, host.root / "old-venv", "cleared")
+    state = f"--state-dir {host.deploy}/state"
+    if layout == "continued":
+        service = f"# ExecStart={old} {state}\nExecStart=/usr/bin/env \\\n    {hand} -u -m harness_hub {state}\n"
+    elif layout == "escaped-backslash-at-end":
+        # An even number of trailing backslashes is escaped backslashes, not a continuation: the reset still applies.
+        service = (f"ExecStart={old} -u -m harness_hub {state} x\\\\\nExecStart=\n"
+                   f"ExecStart={hand} -u -m harness_hub {state}\n")
+    elif layout == "crlf":
+        service = f"ExecStart=/usr/bin/env \\\r\n    {hand} -u -m harness_hub {state}\r\n"
+    elif layout == "quoted-prefix":
+        # systemd strips the prefix from the first word after unquoting it.
+        service = f'ExecStart="-{hand}" -u -m harness_hub {state}\n'
+    elif layout == "comment-in-continuation":
+        service = f"ExecStart=/usr/bin/env \\\n# the interpreter:\n    {hand} -u -m harness_hub {state}\n"
+    else:
+        service = f"ExecStart={old} -u -m harness_hub {state}\nExecStart=\nExecStart={hand} -u -m harness_hub {state}\n"
+    host.unit_file.parent.mkdir(parents=True)
+    host.unit_file.write_text(f"[Unit]\nDescription=hand\n[Service]\n{service}", encoding="utf-8")
+    a = host.commit("1.0.0")
+    deploy_without_python(host, a, "--replace-unit")
+    assert "# interpreter current" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
+
+
+def test_a_candidate_that_cannot_create_a_venv_is_skipped_for_the_next(host):
+    # The unit names two venv interpreters; the first cannot create an environment, so the second is used, and the
+    # skip is reported.
+    without_venv_python3(host)
+    broken = host.root / "broken-venv"
+    (broken / "bin").mkdir(parents=True)
+    (broken / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    write_executable(broken / "bin" / "python", NO_VENV_PYTHON3)
+    hand = venv_python(host, host.root / "hand-venv", "working")
+    host.unit_file.parent.mkdir(parents=True)
+    host.unit_file.write_text(f"[Service]\nExecStart={broken}/bin/python {hand} -m harness_hub\n", encoding="utf-8")
+    a = host.commit("1.0.0")
+    result = deploy_without_python(host, a, "--replace-unit")
+    assert f"{broken}/bin/python" in result.stderr and "skipped" in result.stderr, result.stderr
+    assert "# interpreter working" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
+
+
+def test_a_hand_written_units_escaped_backslash_is_a_literal_backslash(host):
+    # \\s is a backslash and an s, not a backslash and a space: escapes decode in one pass.
+    without_venv_python3(host)
+    hand = venv_python(host, host.root / "venv\\stable", "backslash")
+    host.unit_file.parent.mkdir(parents=True)
+    escaped = str(hand).replace("\\", "\\\\")
+    host.unit_file.write_text(f"[Service]\nExecStart={escaped} -u -m harness_hub\n", encoding="utf-8")
+    a = host.commit("1.0.0")
+    deploy_without_python(host, a, "--replace-unit")
+    assert "# interpreter backslash" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
+
+
+def test_a_hand_written_units_specifier_is_expanded(host):
+    # %h is the user's home directory in a user unit.
+    without_venv_python3(host)
+    hand = venv_python(host, host.home / "hub-venv", "specifier")
+    host.unit_file.parent.mkdir(parents=True)
+    host.unit_file.write_text("[Service]\nExecStart=%h/hub-venv/bin/python -u -m harness_hub\n", encoding="utf-8")
+    a = host.commit("1.0.0")
+    result = deploy_without_python(host, a, "--replace-unit")
+    assert str(hand) in result.stdout, result.stdout
+    assert "# interpreter specifier" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
+
+
+def test_a_unicode_escape_decodes_to_utf8_whatever_the_locale(host):
+    without_venv_python3(host)
+    host.env["LC_ALL"] = "C"
+    hand = venv_python(host, host.root / "caf\u00e9-venv", "unicode")
+    host.unit_file.parent.mkdir(parents=True)
+    escaped = str(hand).replace("\u00e9", "\\u00e9")
+    host.unit_file.write_text(f"[Service]\nExecStart={escaped} -u -m harness_hub\n", encoding="utf-8")
+    a = host.commit("1.0.0")
+    deploy_without_python(host, a, "--replace-unit")
+    assert "# interpreter unicode" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
+
+
+def test_a_running_hub_started_by_hand_names_its_interpreter(host):
+    # No unit names the interpreter (a wrapper started the Hub, or no unit at all): the running Hub's first argument,
+    # read with its boundaries (a space in the path), names it. bash stands in for the Hub's process; `exec -a`-style,
+    # its argv[0] is the venv interpreter, and "sleep; :" keeps bash itself running instead of exec-ing sleep.
+    without_venv_python3(host)
+    hand = venv_python(host, host.root / "hand built venv", "running")
+    state = host.deploy / "state"
+    hub = subprocess.Popen([str(hand), "-c", "sleep 60; :", "-m", "harness_hub", "--state-dir", str(state), "--x"],
+                           executable="/bin/bash")
+    try:
+        a = host.commit("1.0.0")
+        result = deploy_without_python(host, a)
+        assert str(hand) in result.stdout, result.stdout
+        assert "# interpreter running" in (Path(venv_of(host, a)) / "bin" / "python").read_text(encoding="utf-8")
+    finally:
+        hub.kill()
+        hub.wait(timeout=10)
+
+
+def test_an_upgrade_without_python_uses_the_active_environments_interpreter(host):
+    without_venv_python3(host)
+    seed = venv_python(host, host.root / "seed-venv", "seed")
+    a, b = host.commit("1.0.0"), host.commit("1.1.0")
+    git(host.release, "checkout", "-q", a)
+    host.run("deploy-hub.sh", "--release-root", str(host.release), "--deploy-dir", str(host.deploy),
+             "--python", str(seed))
+    deploy_without_python(host, b)
+    assert "# interpreter seed" in (Path(venv_of(host, b)) / "bin" / "python").read_text(encoding="utf-8")
+    assert host.healthz() == {"ok": True, "version": "1.1.0"}
+
+
+def test_the_deployment_doc_describes_python_and_the_venv_requirement():
+    deployment = (ROOT / "docs" / "deployment.md").read_text(encoding="utf-8")
+    linux = deployment[deployment.index("## Linux"):deployment.index("## Windows")]
+    for needle in ("--python", "python3-venv", "ensurepip", ".venv-path"):
+        assert needle in linux, needle
 
 
 # -- the check --------------------------------------------------------------------------------------------------------
