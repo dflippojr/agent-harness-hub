@@ -255,6 +255,8 @@ OPERATIONS: dict[str, Operation] = {
 }
 
 TARGET = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}")
+# The page keeps its own copy, validHash in harness_hub/static/pages/admin.mjs. Both stay (#217); a test in
+# tests/test_administration.py fails if one pattern changes without the other.
 CONTENT_HASH = re.compile(r"[a-fA-F0-9]{64}")
 DAEMON_CONFIRM = {"github_reset", "google_unlink"}
 

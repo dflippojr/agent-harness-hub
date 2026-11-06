@@ -28,6 +28,8 @@ const UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
 const targetLabel = name => ({ user_id: "Member id", pid: "Proposal id", slug: "Skill or folder slug", credential_id: "Assignment id",
   scan_id: "Scan id", candidate_id: "Candidate id", project: "Project or folder", name: "Runner name" })[name] || name;
 const validTarget = value => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/.test(value) && !/(?:^|[^A-Za-z0-9])(?:ha|ho|hp)-[A-Za-z0-9_-]{4,}/.test(value);
+// The server keeps the same pattern as CONTENT_HASH in harness_hub/administration.py. Both stay (#217); a test in
+// tests/test_administration.py fails if one pattern changes without the other.
 const validHash = value => typeof value === "string" && /^[a-fA-F0-9]{64}$/.test(value);
 const readable = value => String(value).replaceAll("_", " ");
 // An action label inside a sentence: "Erase GitHub credential" reads "erase GitHub credential".
