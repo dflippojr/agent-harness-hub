@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from harness_hub.administration import OPERATIONS
+from harness_hub.administration import CONTENT_HASH, OPERATIONS
 from harness_hub.daemon import ADMIN_ROUTES
 
 from .conftest import HUB_HOST, assert_no_secrets
@@ -408,3 +408,27 @@ def test_a_non_object_row_under_a_frozen_schema_is_refused(operation, body):
 
     with pytest.raises(ValueError, match="Invalid daemon list row"):
         administration_view(operation, body)
+
+
+# The content hash is checked twice on purpose (#217): CONTENT_HASH on the server, validHash in the page's admin.mjs.
+ROOT = Path(__file__).resolve().parents[1]
+ADMIN_PY = ROOT / "harness_hub" / "administration.py"
+ADMIN_MJS = ROOT / "harness_hub" / "static" / "pages" / "admin.mjs"
+# The browser's copy, as the regex literal inside `const validHash = value => ... /^...$/.test(value);`.
+BROWSER_HASH = re.compile(r"^const validHash = [^\n]*?/(\^[^/\n]*\$)/\.test\(value\)", re.MULTILINE)
+
+
+def test_browser_hash_pattern_is_the_server_pattern_with_anchors():
+    browser = BROWSER_HASH.search(ADMIN_MJS.read_text(encoding="utf-8"))
+    assert browser, "admin.mjs no longer defines validHash as a regex literal"
+    assert browser.group(1) == f"^{CONTENT_HASH.pattern}$"
+
+
+def test_each_copy_of_the_content_hash_pattern_names_the_other():
+    server = ADMIN_PY.read_text(encoding="utf-8")
+    browser = ADMIN_MJS.read_text(encoding="utf-8")
+    # The comment block directly above each definition.
+    server_note = re.search(r"((?:^#[^\n]*\n)+)CONTENT_HASH = ", server, re.MULTILINE)
+    browser_note = re.search(r"((?:^//[^\n]*\n)+)const validHash = ", browser, re.MULTILINE)
+    assert server_note and "validHash" in server_note.group(1) and "admin.mjs" in server_note.group(1)
+    assert browser_note and "CONTENT_HASH" in browser_note.group(1) and "administration.py" in browser_note.group(1)
