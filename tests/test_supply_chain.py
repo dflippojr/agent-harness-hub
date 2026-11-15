@@ -43,7 +43,7 @@ def test_docker_and_ci_install_only_locked_external_inputs():
         for action in actions
     )
     assert ci.count("persist-credentials: false") == sum(action.startswith("actions/checkout@") for action in actions)
-    assert "ref: 2ba3603b23ad2162d35672f2ffe879b9ce3cc2ad" in ci
+    assert "ref: 43da701c746a61f9b96aad8dc5444fb9204532e9" in ci
     assert "guard-ref: 27bdb76481888567a6c524ebbb19bf4a6c7e7e20" in ci
     assert "pip install -r daemon/requirements.txt" not in ci
     assert "--require-hashes -r requirements-e2e.lock" in ci
