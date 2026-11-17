@@ -164,7 +164,8 @@ RUNNER = Obj({"name": STR, "online": BOOL, "last_seen_seconds": NUM | None, "pen
 MAINTENANCE = Obj({
     "workspaces_mb": NUM, "checkpoints_mb": NUM, "free_gb": NUM, "total_gb": NUM, "quota_mb": NUM,
     "containers": ListOf(Obj(optional={"name": STR, "state": STR, "size": STR})), "runners": ListOf(RUNNER),
-    "backup": Obj({"enabled": BOOL}), "image_archive": Obj({"enabled": BOOL}),
+    # `dir` is the backup module's (#252): absent with the module, the core answers only {"enabled": false}.
+    "backup": Obj({"enabled": BOOL}, optional={"dir": STR}), "image_archive": Obj({"enabled": BOOL}),
 }, optional={"last_cleanup": MapOf(ANY) | None})
 RETENTION_PREVIEW = Obj({"enabled": BOOL, "keep_days": NUM, "count": INT, "bytes": INT, "confirmation": STR})
 RETENTION_APPLIED = Obj({"removed": INT, "bytes": INT, "errors": ListOf(STR)})

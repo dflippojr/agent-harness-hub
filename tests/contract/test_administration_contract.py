@@ -160,6 +160,7 @@ def test_an_installed_skill_is_switched_scoped_exported_rolled_back_and_uninstal
 def test_maintenance_status_cleanup_and_backup(target):
     status = target.call("GET /api/admin/v1/maintenance", expect=200).body
     assert status["free_gb"] >= 0
+    assert not target.module_running("backup") or status["backup"]["dir"]  # #252: the view shows it
     target.call("POST /api/admin/v1/maintenance/cleanup", body={}, expect=200)
     backup = target.call("POST /api/admin/v1/maintenance/backup", body={}, expect=200).body
     assert backup["error"] == "" and backup["bytes"] > 0

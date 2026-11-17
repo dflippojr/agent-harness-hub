@@ -560,8 +560,8 @@ RUNNER = {"name": IDENTIFIER, "online": BOOL, "last_seen_seconds": NUMBER, "pend
           "info": {"version": TEXT, "protocol": NUMBER, "platform": TEXT, "arch": TEXT},
           "compatibility": {"state": TEXT, "notice": TEXT, "supported": {"min": NUMBER, "max": NUMBER}}}
 PROJECT = {"name": IDENTIFIER, "description": TEXT, "repo": BOOL, "homelab": BOOL, "target": TEXT, "managed": BOOL}
-FOLDER = {**dict.fromkeys(("project", "name", "folder", "path", "status", "invalid", "reason", "message"), TEXT),
-          **dict.fromkeys(("running", "trusted", "git", "managed", "owner_only", "trust_required"), BOOL),
+FOLDER = {**dict.fromkeys(("project", "path", "status", "invalid", "reason"), TEXT),
+          **dict.fromkeys(("running", "trusted", "git", "managed", "owner_only"), BOOL),
           "pid": NUMBER, "started_at": NUMBER, "trust_prompt_open": BOOL, "project": IDENTIFIER}
 CANDIDATE = {"id": IDENTIFIER, "suggested_slug": IDENTIFIER, "path": TEXT, "reason": TEXT, "markers": NAMES,
              **dict.fromkeys(("git", "requires_git", "launchable", "configured_duplicate", "promoted",
@@ -572,26 +572,24 @@ SCAN = MappingProxyType({"id": IDENTIFIER, "revision": NUMBER, "status": TEXT, "
 # Audit metadata is deliberately narrower than free text or caller-defined objects.
 AUDIT = {**dict.fromkeys(("actor_id", "actor_kind", "key_id", "source", "target_id", "target_kind", "action",
                           "outcome"), TEXT),
-         "id": NUMBER, "ts": NUMBER, "at": NUMBER, "timestamp": NUMBER, "created_at": NUMBER, "detail": TEXT,
+         "id": NUMBER, "ts": NUMBER, "detail": TEXT,
          "metadata": {"fields": NAMES, "reason": TEXT, "operation_id": TEXT, "category": TEXT,
                       **dict.fromkeys(("count", "removed", "kept", "expired", "new_max_running", "old_max_running",
                                       "new_max_queued", "old_max_queued", "new_disk_quota_bytes",
                                       "old_disk_quota_bytes"), NUMBER)}}
 CLEANUP = {"at": NUMBER, "removed": NUMBER, "kept": NUMBER, "expired": NUMBER,
-           "errors": NAMES, "warnings": NAMES, "ok": BOOL,
+           "errors": NAMES, "warnings": NAMES,
            **dict.fromkeys(("containers_removed", "workspaces_removed", "orphans_removed",
                            "apps_erased", "sessions_expired"), NUMBER)}
-BACKUP = {"enabled": BOOL, "at": NUMBER, "ok_at": NUMBER, "path": TEXT, "bytes": NUMBER, "files": NUMBER,
+BACKUP = {"enabled": BOOL, "ok_at": NUMBER, "path": TEXT, "bytes": NUMBER, "files": NUMBER,
           "app_stores": NUMBER, "removed": NAMES, "dir": TEXT,
-          "transcript_archives": NUMBER, "warnings": NAMES, "error": TEXT, "ok": BOOL,
-          "last_backup": {"at": NUMBER, "path": TEXT, "bytes": NUMBER, "transcript_archives": NUMBER,
-                          "warnings": NAMES}}
+          "transcript_archives": NUMBER, "warnings": NAMES, "error": TEXT}
 RETENTION = {"enabled": BOOL, "keep_days": NUMBER, "count": NUMBER, "bytes": NUMBER,
              "confirmation": TEXT, "removed": NUMBER, "errors": NAMES}
 MAINTENANCE = {**dict.fromkeys(("workspaces_mb", "checkpoints_mb", "free_gb", "total_gb", "quota_mb"), NUMBER),
                "last_cleanup": CLEANUP, "backup": BACKUP, "runners": [RUNNER],
                "containers": [{"name": TEXT, "state": TEXT, "size": TEXT}],
-               "image_archive": {"enabled": BOOL, "ok": BOOL, "error": TEXT, "count": NUMBER, "bytes": NUMBER}}
+               "image_archive": {"enabled": BOOL, "bytes": NUMBER}}
 RESULT = {"ok": BOOL, "removed": BOOL, "slug": TEXT, "already_added": BOOL, "message": TEXT,
           "version": TEXT, "updated": BOOL, "pid": NUMBER}
 SCHEMAS = {

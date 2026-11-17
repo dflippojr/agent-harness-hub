@@ -23,7 +23,31 @@ from .shapes import ANY, NULL, ListOf, MapOf, Obj, Shape, Union
 
 # Allowlisted names the contract does not list, kept on purpose. Each key is a views schema (by its name in views.py,
 # then the nested keys) and a field; each value says why the view keeps it.
-ALLOWED_EXTRA: dict[str, str] = {}
+#
+# Every entry below is a field the daemon sends, at the pin and at the README's minimum daemon (aa5a904), in a reply
+# no disposable daemon can produce: its `[daemon]` case is a `daemon_cannot` skip or reads the module switched off. A
+# contract field is one a `[daemon]` case proves, so these wait here. Move one into tests/contract/endpoints.py when a
+# case can reach its reply.
+_REMOTE = ("harness_modules/remote_control/service.py RemoteControl.status() sends it in folder rows; Remote Control "
+           "needs Claude Code on the daemon host, so the [daemon] case skips")
+_PROPOSAL = ("harness_modules/skills/service.py public_proposal() sends it in every proposal; a proposal comes from "
+             "an agent session, so the [daemon] case skips")
+ALLOWED_EXTRA: dict[str, str] = {
+    "FOLDER.invalid": _REMOTE + " (a managed folder that is unusable, or 'slug_conflict').",
+    "FOLDER.owner_only": _REMOTE + " (true for a folder discovery added).",
+    "FOLDER.pid": _REMOTE + " (the running Remote Control process, null when stopped).",
+    "FOLDER.started_at": _REMOTE + " (when Remote Control last started there).",
+    "FOLDER.trust_prompt_open": _REMOTE + " (every row).",
+    "SKILL.created_at": _PROPOSAL + ".",
+    "SKILL.updated_at": _PROPOSAL + "; SkillStore._public_installed() sends it for installed skills too.",
+    "SKILL.target_slug": _PROPOSAL + " (the installed skill a proposal updates, or '').",
+    "SKILL.example_count": _PROPOSAL + ".",
+    "SKILL.reference_count": _PROPOSAL + ".",
+    "SKILL.manifest": _PROPOSAL.replace("in every proposal", "in the proposal read (include_body)")
+    + "; its keys are the ones service.py builds the manifest from.",
+    "MAINTENANCE.image_archive.bytes": "harness_modules/images/archive.py ImageArchive.health() sends it; the "
+    "disposable daemon runs without the images module, so GET /maintenance answers only {\"enabled\": false} there.",
+}
 
 
 def _options(shape: Shape | None) -> list[Shape]:
@@ -114,3 +138,11 @@ def test_allowed_extra_names_only_names_the_contract_still_lacks():
 def test_every_views_schema_operation_has_a_contract_reply():
     assert set(views.SCHEMAS) <= set(daemon.ADMIN_ROUTES)
     assert all(_replies(operation) for operation in views.SCHEMAS)
+
+
+def test_a_name_the_daemon_never_sends_is_caught(monkeypatch):
+    """#88 again: an audit time under a name the daemon does not send fails here, at its path."""
+    monkeypatch.setitem(views.AUDIT, "at", views.NUMBER)
+    monkeypatch.setitem(views.AUDIT["metadata"], "when", views.NUMBER)  # below MapOf(ANY): nothing to hold it to
+    assert unlisted()["AUDIT.at"] == ["account_audit", "audit"]
+    assert "AUDIT.metadata.when" not in unlisted()
