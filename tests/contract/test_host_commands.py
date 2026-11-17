@@ -11,17 +11,19 @@ import sys
 
 import pytest
 
-from .host_commands import hub_commands, misplaced, parse
+from .host_commands import hub_commands, misplaced, parse, server_commands
 from .targets import daemon_source
 
 pytestmark = pytest.mark.e2e
 
-if shutil.which("node") is None:
-    if os.environ.get("CI"):
-        raise RuntimeError("the host command check reads harness_hub/static/lib/commands.mjs and needs Node.js on PATH")
-    pytest.skip("Node.js is not on PATH; the host command check reads commands.mjs through it", allow_module_level=True)
+# The pages' commands are read through node; without it, only the server's are collected and
+# test_node_reads_the_page_table fails, so a missing node never passes silently.
+NODE = shutil.which("node")
+COMMANDS = hub_commands() if NODE else server_commands()
 
-COMMANDS = hub_commands()
+
+def test_node_reads_the_page_table():
+    assert NODE, "the host command check reads harness_hub/static/lib/commands.mjs through Node.js; put node on PATH"
 
 
 @pytest.fixture(scope="module")

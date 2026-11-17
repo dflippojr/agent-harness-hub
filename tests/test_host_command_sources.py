@@ -7,10 +7,7 @@ from __future__ import annotations
 
 import ast
 import re
-import shutil
 from pathlib import Path
-
-import pytest
 
 from .contract.host_commands import TABLE, page_commands, server_commands
 
@@ -91,7 +88,6 @@ def test_every_table_command_is_printed_by_a_page():
     assert table_names() and not unused, f"commands.mjs entries no page prints: {unused}"
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="reads commands.mjs through Node.js")
 def test_the_parse_check_reads_every_table_command_with_and_without_each_option():
     sources = [source for source, _ in page_commands()]
     prefix = "harness_hub/static/lib/commands.mjs COMMANDS."
