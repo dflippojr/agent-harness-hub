@@ -33,7 +33,7 @@ MESSAGES = {
     "rate_limited": "The daemon has too many pairing requests waiting. Try again in a few minutes.",
     "failed": "The claim did not complete. Check that the daemon is running, then start a new claim.",
     "lost": "The daemon issued this Hub's key, but the reply never arrived. On the daemon host run "
-            "harness hub release --confirm, then start a new claim here.",
+            f"{RELEASE_COMMAND}, then start a new claim here.",
 }
 
 

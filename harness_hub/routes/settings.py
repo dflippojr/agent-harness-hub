@@ -30,7 +30,7 @@ async def administration_catalog():
                  "cli": "harness runner-pairing-codes create"},
                 {"label": "Creating owner keys",
                  "reason": "A Hub key cannot mint owner keys (daemon refuses with hub_key).",
-                 "cli": "harness keys create"}]}
+                 "cli": "harness keys create <name> --kind owner --scopes admin"}]}
 
 
 async def administration_action(operation: str, request: Request):
