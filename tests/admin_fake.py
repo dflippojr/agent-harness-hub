@@ -244,7 +244,7 @@ def register_administration(app, fake, owner):
                 "workspaces_mb": 2,
                 "checkpoints_mb": 0,
                 "last_cleanup": None,
-                "backup": {"enabled": False},
+                "backup": {"enabled": False, "dir": "/synthetic/backups"},
                 "image_archive": {"enabled": False},
                 "runners": [],
                 "containers": [],
