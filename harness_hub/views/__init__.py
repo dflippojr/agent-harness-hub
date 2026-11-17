@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
 import time
 import unicodedata
@@ -15,6 +14,9 @@ from urllib.parse import urlsplit
 
 from ..administration import CONTENT_HASH, TARGET
 from ..guard import LINK_CODE
+from .modules import (
+    module_view,
+)
 from .overview import (
     MIN_OWNER_API,
     TAILNET_OWNER_API,
@@ -57,29 +59,6 @@ from .text import (
     _prefix,
     display_text,
 )
-
-
-def module_view(body: Any) -> list[dict]:
-    """Only module identity, presence and up to eight scalar status fields reach the browser."""
-    rows = _dict(body).get("modules", [])
-    out = []
-    for row in rows:
-        shown = {"name": display_text(row.get("name"), 200, redact=GUARD), "state": row.get("state")}
-        detail = row.get("status")
-        if isinstance(detail, dict):
-            fields = {}
-            for key, value in list(detail.items())[:8]:
-                if not isinstance(key, str) or len(key) > 200:
-                    continue
-                if isinstance(value, str):
-                    fields[key] = display_text(value, 200, redact=WORD)
-                elif value is None or type(value) is bool or type(value) is int and value.bit_length() <= 64 or (
-                        type(value) is float and math.isfinite(value)):
-                    fields[key] = value
-            shown["status"] = fields
-        out.append(shown)
-    return out
-
 
 APP_STATES = {"active", "idle", "stale", "never_used", "revoked", "erasure_pending"}
 SESSION_STATES = ("queued", "running", "waiting_approval", "waiting_target", "waiting_app", "waiting_limit",
