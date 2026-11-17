@@ -13,10 +13,10 @@ from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import __version__
-from .administration import CONTENT_HASH, TARGET
-from .claim import CLAIMED, PENDING, RELEASE_COMMAND, ClaimManager
-from .guard import KEY_PREFIX_SHAPE, LINK_CODE, TOKEN_SHAPE, leaks
+from .. import __version__
+from ..administration import CONTENT_HASH, TARGET
+from ..claim import CLAIMED, PENDING, RELEASE_COMMAND, ClaimManager
+from ..guard import KEY_PREFIX_SHAPE, LINK_CODE, TOKEN_SHAPE, leaks
 
 MESSAGES = {
     "unclaimed": "This Hub has not claimed the daemon yet.",
