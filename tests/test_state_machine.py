@@ -36,6 +36,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -51,6 +52,7 @@ from harness_hub.config import Settings
 from harness_hub.guard import TOKEN_SHAPE, WITHHELD, leaks
 from harness_hub.inventory import INVENTORY_FILE
 from harness_hub.state import StateStore
+from harness_hub.tuning import DEFAULT_TUNING
 from harness_hub.views import apps_view, entries_view, module_view
 
 from .conftest import HUB_HOST, FakeDaemon
@@ -191,9 +193,7 @@ class Read:
 class HubMachine(RuleBasedStateMachine):
     def __init__(self):
         super().__init__()
-        self.grace = server.RESTART_GRACE_SECONDS
         # The generation check alone must keep a restart honest; the grace second is only a heuristic on top of it.
-        server.RESTART_GRACE_SECONDS = 0
         self.dir = Path(tempfile.mkdtemp(prefix="hub-sm-"))
         self.fake = FakeDaemon()
         token = "ho-" + secrets.token_urlsafe(32)
@@ -205,7 +205,7 @@ class HubMachine(RuleBasedStateMachine):
                                          "claimed_at": time.time()})
         self.transport = HoldingTransport(self.fake.transport())
         app = server.create_app(Settings(daemon_url=DAEMON_URL, state_dir=self.dir, poll_seconds=0.02),
-                                transport=self.transport)
+                                transport=self.transport, tuning=replace(DEFAULT_TUNING, restart_grace_seconds=0))
         self.client = TestClient(app, base_url=f"http://{HUB_HOST}")
         self.client.__enter__()
         code = create_signin_code(self.dir)
@@ -231,7 +231,6 @@ class HubMachine(RuleBasedStateMachine):
             read.gate.release.set()
         self.pool.shutdown(wait=True)
         self.client.__exit__(None, None, None)
-        server.RESTART_GRACE_SECONDS = self.grace
         shutil.rmtree(self.dir, ignore_errors=True)
 
     # --- the browser -----------------------------------------------------------------------------------------------

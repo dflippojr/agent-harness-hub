@@ -15,6 +15,8 @@ from fastapi.responses import JSONResponse
 from ..daemon import DaemonUnreachable
 from ..guard import leaks
 from ..inventory import valid_inventory
+from ..restart import observe_recovery, observe_restart
+from ..slots import observe_browser_slots
 from ..views import (
     ID_SEGMENT,
     apps_view,
@@ -26,9 +28,7 @@ from ..views import (
     settings_error,
     spend_view,
 )
-from .common import HubContext, concurrently, error, hub, read_inventory, refused, retained, settled, tuning, unclaimed
-from .marketplace import observe_browser_slots
-from .settings import observe_recovery, observe_restart
+from .common import HubContext, concurrently, error, hub, read_inventory, refused, retained, settled, unclaimed
 
 
 async def get_overview(request: Request):
@@ -48,8 +48,8 @@ async def get_overview(request: Request):
     # other reads and is awaited only when all of them succeed, and then only until its deadline; a refused or
     # failed read, or the deadline, cancels it instead.
     pairing_task = asyncio.ensure_future(read_pairing()) if key else None
-    deadline = asyncio.get_running_loop().time() + tuning().PAIRING_COUNT_SECONDS
-    health_generation = ctx.restart["generation"]
+    deadline = asyncio.get_running_loop().time() + ctx.tuning.pairing_count_seconds
+    health_generation = ctx.restart.generation
     try:
         reads = await concurrently(ctx.daemon.health(), *(
             (ctx.daemon.admin(key["token"]), ctx.daemon.admin(key["token"], "/hub-claim")) if key else ()))
@@ -93,7 +93,7 @@ async def get_overview(request: Request):
         observe_recovery(ctx, health["health"]["recovery"])
     observe_restart(ctx, health["health"] if health else None, health_generation)
     result["answered"] = answered
-    result["restarting"] = ctx.restart["active"]
+    result["restarting"] = ctx.restart.active
     result["attention"] = attention
     return result
 
@@ -154,7 +154,7 @@ async def get_spend(request: Request):
     live = [row["id"] for row in (body or {}).get("apps", []) if isinstance(row, dict)
             and row.get("kind") == "app" and row.get("revoked_at") is None and row.get("id") != key["key_id"]
             and isinstance(row.get("id"), str) and ID_SEGMENT.fullmatch(row["id"])]
-    gate = asyncio.Semaphore(tuning().SPEND_CAP_READS)
+    gate = asyncio.Semaphore(ctx.tuning.spend_cap_reads)
 
     async def read_caps(app_id: str):
         async with gate:
