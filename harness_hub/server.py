@@ -25,6 +25,7 @@ from .config import Settings
 from .daemon import DaemonClient
 from .guard import ResponseGuard
 from .inventory import InventoryCache
+from .owners import signed_in
 from .routes import apps as apps_routes
 from .routes import marketplace as marketplace_routes
 from .routes import overview as overview_routes
@@ -32,24 +33,16 @@ from .routes import session as session_routes
 from .routes import settings as settings_routes
 from .routes.common import HubContext
 from .routes.common import error as _error
-from .routes.common import json_body as _json_body  # noqa: F401 (re-exported: tests import it from here)
-from .routes.session import MAX_SIGNIN_BODY as MAX_SIGNIN_BODY  # re-exported: tests import it from here
 from .routes.session import SIGNIN_COMMAND
 from .state import SERVER_FILE, StateStore, write_private
 from .status import StatusReporter
 from .tailnet import PeerCheck, TailnetIdentity
+from .tuning import DEFAULT_TUNING, Tuning
 
 log = logging.getLogger("harness_hub")
 
 STATIC = resources.files("harness_hub") / "static"
 REQUEST_HEADER = "x-hub-request"
-# Timing constants stay here for every router, which reads them through `routes.common.tuning()` on each use.
-ALLOWED_LOGINS_SECONDS = 5.0  # how long the Hub reuses the daemon's allowed_logins answer
-OUTAGE_GRACE_SECONDS = 120.0  # how long after the daemon last listed a tailnet tab's login an outage keeps the tab
-PAIRING_COUNT_SECONDS = 5.0  # how long Overview waits for its optional pairing count, consent lock included
-SPEND_CAP_READS = 8  # App session-cap reads in flight at once; every live App is read
-RESTART_GRACE_SECONDS = 1.0  # how long after a restart request the Hub ignores health that predates it
-KNOWN_RECOVERIES = 16  # recoveries the Hub remembers from daemon replies, to name in a restart's 202 (#143)
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 SECURITY_HEADERS = [
@@ -96,7 +89,7 @@ class HostCheck:
 
 
 def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None,
-               peer_check: PeerCheck | None = None) -> HostCheck:
+               peer_check: PeerCheck | None = None, tuning: Tuning = DEFAULT_TUNING) -> HostCheck:
     store = StateStore(settings.state_dir)
     daemon = DaemonClient(settings.daemon_url, transport=transport)
     claims = ClaimManager(store, daemon, name=settings.claim_name, claim_file=settings.claim_file,
@@ -132,7 +125,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     app.state.sessions = sessions
     app.state.inventory = inventory
     app.state.hub = hub = HubContext(settings=settings, store=store, daemon=daemon, claims=claims, sessions=sessions,
-                                     inventory=inventory, peer_check=peer_check)
+                                     inventory=inventory, peer_check=peer_check,
+                                     tuning=tuning)
 
     @app.middleware("http")
     async def require_owner(request: Request, call_next):
@@ -150,7 +144,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                 return _error(403, "cross-origin request refused")
         if path == "/api/session" and request.method in ("GET", "POST"):
             return await call_next(request)
-        if not await session_routes.signed_in(hub, request):
+        if not await signed_in(hub, request):
             return _error(401, "sign in first", signin_command=SIGNIN_COMMAND)
         return await call_next(request)
 

@@ -11,6 +11,7 @@ from fastapi.responses import Response
 
 from ..claim import RELEASE_COMMAND
 from ..daemon import DaemonUnreachable
+from ..slots import observe_browser_slots, skipped_confirmation
 from ..views import (
     ID_SEGMENT,
     app_view,
@@ -32,7 +33,6 @@ from .common import (
     unclaimed,
     unreachable,
 )
-from .marketplace import observe_browser_slots, skipped_confirmation
 
 
 async def apps_action(resource: str, request: Request):

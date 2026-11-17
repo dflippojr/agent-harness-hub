@@ -5,8 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from harness_hub import server
 from harness_hub.daemon import DaemonClient
+from harness_hub.tuning import DEFAULT_TUNING
 
 from .conftest import HUB_HOST, assert_no_secrets
 
@@ -19,7 +19,7 @@ def write(hub, method, resource, body):
 
 
 def test_registry_validate_save_conflict_rollback_restart(claimed, fake_daemon, monkeypatch):
-    monkeypatch.setattr(server, "RESTART_GRACE_SECONDS", 0)  # the fake daemon's two 503s keep the restart showing
+    claimed.retune(restart_grace_seconds=0)  # the fake daemon's two 503s keep the restart showing
     hub = claimed
     schema = hub.get("/api/settings/schema").json()
     config = hub.get("/api/settings/config").json()
@@ -134,7 +134,7 @@ def test_errors_say_whether_the_daemon_answered(claimed, fake_daemon):
 
 
 def test_overview_ends_a_restart_that_recovery_resolved_at_a_lower_revision(claimed, fake_daemon, monkeypatch):
-    monkeypatch.setattr(server, "RESTART_GRACE_SECONDS", 0)
+    claimed.retune(restart_grace_seconds=0)
     saved = write(claimed, "PATCH", "config", {"revision": 3, "changes": {"listen.idle": 2.0}})
     assert saved.json()["pending_revision"] == 4
     started = write(claimed, "POST", "restart", {"revision": 4, "confirm": True})
@@ -174,11 +174,12 @@ def test_a_restart_reply_names_the_recoveries_the_hub_had_before_accepting_it(cl
     assert started.status_code == 202 and [row["at"] for row in started.json()["known_recoveries"]] == [50, 60]
     # Bounded: the oldest are forgotten first.
     fake_daemon.restart_requested, fake_daemon.restart_polls = False, 0
-    for at in range(61, 61 + server.KNOWN_RECOVERIES):
+    for at in range(61, 61 + DEFAULT_TUNING.known_recoveries):
         fake_daemon.recovery = {**first, "at": at}
         claimed.get("/api/overview")
     started = write(claimed, "POST", "restart", {"revision": 4, "confirm": True})
-    assert [row["at"] for row in started.json()["known_recoveries"]] == list(range(61, 61 + server.KNOWN_RECOVERIES))
+    known = DEFAULT_TUNING.known_recoveries
+    assert [row["at"] for row in started.json()["known_recoveries"]] == list(range(61, 61 + known))
 
 
 def test_a_health_error_is_the_daemon_answering_not_silence(claimed, fake_daemon):
@@ -201,7 +202,7 @@ def test_a_health_error_is_the_daemon_answering_not_silence(claimed, fake_daemon
 
 @pytest.mark.parametrize("source", ["overview", "settings/health"])
 def test_health_read_before_restart_cannot_end_it(claimed, monkeypatch, source):
-    monkeypatch.setattr(server, "RESTART_GRACE_SECONDS", 0)
+    claimed.retune(restart_grace_seconds=0)
     health_read, parked, release = threading.Event(), threading.Event(), threading.Event()
     health, pairing = DaemonClient.health, DaemonClient.pairing
 

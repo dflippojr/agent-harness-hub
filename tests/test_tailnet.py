@@ -16,7 +16,6 @@ from starlette.testclient import TestClient
 
 from harness_hub import __main__ as cli
 from harness_hub import auth
-from harness_hub import server as hub_server
 from harness_hub.daemon import DaemonClient
 from harness_hub.tailnet import (
     CACHE_SECONDS,
@@ -29,6 +28,7 @@ from harness_hub.tailnet import (
     serve_config,
     tcp_forwards,
 )
+from harness_hub.tuning import DEFAULT_TUNING
 
 from .conftest import HUB_HOST
 from .test_token_words import FULL_TOKENS
@@ -574,7 +574,7 @@ def removal(hub, fake_daemon, how: str):
 
 @pytest.mark.parametrize("how", ["unlisted", "empty", "no list", "key refused", "unclaimed"])
 def test_removing_a_login_ends_its_tailnet_sessions(tailnet_hub, fake_daemon, monkeypatch, how):
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tailnet_hub.retune(allowed_logins_seconds=0.0)
     owner_tab(tailnet_hub)
     assert tailnet_hub.get("/api/overview").status_code == 200
     restore = removal(tailnet_hub, fake_daemon, how)
@@ -590,7 +590,7 @@ def test_removing_a_login_ends_its_tailnet_sessions(tailnet_hub, fake_daemon, mo
 
 
 def test_a_link_session_does_not_depend_on_allowed_logins(tailnet_hub, fake_daemon, monkeypatch):
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tailnet_hub.retune(allowed_logins_seconds=0.0)
     tailnet_hub.sign_in()
     fake_daemon.allowed_logins = []
     before = discovery_reads(fake_daemon)
@@ -602,7 +602,7 @@ def test_a_link_session_does_not_depend_on_allowed_logins(tailnet_hub, fake_daem
 
 @pytest.mark.parametrize("outage", ["unreachable", "restarting"])
 def test_a_daemon_that_cannot_answer_signs_no_one_out(tailnet_hub, fake_daemon, monkeypatch, outage):
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tailnet_hub.retune(allowed_logins_seconds=0.0)
     owner_tab(tailnet_hub)
     if outage == "unreachable":
         fake_daemon.down = True
@@ -618,7 +618,7 @@ def test_a_daemon_that_cannot_answer_signs_no_one_out(tailnet_hub, fake_daemon, 
 
 
 def test_a_tailnet_tab_that_joined_a_link_session_ends_alone(tailnet_hub, fake_daemon, monkeypatch):
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tailnet_hub.retune(allowed_logins_seconds=0.0)
     link = tailnet_hub.sign_in().headers["x-hub-session"]
     cookie = tailnet_hub.client.cookies["hub_session"]
     sessions = tailnet_hub.client.app.fastapi.state.sessions
@@ -636,7 +636,7 @@ def test_a_tailnet_tab_that_joined_a_link_session_ends_alone(tailnet_hub, fake_d
 
 
 def test_a_link_tab_that_joined_a_tailnet_session_is_never_checked(tailnet_hub, fake_daemon, monkeypatch):
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tailnet_hub.retune(allowed_logins_seconds=0.0)
     tab = owner_tab(tailnet_hub)
     link = tailnet_hub.sign_in().headers["x-hub-session"]
     fake_daemon.allowed_logins = []
@@ -646,11 +646,11 @@ def test_a_link_tab_that_joined_a_tailnet_session_is_never_checked(tailnet_hub, 
 
 @pytest.mark.parametrize("outage", [False, True])
 def test_tailnet_tabs_share_one_allowed_logins_read(tailnet_hub, fake_daemon, monkeypatch, outage):
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tailnet_hub.retune(allowed_logins_seconds=0.0)
     owner_tab(tailnet_hub)
     other = owner_tab(tailnet_hub)  # a second tailnet tab, so the burst is not one binding's
     fake_daemon.down = outage
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 60.0)  # the sign-in's answer is stale; the next is kept
+    tailnet_hub.retune(allowed_logins_seconds=60.0)  # the sign-in's answer is stale; the next is kept
     before = discovery_reads(fake_daemon)
     for binding in [other, *[tailnet_hub.client.headers["X-Hub-Session"]] * 10]:
         assert tailnet_hub.get("/api/claim", headers={"X-Hub-Session": binding}).status_code == 200
@@ -658,9 +658,9 @@ def test_tailnet_tabs_share_one_allowed_logins_read(tailnet_hub, fake_daemon, mo
 
 
 def test_concurrent_requests_share_one_allowed_logins_read(tailnet_hub, fake_daemon, monkeypatch):
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tailnet_hub.retune(allowed_logins_seconds=0.0)
     owner_tab(tailnet_hub)
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 60.0)
+    tailnet_hub.retune(allowed_logins_seconds=60.0)
     call = DaemonClient._call
 
     async def slow(self, method, path, **kw):
@@ -688,13 +688,13 @@ def grace_clock(hub) -> list[float]:
 
 
 def test_an_outage_within_the_grace_keeps_a_tailnet_tab(tailnet_hub, fake_daemon, monkeypatch):
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tailnet_hub.retune(allowed_logins_seconds=0.0)
     now = grace_clock(tailnet_hub)
     owner_tab(tailnet_hub)
     now[0] += 60
     assert tailnet_hub.get("/api/claim").status_code == 200  # listed: the grace starts again from here
     fake_daemon.down = True
-    now[0] += hub_server.OUTAGE_GRACE_SECONDS - 1
+    now[0] += DEFAULT_TUNING.outage_grace_seconds - 1
     assert tailnet_hub.get("/api/claim").status_code == 200
     assert tailnet_hub.get("/api/session").json()["signed_in"] is True
 
@@ -702,14 +702,14 @@ def test_an_outage_within_the_grace_keeps_a_tailnet_tab(tailnet_hub, fake_daemon
 @pytest.mark.parametrize("outage", ["unreachable", "restarting"])
 def test_an_outage_past_the_grace_answers_401_until_the_login_is_checked(tailnet_hub, fake_daemon, monkeypatch,
                                                                           outage):
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tailnet_hub.retune(allowed_logins_seconds=0.0)
     now = grace_clock(tailnet_hub)
     owner_tab(tailnet_hub)
     if outage == "unreachable":
         fake_daemon.down = True
     else:
         fake_daemon.discovery_status = 503
-    now[0] += hub_server.OUTAGE_GRACE_SECONDS + 1
+    now[0] += DEFAULT_TUNING.outage_grace_seconds + 1
     ended = tailnet_hub.get("/api/overview")
     assert ended.status_code == 401 and ended.json()["detail"] == "sign in first"
     assert tailnet_hub.get("/api/session").json()["signed_in"] is False
@@ -718,7 +718,7 @@ def test_an_outage_past_the_grace_answers_401_until_the_login_is_checked(tailnet
     # The daemon answers again and still lists the login: the same tab works, and the grace starts again.
     assert tailnet_hub.get("/api/overview").status_code == 200
     fake_daemon.down = True
-    now[0] += hub_server.OUTAGE_GRACE_SECONDS - 1
+    now[0] += DEFAULT_TUNING.outage_grace_seconds - 1
     assert tailnet_hub.get("/api/claim").status_code == 200
 
 
@@ -726,7 +726,7 @@ def test_a_restart_the_tab_asks_for_ends_it_once_the_grace_runs_out(tailnet_hub,
     """The review's case: the owner removed the login from harness.local.yaml, which the daemon applies on a restart,
     and the removed tab asks for that restart itself, through the Hub's Settings route, hoping to stay in while every
     check lands in the outage."""
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tailnet_hub.retune(allowed_logins_seconds=0.0)
     now = grace_clock(tailnet_hub)
     owner_tab(tailnet_hub)
     now[0] += 30
@@ -735,7 +735,7 @@ def test_a_restart_the_tab_asks_for_ends_it_once_the_grace_runs_out(tailnet_hub,
     assert asked.status_code == 202, asked.text
     fake_daemon.down = True  # the restart takes the daemon down, and it stays down
     fake_daemon.allowed_logins = ["partner@example.test"]  # what it will list once it is back
-    now[0] += hub_server.OUTAGE_GRACE_SECONDS - 1
+    now[0] += DEFAULT_TUNING.outage_grace_seconds - 1
     assert tailnet_hub.get("/api/claim").status_code == 200  # a short restart signs no one out
     now[0] += 2
     assert tailnet_hub.get("/api/claim").status_code == 401
@@ -749,19 +749,19 @@ def test_a_restart_the_tab_asks_for_ends_it_once_the_grace_runs_out(tailnet_hub,
 
 
 def test_a_burst_past_the_grace_makes_one_attempt(tailnet_hub, fake_daemon, monkeypatch):
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tailnet_hub.retune(allowed_logins_seconds=0.0)
     now = grace_clock(tailnet_hub)
     owner_tab(tailnet_hub)
     fake_daemon.down = True
-    now[0] += hub_server.OUTAGE_GRACE_SECONDS + 1
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 60.0)
+    now[0] += DEFAULT_TUNING.outage_grace_seconds + 1
+    tailnet_hub.retune(allowed_logins_seconds=60.0)
     before = discovery_reads(fake_daemon)
     assert [tailnet_hub.get("/api/claim").status_code for _ in range(10)] == [401] * 10
     assert discovery_reads(fake_daemon) == before + 1
 
 
 def test_a_definite_no_within_the_grace_still_ends_the_tab_at_once(tailnet_hub, fake_daemon, monkeypatch):
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tailnet_hub.retune(allowed_logins_seconds=0.0)
     now = grace_clock(tailnet_hub)
     owner_tab(tailnet_hub)
     fake_daemon.down = True
@@ -778,30 +778,30 @@ def test_a_definite_no_within_the_grace_still_ends_the_tab_at_once(tailnet_hub, 
 def test_a_wall_clock_step_back_does_not_lengthen_the_grace(tailnet_hub, fake_daemon, monkeypatch):
     """An NTP correction, a restored snapshot or a manual `date` during the outage moves the wall clock back; the grace
     runs on the monotonic clock, so the tab still ends once it is over."""
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tailnet_hub.retune(allowed_logins_seconds=0.0)
     now = grace_clock(tailnet_hub)
     wall = [time.time()]
     tailnet_hub.client.app.fastapi.state.sessions.clock = lambda: wall[0]
     owner_tab(tailnet_hub)
     fake_daemon.down = True
-    now[0] += hub_server.OUTAGE_GRACE_SECONDS + 1
+    now[0] += DEFAULT_TUNING.outage_grace_seconds + 1
     wall[0] -= 3600
     assert tailnet_hub.get("/api/claim").status_code == 401
 
 
 def test_the_grace_counts_from_the_daemon_read_that_listed_the_login(tailnet_hub, fake_daemon, monkeypatch):
     """A request that reuses a kept yes does not move the grace's start: it is the time of the read that said yes."""
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tailnet_hub.retune(allowed_logins_seconds=0.0)
     now = grace_clock(tailnet_hub)
     owner_tab(tailnet_hub)
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 60.0)
+    tailnet_hub.retune(allowed_logins_seconds=60.0)
     assert tailnet_hub.get("/api/claim").status_code == 200  # the daemon's yes, kept for a minute
     before = discovery_reads(fake_daemon)
     now[0] += 50
     assert tailnet_hub.get("/api/claim").status_code == 200  # the kept yes, from 50 seconds ago
     assert discovery_reads(fake_daemon) == before
     fake_daemon.down = True
-    now[0] += hub_server.OUTAGE_GRACE_SECONDS - 51
+    now[0] += DEFAULT_TUNING.outage_grace_seconds - 51
     assert tailnet_hub.get("/api/claim").status_code == 200  # a fresh read: the daemon is down
     assert discovery_reads(fake_daemon) == before + 1
     now[0] += 2
@@ -829,7 +829,7 @@ def end_during_discovery_read(monkeypatch, end) -> list[int]:
 @pytest.mark.parametrize("route", ["/api/overview", "/api/session"])
 def test_a_binding_that_ends_during_the_login_check_authorizes_nothing(tailnet_hub, fake_daemon, monkeypatch, how,
                                                                        route):
-    monkeypatch.setattr(hub_server, "ALLOWED_LOGINS_SECONDS", 0.0)
+    tailnet_hub.retune(allowed_logins_seconds=0.0)
     sessions = tailnet_hub.client.app.fastapi.state.sessions
     wall = [time.time()]
     sessions.clock = lambda: wall[0]

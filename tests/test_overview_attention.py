@@ -3,7 +3,6 @@ import asyncio
 
 import pytest
 
-from harness_hub import server
 from harness_hub.daemon import ADMIN, DaemonClient, DaemonUnreachable, Reply
 
 from .conftest import assert_no_secrets
@@ -139,7 +138,7 @@ def test_a_held_consent_lock_does_not_hold_up_overview(claimed, fake_daemon, mon
         return Reply(200, [])
 
     monkeypatch.setattr(DaemonClient, "pairing", pairing)
-    monkeypatch.setattr(server, "PAIRING_COUNT_SECONDS", 0.2)
+    claimed.retune(pairing_count_seconds=0.2)
     before = overview(claimed)
     assert before["attention"] == {"approve": 0, "confirm": 0} and pairing_reads == ["list"]
     # An arm request in another tab holds the lock and never finishes; the three primary reads all succeed.

@@ -7,6 +7,7 @@ The real daemon is exercised by tests/e2e.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import hashlib
 import os
 import re
@@ -26,6 +27,7 @@ from hypothesis.database import DirectoryBasedExampleDatabase
 from harness_hub.auth import create_signin_code
 from harness_hub.config import Settings
 from harness_hub.server import create_app
+from harness_hub.tuning import DEFAULT_TUNING
 
 from .admin_fake import register_administration
 from .apps_fake import register_apps
@@ -231,6 +233,11 @@ class HubClient:
     def _keep(self, response):
         return capture_response(self.bodies, response)
 
+    def retune(self, **changes):
+        """Replace the timing constants of this running Hub, for the rest of the test (a `Tuning` field per change)."""
+        ctx = self.client.app.fastapi.state.hub
+        ctx.tuning = dataclasses.replace(ctx.tuning, **changes)
+
     def get(self, path, **kw):
         return self._keep(self.client.get(path, **kw))
 
@@ -268,10 +275,10 @@ def fake_daemon():
 def make_hub(tmp_path, fake_daemon):
     clients = []
 
-    def make(peer_check=None, **overrides):
+    def make(peer_check=None, tuning=DEFAULT_TUNING, **overrides):
         settings = Settings(**{"daemon_url": "https://daemon.test", "state_dir": tmp_path / "state",
                                "poll_seconds": 0.02, **overrides})
-        app = create_app(settings, transport=fake_daemon.transport(), peer_check=peer_check)
+        app = create_app(settings, transport=fake_daemon.transport(), peer_check=peer_check, tuning=tuning)
         client = TestClient(app, base_url=f"http://{HUB_HOST}")
         client.__enter__()
         clients.append(client)

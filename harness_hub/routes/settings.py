@@ -1,10 +1,9 @@
 """The manage and Settings router: the daemon administration the Hub offers (`/api/manage/*`, from
-`administration.OPERATIONS`), and Settings (`/api/settings/*`) with the restart it tracks, with the Hub's state on
-`HubContext` (#190)."""
+`administration.OPERATIONS`), and Settings (`/api/settings/*`). The restart and recovery it tracks live in `restart.py`
+(#190, #255)."""
 
 from __future__ import annotations
 
-import json
 import time
 
 from fastapi import FastAPI, Request
@@ -12,9 +11,9 @@ from fastapi.responses import JSONResponse, Response
 
 from ..administration import OPERATIONS, TARGET, validate_fields
 from ..daemon import ADMIN_ROUTES, DaemonUnreachable, route_targets
-from ..guard import leaks
+from ..restart import observe_recovery, observe_restart
 from ..views import ID_SEGMENT, administration_view, control_view, health_view, memory_route_absent, registry_view
-from .common import HubContext, error, forwarded, hub, read_json, refused, tuning, unclaimed, unreachable
+from .common import error, forwarded, hub, read_json, refused, unclaimed, unreachable
 
 
 async def administration_catalog():
@@ -94,42 +93,19 @@ async def administration_action(operation: str, request: Request):
         return unreachable("The daemon did not answer. Read its current state before repeating a write.")
 
 
-def observe_recovery(ctx: HubContext, recovery: dict | None) -> None:
-    """Remember a recovery a daemon reply reported. Any reply the Hub has before it asks for a restart was sampled
-    before that restart, so these are the recoveries the shell must not take for one of it (#143). One the response
-    guard would withhold is not kept: the page never had it, and naming it would withhold every restart reply."""
-    if recovery and recovery not in ctx.recoveries and not leaks(json.dumps(recovery).encode(), ctx.store.secrets()):
-        ctx.recoveries.append(recovery)
-        del ctx.recoveries[:-tuning().KNOWN_RECOVERIES]
-
-
-def observe_restart(ctx: HubContext, shown: dict | None, health_generation: int) -> None:
-    """End a restart the Hub started once the daemon answers healthy with confirmed settings, at the target revision
-    or a later one (a save made during the restart, which the restarted daemon reports), or after a recovery. Only
-    a health request begun since this restart can end it. Overview and the Settings health poll both look, so
-    neither page has to stay open."""
-    restart = ctx.restart
-    revision = shown["config_revision"] if shown else None
-    if (health_generation == restart["generation"] and time.monotonic() >= restart["not_before"]
-            and shown and shown["ok"] and shown["config_confirmed"]) and (
-            restart["target"] is None or isinstance(revision, int) and revision >= restart["target"]
-            or shown["recovery"]):
-        restart["active"] = False
-
-
 async def settings_health(request: Request):
     ctx = hub(request)
-    health_generation = ctx.restart["generation"]
+    health_generation = ctx.restart.generation
     try:
         reply = await ctx.daemon.health()
     except DaemonUnreachable:
-        return {"reachable": False, "answered": False, "restarting": ctx.restart["active"], "health": None}
+        return {"reachable": False, "answered": False, "restarting": ctx.restart.active, "health": None}
     shown = health_view(reply.body)["health"] if reply.ok else None
     if shown:
         observe_recovery(ctx, shown["recovery"])
     observe_restart(ctx, shown, health_generation)
     # reachable: a health answer was read; answered: the daemon replied at all, a 503 mid-restart included.
-    return {"reachable": reply.ok, "answered": True, "status": reply.status, "restarting": ctx.restart["active"],
+    return {"reachable": reply.ok, "answered": True, "status": reply.status, "restarting": ctx.restart.active,
             "health": shown}
 
 
@@ -191,9 +167,10 @@ async def settings_action(resource: str, request: Request):
         observe_recovery(ctx, shown["recovery"])
     if operation == "restart" and isinstance(reply.body, dict) and reply.body.get("accepted") is True:
         accepted_at = time.monotonic()
-        ctx.restart.update(active=True, target=reply.body.get("target_revision"),
-                           generation=ctx.restart["generation"] + 1,
-                           not_before=accepted_at + tuning().RESTART_GRACE_SECONDS)
+        restart = ctx.restart
+        restart.active, restart.target = True, reply.body.get("target_revision")
+        restart.generation += 1
+        restart.not_before = accepted_at + ctx.tuning.restart_grace_seconds
         # The recoveries known before this restart: the shell keeps them from ending its target (#143).
         shown["known_recoveries"] = known
     return JSONResponse(shown, status_code=reply.status)
