@@ -1,0 +1,35 @@
+"""`[daemon]` check of every host command the Hub can print, against the daemon's own CLI parser at the checkout
+HUB_E2E_DAEMON_SRC names (#251). An unknown subcommand, a wrong number of positionals, an unknown or abbreviated flag
+or a placeholder in another argument's place fails, naming the command and where it came from."""
+
+from __future__ import annotations
+
+import os
+import sys
+
+import pytest
+
+from .host_commands import hub_commands, misplaced, parse
+from .targets import daemon_source
+
+pytestmark = pytest.mark.e2e
+
+COMMANDS = hub_commands()
+
+
+@pytest.fixture(scope="module")
+def verdicts():
+    src = daemon_source()
+    if src is None:
+        pytest.skip("set HUB_E2E_DAEMON_SRC to an agent-harness checkout")
+    python = os.environ.get("HUB_E2E_DAEMON_PYTHON", sys.executable)
+    return dict(zip(COMMANDS, parse(src, python, [template for _, template in COMMANDS]), strict=True))
+
+
+@pytest.mark.parametrize("command", COMMANDS, ids=[f"{source}: {template}" for source, template in COMMANDS])
+def test_host_command_parses_with_the_daemon_cli(verdicts, command):
+    source, template = command
+    verdict = verdicts[command]
+    assert verdict["error"] is None, f"{source} prints {template!r}, which the daemon's CLI refuses: {verdict['error']}"
+    wrong = misplaced(verdict["positionals"])
+    assert not wrong, f"{source} prints {template!r} with arguments out of place: {', '.join(wrong)}"
