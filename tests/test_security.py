@@ -151,7 +151,7 @@ def test_overview_drops_fields_it_does_not_know(hub, fake_daemon):
     ('"hk-' + "Z" * 43 + '"', True),
     ('"code hp-9f8e7d6c9f8e7d6c9f8e7d6c"', True),
     ('"code hrp-9f8e7d6c9f8e7d6c9f8e7d6c"', True),
-    # Display prefixes and ordinary words are redacted field by field in views.py, not by the guard.
+    # Display prefixes and ordinary words are redacted field by field in views package, not by the guard.
     ('{"prefix": "ho-LW5TqUX"}', False),
     ('"ha-1234abcd"', False),
     ('"code hp-9f8e7d6c"', False),

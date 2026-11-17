@@ -1,7 +1,7 @@
 """The Hub's private state: its daemon key, the pending claim's PKCE verifier and sign-in codes.
 
 Everything here stays on the daemon host in the state directory, readable by the Hub's account only. No route sends
-any of it to a browser: the server builds browser responses from allowlisted fields (`views.py`) and a response guard
+any of it to a browser: the server builds browser responses from allowlisted fields (`views/`) and a response guard
 withholds anything that still looks like a credential (`guard.py`).
 """
 

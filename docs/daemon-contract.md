@@ -45,7 +45,7 @@ the reason. Keep these to what truly cannot be produced.
   calls, or when a contract endpoint has no case.
 - The fake daemon checks every request the Hub sends during the unit suite against the contract's request shapes
   (`tests/conftest.py`), and a test whose Hub sent one outside it fails.
-- `tests/contract/test_views_allowlist.py` holds the browser allowlists in `harness_hub/views.py` (`views.SCHEMAS`) to
+- `tests/contract/test_views_allowlist.py` holds the browser allowlists in `harness_hub/views/` (`views.SCHEMAS`) to
   the reply shapes here (#252). Each name a view passes on must be a field of a reply that view serves, or sit in its
   `ALLOWED_EXTRA` with a reason, so a view can no longer wait for a name the daemon never sends (#88). A reply
   described as `MapOf(ANY)` names no fields, and the view beneath it is not checked.

@@ -17,9 +17,9 @@ STATIC = PACKAGE / "static"
 # Prose about the harness, not a command: (file, the two words).
 STATIC_PROSE = {("pages/admin.mjs", "harness through")}
 PROSE = {
-    ("views.py", "harness and"),
-    ("views.py", "harness queue"),
-    ("views.py", "harness approvals"),
+    ("views/marketplace.py", "harness and"),
+    ("views/marketplace.py", "harness queue"),
+    ("views/marketplace.py", "harness approvals"),
 }
 
 

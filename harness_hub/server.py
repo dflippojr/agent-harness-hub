@@ -1,7 +1,7 @@
 """The Hub's HTTP server: a no-build ES-module UI plus the small JSON API it calls.
 
 Browser-facing routes (`/api/...`) answer only a signed-in owner (`auth.py`) and only with allowlisted view models
-(`views.py`). The Hub key never leaves this process except in the Authorization header of the Hub's own calls to its
+(`views/`). The Hub key never leaves this process except in the Authorization header of the Hub's own calls to its
 daemon.
 """
 
