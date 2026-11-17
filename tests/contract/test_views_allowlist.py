@@ -15,6 +15,7 @@ checked nor counted. Every other allowlisted name must be a contract field, or s
 from __future__ import annotations
 
 from collections.abc import Mapping
+from types import MappingProxyType
 
 from harness_hub import daemon, views
 
@@ -32,6 +33,7 @@ _REMOTE = ("harness_modules/remote_control/service.py RemoteControl.status() sen
            "needs Claude Code on the daemon host, so the [daemon] case skips")
 _PROPOSAL = ("harness_modules/skills/service.py public_proposal() sends it in every proposal; a proposal comes from "
              "an agent session, so the [daemon] case skips")
+_MANIFEST = _PROPOSAL.replace("in every proposal", "in the proposal read (include_body)")
 ALLOWED_EXTRA: dict[str, str] = {
     "FOLDER.invalid": _REMOTE + " (a managed folder that is unusable, or 'slug_conflict').",
     "FOLDER.owner_only": _REMOTE + " (true for a folder discovery added).",
@@ -43,8 +45,9 @@ ALLOWED_EXTRA: dict[str, str] = {
     "SKILL.target_slug": _PROPOSAL + " (the installed skill a proposal updates, or '').",
     "SKILL.example_count": _PROPOSAL + ".",
     "SKILL.reference_count": _PROPOSAL + ".",
-    "SKILL.manifest": _PROPOSAL.replace("in every proposal", "in the proposal read (include_body)")
-    + "; its keys are the ones service.py builds the manifest from.",
+    "SKILL.manifest": _MANIFEST + ".",
+    **{f"SKILL.manifest.{key}": _MANIFEST + f"; SkillStore._propose_locked() builds the manifest with `{key}`."
+       for key in ("slug", "title", "purpose", "activation_suggestion", "content_hash", "validator_version")},
     "MAINTENANCE.image_archive.bytes": "harness_modules/images/archive.py ImageArchive.health() sends it; the "
     "disposable daemon runs without the images module, so GET /maintenance answers only {\"enabled\": false} there.",
 }
@@ -114,8 +117,19 @@ def unlisted() -> dict[str, list[str]]:
     for key, (label, schema, fields) in seen.items():
         for name in schema:
             if name not in fields:
-                out[f"{label}.{name}"] = sorted(served.get(key, ()))
+                for path in (f"{label}.{name}", *_below(schema[name], f"{label}.{name}")):
+                    out[path] = sorted(served.get(key, ()))
     return out
+
+
+def _below(schema, label: str):
+    """Every name beneath an unlisted one: each needs its own reason, so an exception never covers a subtree."""
+    if isinstance(schema, list):
+        yield from _below(schema[0], label + "[]")
+    elif isinstance(schema, Mapping):
+        for key, inner in schema.items():
+            yield f"{label}.{key}"
+            yield from _below(inner, f"{label}.{key}")
 
 
 def _mark(schema, operation: str, served: dict[int, set[str]]) -> None:
@@ -161,3 +175,12 @@ def test_an_object_where_the_contract_has_a_scalar_is_caught(monkeypatch):
     monkeypatch.setitem(views.CREDENTIAL, "backend", [{"name": views.TEXT}])
     found = unlisted()
     assert found["ACCOUNT.login.typo"] and found["CREDENTIAL.backend[].name"] == ["credential_set", "credentials"]
+
+
+def test_a_name_beneath_an_unlisted_one_needs_its_own_reason(monkeypatch):
+    """ALLOWED_EXTRA's SKILL.manifest does not cover a new key inside the manifest."""
+    manifest = {**views.SKILL["manifest"], "typo": views.TEXT}
+    monkeypatch.setattr(views, "SKILL", MappingProxyType({**views.SKILL, "manifest": manifest}))
+    monkeypatch.setitem(views.SCHEMAS, "proposal", views.SKILL)
+    found = unlisted()
+    assert found["SKILL.manifest.typo"] == ["proposal"] and "SKILL.manifest.typo" not in ALLOWED_EXTRA
