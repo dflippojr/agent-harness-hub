@@ -76,6 +76,34 @@ read. What the parser cannot see: a flag it treats as optional that the daemon r
 condition decides it. If agent-harness renames `_build_parser`, compare the lines with `admin_commands()` rows instead
 of skipping the check.
 
+## Tailnet identity
+
+`harness_hub/tailnet.py` decides when the Hub trusts the `Tailscale-*` identity headers, with the rules of the
+daemon's `harness/tailscale_peer.py`, but it is a copy. `tests/contract/test_tailnet_conformance.py` (`[daemon]`,
+marked `e2e`, #253) imports the daemon's module from the checkout beside the Hub's and asks both the same synthetic
+questions, one decision at a time:
+
+- which executable is tailscaled: the install directories, and the executable sitting directly in one;
+- whether a connection's server address is loopback, and whether two addresses are the same;
+- whether a serve-config document (`tailscale serve status --json`, parsed by each side) forwards raw TCP to the port;
+- whether the one `X-Forwarded-For` source tailscaled names is another node and not this machine;
+- whether a scope carries identity headers, and what removing them leaves;
+- the per-connection verdict cache, and the peer verdict itself on injected facts (the connection's owner, the
+  service's PID, the owner's parent and executable).
+
+Where the two signatures differ, a small adapter per decision asks both the same question. Every difference either
+side intends is listed in the test's `KNOWN` table with its reason: the Hub refusing malformed input the daemon skips
+(fail closed), and the daemon accepting the `tailscaled.exe /subproc` child of the Tailscale service, which the Hub
+has not followed. Any other difference fails, named by decision and case; so does a listed one that no longer differs,
+so the table stays true. Nothing looks up a process, lists interfaces or runs the CLI (psutil and `subprocess.run`
+answer synthetically), so it runs on Linux as well as Windows, and the daemon's module may not look anything up at
+import time. Out of scope, being state rather than a decision: the daemon's lasting refusal once it has seen a raw
+forward, its cache of `tailscale ip`, and the Hub's fresh lookups for sign-in.
+
+When it fails nightly, the daemon changed a rule: decide whether the Hub follows (change `tailnet.py`) or the
+difference is intended (add it to `KNOWN` with the reason). A daemon refactor that renames a function breaks an
+adapter the same way; fix the adapter.
+
 ## When it fails
 
 - **`[fake]` fails**: the fake drifted from the contract. Fix the fake to answer what the daemon answers; if a Hub test

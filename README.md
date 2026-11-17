@@ -116,7 +116,10 @@ There is no other way in: no second cookie, origin or sign-in path is kept for l
 ### With your tailnet identity
 
 Through `tailscale serve`, the sign-in page also offers **Continue as `<your login>`**. This is the other owner proof
-the daemon accepts, with the same rules:
+the daemon accepts, with the same rules. The Hub keeps its own copy of them, and CI holds it to the daemon's decision by
+decision ([docs/daemon-contract.md](docs/daemon-contract.md), "Tailnet identity"), which lists every known difference;
+the one that matters is that the daemon also accepts the `tailscaled.exe` child the service starts, and the Hub does not
+yet.
 
 - `tailscale serve` adds `Tailscale-User-Login`. The Hub trusts the `Tailscale-*` headers only when the process on the
   other end of the TCP connection is the running Tailscale Windows service, and its executable is `tailscaled.exe`
