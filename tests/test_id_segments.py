@@ -1,4 +1,4 @@
-"""Path-segment ids follow one rule (ID_SEGMENT in views.py): 1 to 80 letters, digits, '_' or '-'.
+"""Path-segment ids follow one rule (ID_SEGMENT in views package): 1 to 80 letters, digits, '_' or '-'.
 
 Each route that takes an id as a path segment or a body field accepts an id at the limit and a leading '-', and refuses
 one past the limit or with a dot before any daemon call.

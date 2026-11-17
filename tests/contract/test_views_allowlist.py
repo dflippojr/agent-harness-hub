@@ -1,4 +1,4 @@
-"""The browser allowlists in harness_hub/views.py are held to the daemon contract (#252).
+"""The browser allowlists in harness_hub/views/ are held to the daemon contract (#252).
 
 `views.SCHEMAS` says which reply fields the Hub passes on to the browser; tests/contract/endpoints.py says which ones
 the daemon sends. Nothing else compares the two, and they drift: #88's audit rows showed no time because the view
@@ -22,7 +22,7 @@ from harness_hub import daemon, views
 from .endpoints import ADMIN, ENDPOINTS
 from .shapes import ANY, NULL, ListOf, MapOf, Obj, Shape, Union
 
-# Allowlisted names the contract does not list, kept on purpose. Each key is a views schema (by its name in views.py,
+# Allowlisted names the contract does not list, kept on purpose. Each key is a views schema (by its name in views/,
 # then the nested keys) and a field; each value says why the view keeps it.
 #
 # Every entry below is a field the daemon sends, at the pin and at the README's minimum daemon (aa5a904), in a reply

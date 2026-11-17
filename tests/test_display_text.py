@@ -53,7 +53,7 @@ def entry_text(value, limit=200, secrets=()):
     return _app_text(_strip(value) if isinstance(value, str) else value, limit, secrets)
 
 
-# Each old helper is display_text with these options; every call site in views.py and server.py moved this way.
+# Each old helper is display_text with these options; every call site in views package and server.py moved this way.
 MODES = {_str: {"redact": GUARD}, _diagnostic_text: {"redact": WORD}, _app_text: {},
          entry_text: {"strip_controls": True}}
 

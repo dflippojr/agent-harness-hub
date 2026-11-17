@@ -1,10 +1,10 @@
 """Last line of defence: no Hub API response reaches a browser carrying a credential.
 
-Browser responses are built from allowlisted fields (`views.py`), so nothing secret should get this far. This guard
+Browser responses are built from allowlisted fields (`views/`), so nothing secret should get this far. This guard
 checks every `/api/` response body anyway and withholds it (500) when it contains the Hub key or the pending claim's
 verifier, a string shaped like a full Agent Harness token, or a PEM private key header. Only full-length token shapes
 count: ordinary words such as `ha-core` or `hp-laserjet` pass. Shorter key display prefixes (`ho-LW5TqUX`) are
-redacted field by field in `views.py`. Withholding fails closed: a page shows an error, never a secret. The one
+redacted field by field in `views/`. Withholding fails closed: a page shows an error, never a secret. The one
 exemption is the Google link code the owner just asked to create (`LINK_CODE`): they are meant to see it once.
 """
 

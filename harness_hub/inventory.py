@@ -1,7 +1,7 @@
 """Server-only last good inventory, shared by Modules and future Apps/Marketplace views.
 
 The complete daemon snapshot stays private. Consumers must project browser responses
-through views.py; in particular the apps' display prefixes must never reach the browser.
+through the views package; in particular the apps' display prefixes must never reach the browser.
 """
 
 from __future__ import annotations
