@@ -46,6 +46,32 @@ the reason. Keep these to what truly cannot be produced.
 - The fake daemon checks every request the Hub sends during the unit suite against the contract's request shapes
   (`tests/conftest.py`), and a test whose Hub sent one outside it fails.
 
+## Host commands
+
+Every Hub action has a `harness` command on the daemon host, and the pages print it (README, "CLI parity"). The daemon
+is the judge of those lines too: `tests/contract/test_host_commands.py` (`[daemon]`, marked `e2e`, #251) hands every
+command the Hub can print to the daemon's own CLI parser (`harness/cli.py` `_build_parser`) in a subprocess from the
+checkout, and runs none of them. The commands come from:
+
+- the server: the administration catalogue (`administration.OPERATIONS`), its not-offered rows
+  (`routes/settings.py`), and `claim.APPROVE_COMMAND` and `RELEASE_COMMAND`;
+- the pages: the one table `harness_hub/static/lib/commands.mjs`, read through node. A page prints a command with
+  `hostCommand(name, values)`; `<name>` is a word the owner or the page fills in, and `[flag: text]` an optional part,
+  so the check parses each line with and without it.
+
+Each placeholder becomes exactly one word, so a missing or extra argument still fails. An unknown subcommand, a wrong
+number of positionals, an unknown flag, an abbreviated flag (the check turns argparse's abbreviations off) or a
+placeholder that fills another argument's place (a swapped positional; `ALIASES` in `tests/contract/host_commands.py`
+names the few that differ from the daemon's argument names) fails the case, named by its source. A placeholder that
+fills a typed argument takes a value of that type from `TYPED`.
+
+`tests/test_host_command_sources.py` keeps the list whole: no static file but `commands.mjs` writes a `harness`
+command, every table entry is printed by a page, and no string in `harness_hub` prints a command the check does not
+read. What the parser cannot see: a flag it treats as optional that the daemon requires at run time, as
+`--acknowledge-elevated` was in #91. `commands.mjs` keeps that flag's optional part next to the command, and the page's
+condition decides it. If agent-harness renames `_build_parser`, compare the lines with `admin_commands()` rows instead
+of skipping the check.
+
 ## When it fails
 
 - **`[fake]` fails**: the fake drifted from the contract. Fix the fake to answer what the daemon answers; if a Hub test

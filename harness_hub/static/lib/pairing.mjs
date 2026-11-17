@@ -2,6 +2,7 @@
 // match-code field, and the recovery steps for an app that says its slot was already claimed (inspect the current state
 // before acting).
 import { api } from "./api.mjs";
+import { hostCommand } from "./commands.mjs";
 import { blockedKey, button, command, countdown, h, icon, pill, reveal } from "./dom.mjs";
 import { poller } from "./poll.mjs";
 
@@ -151,7 +152,7 @@ export function pairingRecovery() {
     h("div", { class: "troubleshoot-body" },
       h("p", {}, "List pairing requests; another caller may have claimed the slot first. " +
         "For a redeemed row, revoke its key_id. For an approved or claimed row, deny it."),
-      command("harness pairing-requests list"),
-      command("harness keys revoke <key_id>"),
-      command("harness pairing-requests deny <id>")));
+      command(hostCommand("pairingList")),
+      command(hostCommand("keysRevoke")),
+      command(hostCommand("pairingDeny"))));
 }

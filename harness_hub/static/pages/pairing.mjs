@@ -4,6 +4,7 @@
 // and this page never sees one. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
+import { hostCommand } from "../lib/commands.mjs";
 import { blocked, blockedState, button, clear, command, emphasis, facts, h, icon, pill, placeNotice, sectionHead,
   stamp, table } from "../lib/dom.mjs";
 import { expiry, matchField, pairingRecovery, POLL_MS, requestPage, tier, verbButton } from "../lib/pairing.mjs";
@@ -143,14 +144,14 @@ export function renderPairing(main) {
   function act(row, name) {
     if (row.kind === "hub") {
       return [h("p", {}, "Hub claims are decided only on the daemon host. Read the code off that Hub's own screen."),
-        command(`harness hub approve ${row.id} --match <code>`), command(`harness hub deny ${row.id}`)];
+        command(hostCommand("hubApprove", { id: row.id })), command(hostCommand("hubDeny", { id: row.id }))];
     }
-    if (row.kind !== "app") return [command("harness pairing-requests list")];
+    if (row.kind !== "app") return [command(hostCommand("pairingList"))];
     const deny = verbButton("Deny", name, () => askDeny(row), { class: "btn danger", "data-action": "deny", "data-field": "deny" });
     if (withheld(row)) {
-      return [h("p", { class: "notice bad" }, "Review this request with harness pairing-requests list on the host."),
-        command("harness pairing-requests list"), h("div", { class: "decision-buttons" }, deny),
-        command(`harness pairing-requests deny ${row.id}`, { parity: true })];
+      return [h("p", { class: "notice bad" }, `Review this request with ${hostCommand("pairingList")} on the host.`),
+        command(hostCommand("pairingList")), h("div", { class: "decision-buttons" }, deny),
+        command(hostCommand("pairingDeny", { id: row.id }), { parity: true })];
     }
     return decision(row, name, row.state === "pending" ? "approve" : "confirm", deny);
   }
@@ -181,12 +182,12 @@ export function renderPairing(main) {
     ack?.addEventListener("change", update);
     update();
     const scopes = row.elevated.length === 1 ? "scope" : "scopes";
-    const cli = `harness pairing-requests ${operation} ${row.id} --match <code>` + (elevated ? " --acknowledge-elevated" : "");
+    const cli = hostCommand(operation === "approve" ? "pairingApprove" : "pairingConfirm", { id: row.id, elevated });
     return [field.nodes,
       ack ? h("label", { class: "decision-ack" }, ack,
         h("span", {}, `I understand the elevated ${scopes} (${row.elevated.join(", ")}) and still want to approve.`)) : null,
       h("div", { class: "decision-buttons" }, deny, submit),
-      command([cli, `harness pairing-requests deny ${row.id}`], { parity: true })];
+      command([cli, hostCommand("pairingDeny", { id: row.id })], { parity: true })];
   }
 
   // Waiting for the app: one row each, with the time left and, for an App, Withdraw.
@@ -204,7 +205,7 @@ export function renderPairing(main) {
         h("p", { class: "muted" }, `${waitingFor(row)} · ${row.scopes.join(", ") || "no scopes"}`)),
       countdown(row), withdraw),
     confirming === row.id ? confirmation(row) :
-      app ? command(`harness pairing-requests deny ${row.id}`, { parity: true }) : null);
+      app ? command(hostCommand("pairingDeny", { id: row.id }), { parity: true }) : null);
   }
 
   function history(rows) {
@@ -240,7 +241,7 @@ export function renderPairing(main) {
       h("p", {}, `${verb} ${row.kind === "app" && row.armed ? "slot" : "pairing request"} ${row.id} from ` +
         `${row.origin || "a native app"}. The app cannot use it afterwards; it must ask again.`),
       h("div", { class: "decision-buttons" }, cancel, ok),
-      command(`harness pairing-requests deny ${row.id}`, { parity: true }));
+      command(hostCommand("pairingDeny", { id: row.id }), { parity: true }));
   }
   void load(true);
   return page.stop;

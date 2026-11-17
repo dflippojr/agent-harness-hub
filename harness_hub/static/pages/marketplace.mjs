@@ -5,6 +5,7 @@
 // image shown is an inline one the server already checked. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
+import { hostCommand } from "../lib/commands.mjs";
 import { banner, blocked, blockedState, button, clear, command, emphasis, facts, h, icon, pill, placeNotice,
   sectionHead, sentence, when } from "../lib/dom.mjs";
 import { expiry, matchField, pairingRecovery, requestPage, tier, verbButton } from "../lib/pairing.mjs";
@@ -21,8 +22,8 @@ export function acknowledgedScopes(entry) {
 }
 
 export function armCommand(entry, origin) {
-  return `harness pairing-requests arm ${entry.catalog_app_id} --scopes ${entry.scopes.map((s) => s.scope).join(" ")}` +
-    (origin ? ` --origin ${origin}` : "") + (acknowledgedScopes(entry).length ? " --acknowledge-elevated" : "");
+  return hostCommand("pairingArm", { catalog_app_id: entry.catalog_app_id,
+    scopes: entry.scopes.map((s) => s.scope).join(" "), origin, elevated: acknowledgedScopes(entry).length > 0 });
 }
 
 export function renderMarketplace(main) {
@@ -46,8 +47,8 @@ export function renderMarketplace(main) {
       "file; none is verified. Setting one up arms a slot with your scope consent. Browser and native apps claim once, " +
       "then wait for your typed-code confirmation before fetching their own token from the daemon, and this Hub never " +
       "sees it.", null, { lead: "info" }),
-    command(["harness hub status", "harness hub entries validate"], { parity: true }), notice, problem, count, list,
-    pairingRecovery());
+    command([hostCommand("hubStatus"), hostCommand("hubEntriesValidate")], { parity: true }), notice, problem, count,
+    list, pairingRecovery());
 
   function onRead(error) {
     const entries = page.data?.entries;
@@ -96,8 +97,8 @@ export function renderMarketplace(main) {
         h("p", { class: "muted" }, "No entries to show.");
     }
     return h("section", { class: "card empty" }, icon("marketplace"), h("h2", {}, "No entries yet"),
-      h("p", {}, "The entries file lists no apps. Create it on the daemon host with harness hub entries init."),
-      command("harness hub entries init"));
+      h("p", {}, `The entries file lists no apps. Create it on the daemon host with ${hostCommand("hubEntriesInit")}.`),
+      command(hostCommand("hubEntriesInit")));
   }
   function entryIcon(entry) {
     // Only a data: raster image survives the server's allowlist, so this never loads anything from the network.
@@ -171,7 +172,7 @@ export function renderMarketplace(main) {
         typeof slot.expires_at === "number" ? expiry(slot.expires_at, now()) : null, claimed || asking ? null : withdraw),
       h("p", { class: "muted slot-text" }, `Bound to ${slot.origin || "a native app"}. ${SLOT_TEXT[slot.state] || ""}`),
       asking ? withdrawal(entry, slot) : claimed ? confirmation(entry, slot, withdraw) :
-        command(`harness pairing-requests deny ${slot.id}`, { parity: true }),
+        command(hostCommand("pairingDeny", { id: slot.id }), { parity: true }),
       slot.disclosures.length ? scopeDetails(slot.disclosures) : null);
   }
   function confirmation(entry, slot, withdraw) {
@@ -195,7 +196,7 @@ export function renderMarketplace(main) {
     input.addEventListener("input", update);
     submit.disabled = page.busy || !input.value.trim();
     return h("div", { class: "slot-decision" }, field.nodes, h("div", { class: "decision-buttons" }, withdraw, submit),
-      command([`harness pairing-requests confirm ${slot.id} --match <code>`, `harness pairing-requests deny ${slot.id}`],
+      command([hostCommand("pairingConfirm", { id: slot.id }), hostCommand("pairingDeny", { id: slot.id })],
         { parity: true }));
   }
   function askWithdraw(slot) {
@@ -220,7 +221,7 @@ export function renderMarketplace(main) {
       h("h4", {}, `Withdraw the slot for ${name}?`),
       h("p", {}, `Slot ${slot.id} can no longer be claimed or redeemed. Set the app up again to pair it.`),
       h("div", { class: "decision-buttons" }, cancel, ok),
-      command(`harness pairing-requests deny ${slot.id}`, { parity: true }));
+      command(hostCommand("pairingDeny", { id: slot.id }), { parity: true }));
   }
 
   // The consent screen, inside the card of the entry it sets up. It shows the copy the owner reviews (`entry`), which a

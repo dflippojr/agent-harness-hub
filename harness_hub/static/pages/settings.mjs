@@ -6,6 +6,7 @@
 // sit in the page head. Every daemon string goes in as a text node.
 
 import { api } from "../lib/api.mjs";
+import { hostCommand } from "../lib/commands.mjs";
 import { blockedState, clear, command, h, pill, sentence, when } from "../lib/dom.mjs";
 import { poller } from "../lib/poll.mjs";
 
@@ -84,8 +85,8 @@ export function renderSettings(main) {
     dockStatus, h("div", { class: "savebar" }, summary, discard, validate, save, close));
   clear(main, h("header", { class: "page-head settings-head" }, h("h1", {}, "Settings"), chip,
     button("Roll back", () => confirm("rollback"), "btn ghost"), button("Restart", () => confirm("restart"), "btn ghost")),
-  lede, command(["harness config schema", "harness config show", "harness config validate <key>=<value>",
-    "harness config set <key>=<value>", "harness config rollback --confirm", "harness config restart --confirm"],
+  lede, command(["configSchema", "configShow", "configValidate", "configSet", "configRollback", "configRestart"]
+    .map((name) => hostCommand(name)),
   { parity: true }), notice, health, confirmation, warning,
   h("div", { class: "settings-layout" },
     h("nav", { class: "settings-cats", "aria-label": "Setting categories" }, filter,
@@ -477,7 +478,8 @@ export function renderSettings(main) {
   // with its host command, and how it draws. Notifications has no read.
   function controlCards() {
     return [
-      { id: "smart-approvals", title: "Smart approvals mode", read: "smart-approvals", cli: "harness smart-approvals show",
+      { id: "smart-approvals", title: "Smart approvals mode", read: "smart-approvals",
+        cli: hostCommand("smartApprovalsShow"),
         draw: (data, box, report) => {
           const mode = h("select", {}, ["off", "shadow", "auto"].map((v) => h("option", { value: v }, capital(v))));
           mode.value = data.mode;
@@ -485,9 +487,9 @@ export function renderSettings(main) {
             "No token file path configured."),
           h("div", { class: "settings-actions" }, button("Save approvals mode",
             () => perform(() => saveControl("smart-approvals", { mode: mode.value }, report), report))),
-          command("harness smart-approvals set <mode>", { parity: true }));
+          command(hostCommand("smartApprovalsSet"), { parity: true }));
         } },
-      { id: "backends", title: "Backend defaults", read: "backends", cli: "harness backends list",
+      { id: "backends", title: "Backend defaults", read: "backends", cli: hostCommand("backendsList"),
         draw: (rows, box, report) => {
           if (!rows.length) box.append(h("p", { class: "muted" }, "This daemon reports no backends."));
           for (const row of rows) {
@@ -499,16 +501,16 @@ export function renderSettings(main) {
               row.popular_models.map((m) => m.id).join(", ")) : null,
             h("div", { class: "settings-actions" }, button("Save " + row.name, () => perform(() => saveControl("backend",
               { name: row.name, model: model.value, effort: effort.value }, report), report))),
-            command("harness backends set " + row.name + " --model <model> --effort <effort>", { parity: true }));
+            command(hostCommand("backendsSet", { name: row.name }), { parity: true }));
           }
         } },
-      { id: "memory", title: "Memory agent profile", read: "memory", cli: "harness memory show",
+      { id: "memory", title: "Memory agent profile", read: "memory", cli: hostCommand("memoryShow"),
         draw: (data, box, report) => {
           if (data.installed === false) {
             box.append(h("p", { class: "muted" }, "The memory library module (memory_library) is not installed or is " +
               "switched off on this daemon, so there is no agent profile to edit. Turn on memory_library.enabled, or " +
               "add the module with the daemon installer's --enable-modules option."),
-            command("harness config set memory_library.enabled=true"),
+            command(hostCommand("configSet", { key: "memory_library.enabled", value: true })),
             command("bash install/install.sh --enable-modules memory_library"));
             return;
           }
@@ -518,19 +520,19 @@ export function renderSettings(main) {
           data.refresh_error ? h("p", { class: "notice bad" }, sentence(data.refresh_error)) : null);
           if (data.enabled) box.append(h("div", { class: "settings-actions" }, button("Save profile", () => perform(() =>
             saveControl("memory", { content: profile.value, summary: "Update agent profile from Hub Settings" }, report), report))));
-          box.append(command("harness memory set-profile <content>", { parity: true }));
+          box.append(command(hostCommand("memorySetProfile"), { parity: true }));
         } },
-      { id: "github", title: "Member GitHub access", read: "github", cli: "harness github-member-auth show",
+      { id: "github", title: "Member GitHub access", read: "github", cli: hostCommand("githubAuthShow"),
         draw: (data, box, report) => {
           const enabled = h("select", {}, h("option", { value: "true" }, "Allowed"), h("option", { value: "false" }, "Stopped"));
           enabled.value = String(data.enabled);
           box.append(field("Members may connect GitHub", enabled),
             h("div", { class: "settings-actions" }, button("Save GitHub access", () => perform(() =>
               saveControl("github", { enabled: enabled.value === "true" }, report), report))),
-            command("harness github-member-auth set <enabled>", { parity: true }));
+            command(hostCommand("githubAuthSet"), { parity: true }));
           preflight(data, box);
         } },
-      { id: "google", title: "Google sign-in", read: "google", cli: "harness google-signin status",
+      { id: "google", title: "Google sign-in", read: "google", cli: hostCommand("googleSigninStatus"),
         draw: (data, box) => {
           box.append(h("div", { class: "chips" }, pill(data.enabled ? "On" : "Off", data.enabled ? "ok" : "muted"),
             pill(data.ready ? "Ready" : "Not ready", data.ready ? "ok" : "warn")),
@@ -542,7 +544,7 @@ export function renderSettings(main) {
         h("div", { class: "settings-actions" }, button("Send test notification", () => perform(async () => {
           const answer = await api("settings/notify", { method: "POST", body: {} });
           if (!stopped) report(answer.sent ? "Test notification sent." : "The daemon did not report a sent notification.");
-        }, report))), command("harness notify test", { parity: true })) },
+        }, report))), command(hostCommand("notifyTest"), { parity: true })) },
     ];
   }
   // Keeping drafts, a control that already drew stays as it is, with any edit in it; only one that failed is read again.

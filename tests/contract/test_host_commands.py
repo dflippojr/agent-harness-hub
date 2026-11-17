@@ -1,10 +1,12 @@
-"""`[daemon]` check of every host command the Hub can print, against the daemon's own CLI parser at the checkout
-HUB_E2E_DAEMON_SRC names (#251). An unknown subcommand, a wrong number of positionals, an unknown or abbreviated flag
-or a placeholder in another argument's place fails, naming the command and where it came from."""
+"""`[daemon]` check of every host command the Hub can print (the server's and the pages' commands.mjs table), against
+the daemon's own CLI parser at the checkout HUB_E2E_DAEMON_SRC names (#251). An unknown subcommand, a wrong number of
+positionals, an unknown or abbreviated flag or a placeholder in another argument's place fails, naming the command and
+where it came from."""
 
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 
 import pytest
@@ -13,6 +15,11 @@ from .host_commands import hub_commands, misplaced, parse
 from .targets import daemon_source
 
 pytestmark = pytest.mark.e2e
+
+if shutil.which("node") is None:
+    if os.environ.get("CI"):
+        raise RuntimeError("the host command check reads harness_hub/static/lib/commands.mjs and needs Node.js on PATH")
+    pytest.skip("Node.js is not on PATH; the host command check reads commands.mjs through it", allow_module_level=True)
 
 COMMANDS = hub_commands()
 

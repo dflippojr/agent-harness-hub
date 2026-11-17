@@ -5,6 +5,7 @@
 // text node.
 
 import { api } from "../lib/api.mjs";
+import { hostCommand } from "../lib/commands.mjs";
 import { blocked, blockedKey, blockedState, clear, command, h, icon, pill, placeNotice, sectionHead, sentence, table, toggle, when }
   from "../lib/dom.mjs";
 import { poller } from "../lib/poll.mjs";
@@ -118,8 +119,8 @@ export function renderModules(main) {
     if (key === drawn) return;
     drawn = key;
     revision.textContent = config ? "Settings revision " + config.revision : "";
-    clear(commands, command(["harness hub status", ...installed.filter((m) => m.writable)
-      .map((m) => `harness config set ${m.spec.key}=${!m.value}`)], { parity: true, key: "modules" }));
+    clear(commands, command([hostCommand("hubStatus"), ...installed.filter((m) => m.writable)
+      .map((m) => hostCommand("configSet", { key: m.spec.key, value: !m.value }))], { parity: true, key: "modules" }));
     clear(body,
       inventory?.stale ? h("p", { class: "notice" }, "Last good inventory from " + when(inventory.fetched_at) +
         ". These running states may be out of date.") : null,

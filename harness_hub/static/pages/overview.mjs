@@ -2,6 +2,7 @@
 // settings), the capabilities summary and the details behind them. Until the claim completes, its card leads the page.
 
 import { api, ApiError } from "../lib/api.mjs";
+import { commandWords, hostCommand } from "../lib/commands.mjs";
 import { clear, command, countdown, h, hubDownState, icon, pill, sectionHead } from "../lib/dom.mjs";
 import { poller } from "../lib/poll.mjs";
 
@@ -186,7 +187,7 @@ function claimCard(data, reload, keepTime) {
           h("p", { class: "hint" }, "Claiming makes this Hub the daemon's one admin console. This page notices the ",
             "approval by itself, also in a background tab."),
           h("p", { class: "hint" }, "Wrong code on the host? Stop waiting here and deny it there with ",
-            h("span", { class: "mono" }, `harness hub deny ${claim.request_id}`), ".")]);
+            h("span", { class: "mono" }, hostCommand("hubDeny", { id: claim.request_id })), ".")]);
     }
     case "refused":
       return card("bad", 0,
@@ -211,7 +212,7 @@ function claimCard(data, reload, keepTime) {
           h("p", { class: "lead" }, claim.message),
           unclaimed
             ? h("p", { class: "hint" }, "Claiming makes this Hub the daemon's one admin console. You approve it on ",
-              "the daemon host with harness hub approve; the Hub shows the command and its match code.")
+              `the daemon host with ${commandWords("hubApprove")}; the Hub shows the command and its match code.`)
             : null,
           startButton(unclaimed ? "Start claim" : "Start a new claim")]);
     }
