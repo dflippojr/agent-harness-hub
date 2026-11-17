@@ -5,6 +5,7 @@
 // goes in as a text node.
 
 import { api } from "../lib/api.mjs";
+import { hostCommand } from "../lib/commands.mjs";
 import { blocked, blockedKey, blockedState, button, clear, command, dangerZone, emptyState, facts, figure, h, icon, pill, placeNotice,
   reveal, sectionHead, sentence, stamp, table, when } from "../lib/dom.mjs";
 import { poller } from "../lib/poll.mjs";
@@ -76,7 +77,7 @@ export function renderApps(main) {
   clear(main, h("header", { class: "page-head" }, h("h1", {}, "Apps"), updated, refresh),
     h("p", { class: "lede" }, "Every key that can reach the daemon, and what it has used. Names marked App-supplied " +
       "come from the app itself; check the key id and origins."),
-    command(["harness hub status", "harness keys list"], { parity: true }), notice, problem, view);
+    command([hostCommand("hubStatus"), hostCommand("keysList")], { parity: true }), notice, problem, view);
 
   // Every write and its outcome belong to the open App, so the notice shows in its detail (decision 5 of #65).
   function message(value, bad = false) {
@@ -360,8 +361,8 @@ export function renderApps(main) {
           `${figure(data.queued)} · parked ${figure(data.parked)}; parked sessions count toward both caps. ` +
           "Leave a field blank to use the daemon default. Saving sends only the caps you changed."),
         h("div", { class: "apps-actions" }, saveCaps),
-        command(["harness apps set-limits " + row.id + " --max-running <integer> --max-queued <integer>",
-          "harness apps set-limits " + row.id + " --set max_running=null --set max_queued=null"], { parity: true })),
+        command([hostCommand("appsSetLimits", { id: row.id }), hostCommand("appsClearLimits", { id: row.id })],
+          { parity: true })),
       sectionHead("Retention", null, { level: 3 }),
       h("div", { class: "card apps-form" },
         h("div", { class: "apps-inline" }, retention.field, confirming === "retention" ? null : saveRetention),
@@ -374,8 +375,8 @@ export function renderApps(main) {
           await api("apps/" + row.id + "/retention", { method: "PUT", body: { retention_days: days, confirm: true } });
           message("Retention saved.");
         }, back: "save-retention", field: "confirm-retention" }) : null,
-        command(["harness apps retention " + row.id + " --retention-days <days>",
-          "harness apps retention " + row.id + " --set retention_days=null"], { parity: true }))];
+        command([hostCommand("appsRetention", { id: row.id }), hostCommand("appsClearRetention", { id: row.id })],
+          { parity: true }))];
   }
 
   // What the Hub can do to this key, and what only the daemon host can.
@@ -383,7 +384,7 @@ export function renderApps(main) {
     if (isHub(row)) {
       return h("section", { class: "card apps-host" }, h("h3", {}, "Release this Hub"),
         h("p", {}, "This Hub has no revoke control. Release it on the daemon host:"),
-        command("harness hub release --confirm"));
+        command(hostCommand("hubRelease")));
     }
     if (!hasAppData(row)) {
       return h("p", { class: "muted apps-host-note" }, row.kind === "owner" ?
@@ -397,10 +398,10 @@ export function renderApps(main) {
           [h("p", {}, "Restore on the daemon host before the erasure deadline" +
             (typeof deadline === "number" ? ` (${stamp(deadline)})` : "") +
             ". The host CLI returns the replacement credential to the owner."),
-          command("harness apps restore " + row.id)]);
+          command(hostCommand("appsRestore", { id: row.id }))]);
     }
     if (!canRevoke(row)) return null;
-    const cli = command("harness keys revoke " + row.id, { parity: true });
+    const cli = command(hostCommand("keysRevoke", { key_id: row.id }), { parity: true });
     if (confirming === "revoke") {
       const warning = identityWarning(row);
       return dangerZone("Danger zone", null, ask({ title: `Revoke ${name}?`, explanation: `Revoke access for ${name} ` +
@@ -462,7 +463,8 @@ export function renderApps(main) {
         h("tr", { "data-erasure-id": row.id }, h("td", { class: "app-name" }, h("span", { class: "app-title" },
           row.name || row.id), h("span", { class: "app-sub mono" }, row.id)), h("td", {}, row.kind || "Unknown"),
         h("td", { class: "nowrap" }, stamp(row.erase_after)),
-        h("td", {}, hasAppData(row) ? command("harness apps restore " + row.id) : "Manage this key on the daemon host.")))))];
+        h("td", {}, hasAppData(row) ? command(hostCommand("appsRestore", { id: row.id })) :
+          "Manage this key on the daemon host.")))))];
   }
 
   async function perform(action) {

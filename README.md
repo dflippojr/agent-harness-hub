@@ -300,7 +300,10 @@ For CLI parity, every action the Hub takes has the daemon host command that does
 default: a **Host command** button under each action shows its command, with Copy. The **Show host commands** switch in
 the rail footer (in the phone menu on a phone) shows them all in place of the buttons; the browser remembers it as
 `hub.hostCommands` in localStorage, the only thing the Hub stores there. Steps only the daemon host can take, such as
-approving a Hub claim, restoring an App or minting a sign-in link, always show their command.
+approving a Hub claim, restoring an App or minting a sign-in link, always show their command. The pages take every
+command from one table, `harness_hub/static/lib/commands.mjs`, and the contract suite parses each one, and each
+command the server prints, with the daemon's own CLI parser
+([docs/daemon-contract.md](docs/daemon-contract.md#host-commands)).
 The shell's journeys (sign-in links, Modules, the Settings memory section, the phone More sheet) run against a real
 fake model daemon ([docs/ui-testing.md](docs/ui-testing.md)); what only a faked reply can show, such as the daemon or
 the Hub going silent, is in `npm --prefix tools/ui-tests test -- --workers=1 --project=intercepted shell-browser`.

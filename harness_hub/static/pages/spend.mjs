@@ -3,6 +3,7 @@
 // show lifetime totals. Local-model usage shows tokens only: its cost is "—", never a notional price.
 
 import { api } from "../lib/api.mjs";
+import { hostCommand } from "../lib/commands.mjs";
 import { blocked, blockedState, clear, command, emptyState, h, sentence, when } from "../lib/dom.mjs";
 import { poller } from "../lib/poll.mjs";
 
@@ -44,7 +45,7 @@ export function renderSpend(main) {
   const refresh = h("button", { type: "button", class: "btn", onclick: () => load() }, "Refresh spend");
   clear(main, h("header", { class: "page-head" }, h("h1", {}, "Spend"), refresh),
     h("p", { class: "lead" }, "Usage across every App and backend. Read-only: change an App's session caps on Apps."),
-    command("harness hub status"), problem,
+    command(hostCommand("hubStatus")), problem,
     h("h2", {}, "Apps"),
     h("p", { class: "muted" }, "Lifetime totals per App. Today, 7-day and 30-day windows and a daily trend per App " +
       "wait on the daemon (", h("a", { class: "spend-issue", href: DAEMON_ISSUE, rel: "noreferrer", target: "_blank" }, "agent-harness#686"),

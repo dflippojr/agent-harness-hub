@@ -9,6 +9,7 @@ import re
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
+from ..claim import RELEASE_COMMAND
 from ..daemon import DaemonUnreachable
 from ..views import (
     ID_SEGMENT,
@@ -70,8 +71,8 @@ async def apps_action(resource: str, request: Request):
                     type(days) not in (int, float) or not math.isfinite(days) or not 0 < days <= 36500):
                 return error(400, "Retention must be 0 < days <= 36500, or null to keep until deleted")
         if operation == "revoke" and app_id == key["key_id"]:
-            return error(409, "This Hub is released only on the daemon host: harness hub release --confirm",
-                         release_command="harness hub release --confirm")
+            return error(409, f"This Hub is released only on the daemon host: {RELEASE_COMMAND}",
+                         release_command=RELEASE_COMMAND)
     try:
         if operation == "limits":
             # /hub does not carry retention, so the detail also needs the token-free key list: read both at once.
