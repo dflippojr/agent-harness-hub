@@ -52,17 +52,14 @@ def _forbidden(path: tuple[str, ...], router: str) -> bool:
     return len(path) >= 2 and path[0] == "routes" and path[1] in set(ROUTER_MODULES) - {router}
 
 
-@pytest.mark.parametrize("router", ROUTER_MODULES)
-def test_router_imports_no_sibling_router_or_server(router):
-    imported = _imported_modules((ROUTES / f"{router}.py").read_text(encoding="utf-8"))
-    bad = sorted(".".join(path) for path in imported if _forbidden(path, router))
-    assert not bad, f"routes/{router}.py imports {bad}"
+ROUTE_FILES = sorted(path.stem for path in ROUTES.glob("*.py"))  # every file, the package's __init__ included
 
 
-def test_common_imports_no_router_or_server():
-    imported = _imported_modules((ROUTES / "common.py").read_text(encoding="utf-8"))
-    bad = sorted(".".join(path) for path in imported if _forbidden(path, "common"))
-    assert not bad, f"routes/common.py imports {bad}"
+@pytest.mark.parametrize("module", ROUTE_FILES)
+def test_no_routes_module_imports_a_sibling_router_or_the_server(module):
+    imported = _imported_modules((ROUTES / f"{module}.py").read_text(encoding="utf-8"))
+    bad = sorted(".".join(path) for path in imported if _forbidden(path, module))
+    assert not bad, f"routes/{module}.py imports {bad}"
 
 
 @pytest.mark.parametrize("source", [
