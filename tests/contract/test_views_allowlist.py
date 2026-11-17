@@ -71,28 +71,35 @@ def _replies(operation: str) -> list[Shape]:
     return [shape for status, shape in endpoint.responses.items() if 200 <= status < 300 and shape is not None]
 
 
-def _walk(schema, shape: Shape, label: str, seen: dict[int, tuple[str, Mapping, set[str]]],
+def _walk(schema, shape: Shape | None, label: str, seen: dict[int, tuple[str, Mapping, set[str]]],
           names: dict[int, str]) -> None:
-    """Record, for each views mapping, the contract fields of every reply object it projects."""
+    """Record, for each views mapping, the contract fields of every reply object it projects.
+
+    Only a deliberately loose shape (`ANY`, `MapOf(ANY)`) exempts the view beneath it. A view that expects an object or
+    a list where the contract has a string, a number or nothing records no fields there, so each of its names is
+    reported."""
     options = _options(shape)
+    if any(_loose(option) for option in options):
+        return  # described loosely: no field list to hold the view to
     if isinstance(schema, list):
-        for option in options:
-            if isinstance(option, ListOf):
-                _walk(schema[0], option.item, label + "[]", seen, names)
+        items = [option.item for option in options if isinstance(option, ListOf)]
+        for item in items or [None]:
+            _walk(schema[0], item, label + "[]", seen, names)
         return
     if not isinstance(schema, Mapping):
         return
-    objects = [option for option in options if isinstance(option, Obj)]
-    if not objects or any(_loose(option) for option in options):
-        return  # described loosely or not an object: no field list to hold the view to
     label = names.get(id(schema), label)
     _, _, fields = seen.setdefault(id(schema), (label, schema, set()))
-    for option in objects:
-        fields |= option.fields()
-    for key, inner in schema.items():
-        for option in objects:
-            if key in option.fields():
-                _walk(inner, (option.required | option.optional)[key], f"{label}.{key}", seen, names)
+    for option in options:
+        if isinstance(option, MapOf):  # keys are data: any name, each value of one shape
+            fields |= set(schema)
+            for key, inner in schema.items():
+                _walk(inner, option.value, f"{label}.{key}", seen, names)
+        elif isinstance(option, Obj):
+            fields |= option.fields()
+            for key, inner in schema.items():
+                if key in option.fields():
+                    _walk(inner, (option.required | option.optional)[key], f"{label}.{key}", seen, names)
 
 
 def unlisted() -> dict[str, list[str]]:
@@ -146,3 +153,11 @@ def test_a_name_the_daemon_never_sends_is_caught(monkeypatch):
     monkeypatch.setitem(views.AUDIT["metadata"], "when", views.NUMBER)  # below MapOf(ANY): nothing to hold it to
     assert unlisted()["AUDIT.at"] == ["account_audit", "audit"]
     assert "AUDIT.metadata.when" not in unlisted()
+
+
+def test_an_object_where_the_contract_has_a_scalar_is_caught(monkeypatch):
+    """A view that expects an object where the daemon sends a string would refuse every real reply."""
+    monkeypatch.setitem(views.ACCOUNT, "login", {"typo": views.TEXT})
+    monkeypatch.setitem(views.CREDENTIAL, "backend", [{"name": views.TEXT}])
+    found = unlisted()
+    assert found["ACCOUNT.login.typo"] and found["CREDENTIAL.backend[].name"] == ["credential_set", "credentials"]
