@@ -14,7 +14,7 @@ works until the session expires or signs out (which ends them all). A binding au
 
 The owner's tailnet identity is the other proof the daemon accepts: on a request that tailscaled forwarded
 (tailnet.py), the page can ask for a session with `{"method": "tailnet"}`, and the server grants it only for a login
-the daemon lists in `allowed_logins` (server.py). Its binding keeps that login, and the server checks it against the
+the daemon lists in `allowed_logins` (owners.py). Its binding keeps that login, and the server checks it against the
 daemon's list again on later requests: once the daemon stops listing it, `revoke` ends that binding alone, and
 `confirm` records each daemon read that found it listed, so the server can bound how long an outage keeps the binding.
 That bound runs on a monotonic clock, which a wall-clock step back cannot stretch; codes and session expiry use the wall

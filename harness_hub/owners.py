@@ -31,7 +31,7 @@ class OwnerLogins:
 
 async def read_logins(ctx: HubContext, token: str, *, failures: bool) -> list[str] | int | None:
     """The daemon's allowed_logins: the list, the HTTP status of a non-2xx reply, UNREACHABLE, or None for a 2xx
-    reply without a list of strings. Every answer is kept for ALLOWED_LOGINS_SECONDS. A sign-in reuses only a
+    reply without a list of strings. Every answer is kept for `Tuning.allowed_logins_seconds`. A sign-in reuses only a
     list; with `failures`, the session check reuses any answer, so a down daemon is asked once per window, not
     once per request."""
     async with ctx.owner_logins_read:
@@ -73,8 +73,8 @@ async def signed_in(ctx: HubContext, request: Request) -> bool:
     """Whether the request's cookie and binding name a live session. A binding a tailnet sign-in opened also
     needs its login still listed by the daemon, the login stored at sign-in, never this request's headers; one
     that is not ends for good, and the session's other tabs keep working. A daemon that does not say, while it
-    restarts, keeps the binding (#169) only for OUTAGE_GRACE_SECONDS after a read last listed the login, so a tab
-    cannot outlast its removal by timing its checks into outages, ones it asked for included (#177); after
+    restarts, keeps the binding (#169) only for `Tuning.outage_grace_seconds` after a read last listed the login,
+    so a tab cannot outlast its removal by timing its checks into outages, ones it asked for included (#177); after
     that the binding answers 401 until a check finds the login listed again. Every answer is taken against the
     binding as it is once the read is back: one that expired or was revoked during the read authorizes nothing."""
     sessions = ctx.sessions

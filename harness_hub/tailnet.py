@@ -40,7 +40,7 @@ request loses the headers without a lookup. A GET may reuse this machine's addre
 lists it afresh, as it looks the peer up afresh.
 
 A trusted login is still not the owner: `POST /api/session` accepts it only if the daemon lists it in
-`allowed_logins` (server.py).
+`allowed_logins` (owners.py).
 """
 
 from __future__ import annotations
