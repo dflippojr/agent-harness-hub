@@ -8,6 +8,10 @@ the running Tailscale Windows service and its executable is tailscaled in the Ta
 they are removed before anything reads them. The install path alone is not enough: any local account can start that
 same binary (say, as a userspace proxy) and send whatever headers it likes through it.
 
+The rules are a copy of the daemon's, not a shared module: tests/contract/test_tailnet_conformance.py asks both copies
+the same questions and lists every intended difference (docs/daemon-contract.md, "Tailnet identity"). A change to a
+rule here, or there, fails it until the other follows or the difference is listed with its reason.
+
 The check is implemented for Windows. Elsewhere the headers are removed unless the Hub runs with
 `--trust-unverified-identity-headers`, which trusts any local process that sends them.
 
