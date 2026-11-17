@@ -6,7 +6,6 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass, field
-from types import ModuleType
 from typing import Any
 
 from fastapi import HTTPException, Request
@@ -20,6 +19,7 @@ from ..guard import leaks
 from ..inventory import InventoryCache, valid_inventory
 from ..state import StateStore
 from ..tailnet import PeerCheck
+from ..tuning import DEFAULT_TUNING, Tuning
 from ..views import apps_view, entries_view, module_view, settings_error
 
 
@@ -50,18 +50,12 @@ class HubContext:
         default_factory=lambda: {"active": False, "target": None, "generation": 0, "not_before": 0.0})
     # The newest distinct recoveries any daemon reply reported, oldest first, to name in a restart's 202 (#143).
     recoveries: list[dict] = field(default_factory=list)
+    tuning: Tuning = DEFAULT_TUNING
 
 
 def hub(request: Request) -> HubContext:
     """The `HubContext` of the app serving this request: how a router's handlers reach the Hub's state."""
     return request.app.state.hub
-
-
-def tuning() -> ModuleType:
-    """`harness_hub.server`, home of the timing constants: read per use, so a value tests set there applies."""
-    from .. import server
-
-    return server
 
 
 def json_body(data: bytes | bytearray) -> Any:

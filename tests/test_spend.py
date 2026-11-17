@@ -137,7 +137,7 @@ def test_every_live_app_gets_its_caps_with_bounded_concurrency(claimed, fake_dae
     from copy import deepcopy
 
     from harness_hub.daemon import DaemonClient
-    from harness_hub.server import SPEND_CAP_READS
+    from harness_hub.tuning import DEFAULT_TUNING
 
     template = fake_daemon.apps_rows[1]  # k-minute: live, used a minute ago
     for n in range(60):
@@ -159,7 +159,7 @@ def test_every_live_app_gets_its_caps_with_bounded_concurrency(claimed, fake_dae
     monkeypatch.setattr(DaemonClient, "apps", counted)
     rows = {row["id"]: row for row in claimed.get("/api/spend").json()["apps"]}
     assert all(rows[f"k-extra-{n}"]["caps"] is not None for n in range(60))
-    assert 1 < peak[0] <= SPEND_CAP_READS
+    assert 1 < peak[0] <= DEFAULT_TUNING.spend_cap_reads
 
 
 def test_an_unanswered_refusal_confirmation_is_a_503_not_a_crash(claimed, fake_daemon, monkeypatch):

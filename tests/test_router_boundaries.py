@@ -18,25 +18,19 @@ ROUTES = Path(harness_hub.__file__).parent / "routes"
 ROUTER_MODULES = sorted(path.stem for path in ROUTES.glob("*.py") if path.stem not in ("__init__", "common"))
 
 
-def _imported_modules(path: Path) -> set[str]:
-    """The module names a file imports, relative ones resolved against `harness_hub.routes` (`..server` is
+def _imported_modules(source: str) -> set[str]:
+    """The module names a source imports, relative ones resolved against `harness_hub.routes` (`..server` is
     `server`, `.marketplace` is `marketplace`), plus each name imported from a package (`from .. import server`)."""
     found: set[str] = set()
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
+    for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.ImportFrom):
-            if node.level == 0:
-                module = node.module or ""
-                if module.startswith("harness_hub."):
-                    found.add(module.removeprefix("harness_hub."))
-                continue
-            base = node.module.split(".")[0] if node.module else ""
-            if node.level == 1 and base:
-                found.add(base)
-            elif node.level >= 2 and base:
-                found.add(base)
-            if node.level >= 1 and not base:
-                # `from . import apps` or `from .. import server`: each name is a module of the package it names.
-                found.update(alias.name for alias in node.names)
+            if node.level:  # relative: `.marketplace` or `..server` name a module; `from .. import server` names one
+                if node.module:
+                    found.add(node.module.split(".")[0])
+                else:
+                    found.update(alias.name for alias in node.names)
+            elif (node.module or "").startswith("harness_hub."):
+                found.add(node.module.removeprefix("harness_hub.").split(".")[0])
         elif isinstance(node, ast.Import):
             found.update(alias.name.removeprefix("harness_hub.") for alias in node.names)
     return found
@@ -45,17 +39,20 @@ def _imported_modules(path: Path) -> set[str]:
 @pytest.mark.parametrize("router", ROUTER_MODULES)
 def test_router_imports_no_sibling_router_or_server(router):
     forbidden = {"server", *ROUTER_MODULES} - {router}
-    imported = _imported_modules(ROUTES / f"{router}.py")
+    imported = _imported_modules((ROUTES / f"{router}.py").read_text(encoding="utf-8"))
     assert not (imported & forbidden), f"routes/{router}.py imports {sorted(imported & forbidden)}"
 
 
 def test_common_imports_no_router_or_server():
-    imported = _imported_modules(ROUTES / "common.py")
+    imported = _imported_modules((ROUTES / "common.py").read_text(encoding="utf-8"))
     assert not (imported & {"server", *ROUTER_MODULES}), f"routes/common.py imports {sorted(imported)}"
 
 
-def test_the_checker_sees_the_known_cross_router_imports():
-    # Guards the checker itself: the sibling imports the issue lists are what it must catch.
-    assert "marketplace" in _imported_modules(ROUTES / "overview.py")
-    assert "settings" in _imported_modules(ROUTES / "overview.py")
-    assert "server" in _imported_modules(ROUTES / "common.py")  # the lazy `from .. import server` in tuning()
+def test_the_checker_sees_the_imports_it_forbids():
+    # Guards the checker itself: each form of a sibling or server import is reported, and `routes.common` is not.
+    assert "marketplace" in _imported_modules("from ..marketplace import observe_browser_slots\n")
+    assert "settings" in _imported_modules("from .settings import observe_recovery\n")
+    assert "server" in _imported_modules("def tuning():\n    from .. import server\n")
+    assert "server" in _imported_modules("from ..server import create_app\n")
+    assert "common" in _imported_modules("from .common import HubContext\n")
+    assert "restart" in _imported_modules("from ..restart import observe_restart\n")
