@@ -95,17 +95,17 @@ async def administration_action(operation: str, request: Request):
 
 async def settings_health(request: Request):
     ctx = hub(request)
-    health_generation = ctx.restart["generation"]
+    health_generation = ctx.restart.generation
     try:
         reply = await ctx.daemon.health()
     except DaemonUnreachable:
-        return {"reachable": False, "answered": False, "restarting": ctx.restart["active"], "health": None}
+        return {"reachable": False, "answered": False, "restarting": ctx.restart.active, "health": None}
     shown = health_view(reply.body)["health"] if reply.ok else None
     if shown:
         observe_recovery(ctx, shown["recovery"])
     observe_restart(ctx, shown, health_generation)
     # reachable: a health answer was read; answered: the daemon replied at all, a 503 mid-restart included.
-    return {"reachable": reply.ok, "answered": True, "status": reply.status, "restarting": ctx.restart["active"],
+    return {"reachable": reply.ok, "answered": True, "status": reply.status, "restarting": ctx.restart.active,
             "health": shown}
 
 
@@ -167,9 +167,10 @@ async def settings_action(resource: str, request: Request):
         observe_recovery(ctx, shown["recovery"])
     if operation == "restart" and isinstance(reply.body, dict) and reply.body.get("accepted") is True:
         accepted_at = time.monotonic()
-        ctx.restart.update(active=True, target=reply.body.get("target_revision"),
-                           generation=ctx.restart["generation"] + 1,
-                           not_before=accepted_at + ctx.tuning.restart_grace_seconds)
+        restart = ctx.restart
+        restart.active, restart.target = True, reply.body.get("target_revision")
+        restart.generation += 1
+        restart.not_before = accepted_at + ctx.tuning.restart_grace_seconds
         # The recoveries known before this restart: the shell keeps them from ending its target (#143).
         shown["known_recoveries"] = known
     return JSONResponse(shown, status_code=reply.status)

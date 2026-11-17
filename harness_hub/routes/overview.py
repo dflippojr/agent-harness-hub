@@ -49,7 +49,7 @@ async def get_overview(request: Request):
     # failed read, or the deadline, cancels it instead.
     pairing_task = asyncio.ensure_future(read_pairing()) if key else None
     deadline = asyncio.get_running_loop().time() + ctx.tuning.pairing_count_seconds
-    health_generation = ctx.restart["generation"]
+    health_generation = ctx.restart.generation
     try:
         reads = await concurrently(ctx.daemon.health(), *(
             (ctx.daemon.admin(key["token"]), ctx.daemon.admin(key["token"], "/hub-claim")) if key else ()))
@@ -93,7 +93,7 @@ async def get_overview(request: Request):
         observe_recovery(ctx, health["health"]["recovery"])
     observe_restart(ctx, health["health"] if health else None, health_generation)
     result["answered"] = answered
-    result["restarting"] = ctx.restart["active"]
+    result["restarting"] = ctx.restart.active
     result["attention"] = attention
     return result
 

@@ -4,6 +4,7 @@ tailnet binding depends on. The server's middleware calls `signed_in` for every 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from fastapi import Request
@@ -18,16 +19,26 @@ SESSION_HEADER = "x-hub-session"
 UNREACHABLE = 0  # read_logins' answer when the daemon did not answer at all
 
 
+@dataclass(frozen=True)
+class OwnerLogins:
+    """The daemon's last allowed_logins answer, kept briefly, on the sessions' monotonic clock: `at` is when the read
+    began, `until` when the answer stops being reused, `answer` the list, an HTTP status, UNREACHABLE or None."""
+
+    at: float
+    until: float
+    answer: list[str] | int | None
+
+
 async def read_logins(ctx: HubContext, token: str, *, failures: bool) -> list[str] | int | None:
     """The daemon's allowed_logins: the list, the HTTP status of a non-2xx reply, UNREACHABLE, or None for a 2xx
     reply without a list of strings. Every answer is kept for ALLOWED_LOGINS_SECONDS. A sign-in reuses only a
     list; with `failures`, the session check reuses any answer, so a down daemon is asked once per window, not
     once per request."""
-    owner_logins = ctx.owner_logins
     async with ctx.owner_logins_read:
-        if owner_logins and ctx.sessions.monotonic() < owner_logins["until"] and (
-                failures or isinstance(owner_logins["answer"], list)):
-            return owner_logins["answer"]
+        kept = ctx.owner_logins
+        if kept is not None and ctx.sessions.monotonic() < kept.until and (
+                failures or isinstance(kept.answer, list)):
+            return kept.answer
         try:
             reply = await ctx.daemon.admin(token)
         except DaemonUnreachable:
@@ -41,7 +52,7 @@ async def read_logins(ctx: HubContext, token: str, *, failures: bool) -> list[st
             else:
                 answer = None
         at = ctx.sessions.monotonic()
-        owner_logins.update(at=at, until=at + ctx.tuning.allowed_logins_seconds, answer=answer)
+        ctx.owner_logins = OwnerLogins(at=at, until=at + ctx.tuning.allowed_logins_seconds, answer=answer)
         return answer
 
 
@@ -77,7 +88,7 @@ async def signed_in(ctx: HubContext, request: Request) -> bool:
     listed = await still_owner(ctx, owner)
     if listed:
         # The read still_owner took, with no await between; False if the binding ended while it ran (#177).
-        return sessions.confirm(session, binding, ctx.owner_logins["at"])
+        return sessions.confirm(session, binding, ctx.owner_logins.at)
     if listed is None:
         found = sessions.binding(session, binding)  # the time since the last listing, after the read's wait
         return found is not None and found[1] < ctx.tuning.outage_grace_seconds

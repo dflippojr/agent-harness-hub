@@ -111,7 +111,7 @@ async def sign_in(request: Request):
             return refusal
         # The read tailnet_sign_in took, with no await between, so the grace counts from the daemon's yes.
         credentials = sessions.create(request.cookies.get(settings.cookie_name), login(request.headers),
-                                      ctx.owner_logins["at"])
+                                      ctx.owner_logins.at)
     else:
         code = body.get("code") if isinstance(body, dict) else None
         was_throttled = sessions.throttled()

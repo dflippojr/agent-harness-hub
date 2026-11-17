@@ -6,12 +6,25 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .guard import leaks
 
 if TYPE_CHECKING:
     from .routes.common import HubContext
+
+
+@dataclass
+class RestartState:
+    """A restart the Hub asked for, until health shows it done. `generation` counts the restarts asked for, so a health
+    request begun before the newest one cannot end it; `not_before` is the monotonic time before which health is
+    ignored; `target` is the settings revision the restart must reach, or None for any."""
+
+    active: bool = False
+    target: int | None = None
+    generation: int = 0
+    not_before: float = 0.0
 
 
 def observe_recovery(ctx: HubContext, recovery: dict | None) -> None:
@@ -30,8 +43,8 @@ def observe_restart(ctx: HubContext, shown: dict | None, health_generation: int)
     neither page has to stay open."""
     restart = ctx.restart
     revision = shown["config_revision"] if shown else None
-    if (health_generation == restart["generation"] and time.monotonic() >= restart["not_before"]
+    if (health_generation == restart.generation and time.monotonic() >= restart.not_before
             and shown and shown["ok"] and shown["config_confirmed"]) and (
-            restart["target"] is None or isinstance(revision, int) and revision >= restart["target"]
+            restart.target is None or isinstance(revision, int) and revision >= restart.target
             or shown["recovery"]):
-        restart["active"] = False
+        restart.active = False

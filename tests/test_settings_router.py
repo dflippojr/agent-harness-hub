@@ -5,6 +5,7 @@ Settings routes (stage 5b) join `routes/settings.py`, with the restart and recov
 from __future__ import annotations
 
 from harness_hub.config import Settings
+from harness_hub.restart import RestartState
 from harness_hub.routes import session as session_routes
 from harness_hub.routes import settings as settings_routes
 from harness_hub.server import create_app
@@ -26,5 +27,5 @@ def test_the_settings_routes_are_the_routers_handlers_with_the_restart_state_on_
                 if getattr(route, "path", "").startswith("/api/settings/")}
     assert handlers == {"/api/settings/health": settings_routes.settings_health,
                         "/api/settings/{resource:path}": settings_routes.settings_action}
-    assert app.state.hub.restart == {"active": False, "target": None, "generation": 0, "not_before": 0.0}
+    assert app.state.hub.restart == RestartState()
     assert app.state.hub.recoveries == []

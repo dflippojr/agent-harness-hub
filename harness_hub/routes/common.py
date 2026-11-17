@@ -17,6 +17,9 @@ from ..config import Settings
 from ..daemon import DaemonClient, DaemonUnreachable
 from ..guard import leaks
 from ..inventory import InventoryCache, valid_inventory
+from ..owners import OwnerLogins
+from ..restart import RestartState
+from ..slots import ConsentCopy
 from ..state import StateStore
 from ..tailnet import PeerCheck
 from ..tuning import DEFAULT_TUNING, Tuning
@@ -34,9 +37,9 @@ class HubContext:
     sessions: Sessions
     inventory: InventoryCache
     peer_check: PeerCheck
-    # The daemon's last allowed_logins answer, kept briefly: {"at", "until", "answer"}, on the sessions' monotonic
-    # clock so the outage grace counts from the read that said yes, not from a request that reused it (#177).
-    owner_logins: dict[str, Any] = field(default_factory=dict)
+    # The daemon's last allowed_logins answer, kept briefly, on the sessions' monotonic clock so the outage grace counts
+    # from the read that said yes, not from a request that reused it (#177).
+    owner_logins: OwnerLogins | None = None
     owner_logins_read: asyncio.Lock = field(default_factory=asyncio.Lock)  # one read at a time; waiters take its answer
     # Listings must not publish a new slot while its disclosures are being checked or it is being withdrawn.
     pairing_consent_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -44,10 +47,9 @@ class HubContext:
     # Share observations across pages/tabs; record successful Hub confirmations under the same lock as polls.
     browser_slot_states: dict[tuple[str, str], tuple[str, bool]] = field(default_factory=dict)
     # Bound to the Hub key and the entry's displayed identity, with a bounded ten-minute lifetime.
-    consent_copies: dict[tuple[str, str], tuple[str, float, list[dict], bool]] = field(default_factory=dict)
-    # A restart the Hub asked for, until health shows it done: {"active", "target", "generation", "not_before"}.
-    restart: dict[str, Any] = field(
-        default_factory=lambda: {"active": False, "target": None, "generation": 0, "not_before": 0.0})
+    consent_copies: dict[tuple[str, str], ConsentCopy] = field(default_factory=dict)
+    # A restart the Hub asked for, until health shows it done.
+    restart: RestartState = field(default_factory=RestartState)
     # The newest distinct recoveries any daemon reply reported, oldest first, to name in a restart's 202 (#143).
     recoveries: list[dict] = field(default_factory=list)
     tuning: Tuning = DEFAULT_TUNING

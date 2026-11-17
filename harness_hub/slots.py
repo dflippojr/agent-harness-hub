@@ -5,13 +5,24 @@ approve. Both live on `HubContext`, so each Hub keeps its own."""
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from .daemon import DaemonUnreachable
 from .views import entry_digest, ownership_view, pairing_request_view
 
 if TYPE_CHECKING:
     from .routes.common import HubContext
+
+
+class ConsentCopy(NamedTuple):
+    """A consent screen the owner was shown, kept for the Hub's ten-minute window: the entry's identity when it was
+    shown, the scope disclosures, whether it needs the elevated acknowledgement, and when it stops being reused
+    (`expires`, on the monotonic clock)."""
+
+    identity: str
+    expires: float
+    disclosures: list[dict]
+    acknowledge: bool
 
 
 def observe_browser_slots(ctx: HubContext, rows: list, key_id: str, *, confirmed_id: str = "") -> bool:
@@ -62,12 +73,12 @@ def consent_identity(entry: dict) -> str:
 
 def consent_entry(ctx: HubContext, entry: dict, key_id: str) -> dict:
     copied = ctx.consent_copies.get((key_id, entry["catalog_app_id"]))
-    if copied and copied[0] == consent_identity(entry) and copied[1] > time.monotonic():
+    if copied and copied.identity == consent_identity(entry) and copied.expires > time.monotonic():
         entry["scopes"] = [{**item, **disclosure} for item, disclosure in zip(
-            entry["scopes"], copied[2], strict=True)]
+            entry["scopes"], copied.disclosures, strict=True)]
         entry["elevated"] = sorted(set(entry["elevated"]) | {
-            item["scope"] for item in copied[2] if item["tier"] == "elevated"})
-        if copied[3]:
+            item["scope"] for item in copied.disclosures if item["tier"] == "elevated"})
+        if copied.acknowledge:
             entry["acknowledgement_required"] = True
     entry["consent_digest"] = entry_digest(entry)
     return entry
@@ -77,5 +88,5 @@ def remember_consent(ctx: HubContext, entry: dict, key_id: str, disclosures: lis
     consent_copies = ctx.consent_copies
     if len(consent_copies) >= 256:
         consent_copies.pop(next(iter(consent_copies)))
-    consent_copies[(key_id, entry["catalog_app_id"])] = (
+    consent_copies[(key_id, entry["catalog_app_id"])] = ConsentCopy(
         consent_identity(entry), time.monotonic() + 600, disclosures, acknowledge)
