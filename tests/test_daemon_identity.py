@@ -1753,3 +1753,19 @@ def test_a_literal_0_is_refused_in_every_fixed_width_column(tmp_path, monkeypatc
     write_table(paths, table, [proc_row_fields(table, 17), row])
     with pytest.raises(EndpointUnverified, match="not verified"):
         linux_input_check(paths)(*CONNECTION)
+
+
+KELVIN = "K"  # KELVIN SIGN: Python's casefold() folds it to k; Windows keeps it a distinct uppercase letter
+
+
+def test_windows_accounts_are_compared_as_windows_compares_them(monkeypatch):
+    """Windows compares account names ordinally, ignoring case with its own uppercase table, and keeps names unique
+    under that comparison. Python's casefold() is broader: it folds the Kelvin sign to k, so TOWER\\khub and
+    TOWER\\<Kelvin>hub, two distinct Windows accounts, would compare equal. A listener of the second is refused when
+    the daemon runs as the first, while an account that differs only in ASCII case is still the same account."""
+    windows_inputs(monkeypatch)
+    monkeypatch.setattr(FakeProcess, "accounts", {10: f"TOWER\\{KELVIN}hub", 20: "TOWER\\hub"})
+    text = refusal(ListenerCheck(URL, Owner(account="TOWER\\khub"), platform="win32"))
+    assert "not verified" in text and f"{KELVIN}hub" in text, text
+    monkeypatch.setattr(FakeProcess, "accounts", {10: "tower\\KHUB", 20: "TOWER\\hub"})
+    ListenerCheck(URL, Owner(account="TOWER\\khub"), platform="win32")(*CONNECTION)
