@@ -882,10 +882,11 @@ DAEMON_END, HUB_END, NO_PEER = CONNECTION[1], CONNECTION[0], ("0.0.0.0", 0)  # n
 OWNERS = {10: "TOWER\\owner", 11: "TOWER\\owner", 20: "TOWER\\hub"}
 
 
-def daemon_rows(*, listener_pid: int = 10, end_pid: int = 10, listener_created: float | None = 1000.0) -> list[WinRow]:
+def daemon_rows(*, listener_pid: int = 10, end_pid: int = 10, listener_created: float | None = 1000.0,
+                end_created: float | None = 2000.0) -> list[WinRow]:
     """The daemon's listener, the daemon's end of the Hub's connection, and the Hub's own end."""
     return [WinRow("LISTEN", DAEMON_END, NO_PEER, listener_pid, listener_created),
-            WinRow("ESTABLISHED", DAEMON_END, HUB_END, end_pid, 2000.0),
+            WinRow("ESTABLISHED", DAEMON_END, HUB_END, end_pid, end_created),
             WinRow("ESTABLISHED", HUB_END, DAEMON_END, 20, 2000.0)]
 
 
@@ -967,6 +968,37 @@ def test_the_windows_check_refuses_a_far_end_it_cannot_tie_to_its_process(monkey
     windows_scenario(monkeypatch, daemon_rows(**rows), accounts=OWNERS, started=started, replaced=replaced)
     text = refusal(ListenerCheck(URL, Owner(account="TOWER\\owner"), platform="win32"))
     assert "not verified" in text and phrase in text and "sent it nothing" in text, text
+
+
+# When a socket the check relies on was created, against its process's start (900.0): after it, before it, or with no
+# creation time.
+CREATED = {"after": 1000.0, "before": 800.0, "none": None}
+GRID = [(far_end, listener) for far_end in CREATED for listener in CREATED]
+# What a refusal says about each faulty socket: the phrase, and the socket it names.
+FAULTS = {("far end", "before"): ("started after", "the socket at the other end"),
+          ("far end", "none"): ("no creation time", "the socket at the other end"),
+          ("listener", "before"): ("started after", "the listening socket"),
+          ("listener", "none"): ("no creation time", "the listening socket")}
+
+
+@pytest.mark.parametrize(("far_end", "listener"), GRID,
+                         ids=[f"far-end-{far_end}-listener-{listener}" for far_end, listener in GRID])
+def test_the_windows_check_passes_only_when_its_process_predates_every_socket_it_relies_on(monkeypatch, far_end,
+                                                                                            listener):
+    """The grid {far end, listener} x {created after the process started, before, no creation time}. The far end
+    counts as its process's only when that process started before every socket the check relies on was created: the
+    far end itself and the listener with its PID. Any other cell is refused, naming a faulty socket."""
+    rows = daemon_rows(listener_created=CREATED[listener], end_created=CREATED[far_end])
+    windows_scenario(monkeypatch, rows, accounts=OWNERS, started={10: 900.0, 20: 950.0})
+    check = ListenerCheck(URL, Owner(account="TOWER\\owner"), platform="win32")
+    if far_end == listener == "after":
+        check(*CONNECTION)
+        return
+    text = refusal(check)
+    assert "not verified" in text and "sent it nothing" in text, text
+    faults = [FAULTS[role, when] for role, when in (("far end", far_end), ("listener", listener))
+              if when != "after"]
+    assert any(phrase in text and name in text for phrase, name in faults), (faults, text)
 
 
 def test_addresses_compare_across_spellings():
