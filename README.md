@@ -104,8 +104,7 @@ that socket belongs to the daemon's account. Otherwise it closes the connection 
   `--user` and the [deployment scripts](docs/deployment.md) run it. If the daemon runs as another account, name it
   with `--daemon-owner` (a user name or uid on Linux, `DOMAIN\user` on Windows, as Task Manager shows it).
 - **Every call is checked the same way**: the public `/health`, the claim and every owner API call, including the
-  reads Overview sends in parallel. A connection that stays open was checked when it opened, and its other end
-  cannot change.
+  reads Overview sends in parallel. A connection that stays open was checked when it opened and isn't checked again.
 - **When the check fails**, the Hub sends nothing, keeps its key, and Overview, a claim attempt, the log and
   `status.json` (`daemon_unverified`) say which account answered and what to do: start the daemon as its account,
   set `--daemon-owner`, or use an https daemon URL.
@@ -120,10 +119,16 @@ that socket belongs to the daemon's account. Otherwise it closes the connection 
   have started before that socket was created. A table without creation times refuses, and so does another user's
   process, whose account can't be read. On other platforms, such as macOS, the Hub refuses a loopback `http://`
   daemon and logs why at startup.
-- **What it does not cover**: root (Administrator) and the daemon's own account can still answer on the port, as
-  they can read the Hub's owner-only state directory anyway. An HTTPS proxy in front of the daemon (such as
-  `tailscale serve`) proves the proxy's identity, not the daemon's: the proxy forwards to the daemon's loopback port,
-  where the same squatting is possible. A Hub on the daemon's host should use the daemon's loopback URL.
+- **What it does not cover**: the check proves which account holds the socket at the other end, not which program
+  that is or where it sends what it gets.
+  - Root (Administrator) and the daemon's own account can answer on the port, or hand a checked connection to another
+    program. Both can read the Hub's owner-only state directory anyway.
+  - Same-account forwarders: a program of the daemon's account that listens on the port and forwards what it gets,
+    such as an `ssh -L` tunnel, `socat`, or an editor's or container tool's port forward, passes the check. The key
+    goes wherever it forwards.
+  - An HTTPS proxy in front of the daemon (such as `tailscale serve`) proves the proxy's identity, not the daemon's:
+    the proxy forwards to the daemon's loopback port, where the same squatting is possible. A Hub on the daemon's host
+    should use the daemon's loopback URL.
 
 `--allow-insecure-http` is the explicit compatibility setting that turns the check off: the Hub sends its key to
 whatever listens on the loopback URL, as Hub releases before this change did, and logs a warning when it starts.
@@ -325,13 +330,13 @@ module fields are sent to the browser.
   a transient rejection from destroying it.
 - The Hub sends its daemon nothing on a connection it has not verified: TLS verifies an https daemon, and for a
   loopback `http://` daemon the Hub checks, on each new connection and before writing a byte, that the socket at the
-  other end belongs to the daemon's account ([Daemon connection](#daemon-connection)). A process of another account
-  listening on the daemon's port gets an empty connection, never the key or a claim verifier. Plain HTTP without
-  that check needs the explicit `--allow-insecure-http`, which warns at startup. `tests/test_daemon_identity.py`
-  checks this over real sockets (with its listener run as a real other account when `HUB_TEST_OTHER_ACCOUNT` names
-  one, through `sudo -n`), and `tests/e2e` against the real daemon.
-  An owner-protected local socket (a private Unix socket or a restricted named pipe) would also need no lookup, but
-  it needs Agent Harness to listen on one.
+  other end belongs to the daemon's account ([Daemon connection](#daemon-connection)). A connection to a process of
+  another account on the daemon's port is closed with nothing written on it; that section lists what the check does
+  not cover, such as root and same-account forwarders. Plain HTTP without that check needs the explicit
+  `--allow-insecure-http`, which warns at startup. `tests/test_daemon_identity.py` checks this over real sockets
+  (with its listener run as a real other account when `HUB_TEST_OTHER_ACCOUNT` names one, through `sudo -n`), and
+  `tests/e2e` against the real daemon. An owner-protected local socket (a private Unix socket or a restricted named
+  pipe) would also need no lookup, but it needs Agent Harness to listen on one.
 
 ## Develop
 

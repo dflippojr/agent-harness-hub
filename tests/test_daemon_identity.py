@@ -1145,7 +1145,7 @@ def test_the_docs_list_same_account_forwarders_as_not_covered_and_claim_no_more_
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     section = readme.split("\n## Daemon connection\n", 1)[1].split("\n## ", 1)[0]
     not_covered = section.split("**What it does not cover**", 1)[1].split("\n\n", 1)[0]
-    assert "same-account forwarders" in not_covered and "ssh -L" in not_covered, not_covered
+    assert "same-account forwarders" in not_covered.lower() and "ssh -L" in not_covered, not_covered
     rules = readme.split("\n## Security rules\n", 1)[1].split("\n## ", 1)[0]
     for text in (section, rules, endpoint.__doc__):
         assert "cannot change" not in text and "can't change" not in text and "never the key" not in text

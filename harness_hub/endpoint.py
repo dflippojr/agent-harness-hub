@@ -13,7 +13,7 @@ when that is the daemon's account: the account the Hub runs as, unless `--daemon
 closed unused and the call fails with `EndpointUnverified`, which names the account found and how to fix it. The
 check is in the connection pool's network backend, so it covers every call the same way: the public `/health`, the
 claim and every owner API call, including the reads Overview sends in parallel. A kept-alive connection was checked
-when it opened, and the far end of an open TCP connection cannot change.
+when it opened and is not checked again.
 
 - Linux: `/proc/net/tcp` and `/proc/net/tcp6` give each socket's owner uid. A connection the daemon has not accepted
   yet is listed with its listener's uid. Root, or the daemon's own account, can still answer: both can read the Hub's
@@ -27,6 +27,10 @@ when it opened, and the far end of an open TCP connection cannot change.
   without creation times refuses, as does another user's process, whose account the Hub cannot read.
 - Elsewhere (macOS, the BSDs) there is no check, so a loopback `http://` daemon is refused unless the Hub runs with
   `--allow-insecure-http`.
+
+The check proves which account holds the socket at the other end, not which program that is or where it sends what
+it gets. Root and the daemon's own account are outside it, and so is a same-account forwarder: a program of the
+daemon's account that listens on the port and forwards (`ssh -L`, `socat`) passes the check.
 
 `--allow-insecure-http` is the explicit compatibility setting: no check, as before this change, and a warning when
 the Hub starts.
