@@ -1707,3 +1707,18 @@ def test_a_windows_port_is_read_from_its_low_16_bits_only(monkeypatch):
                                    23: windows_table(daemon_rows(), 6, high_port_bytes=b"\xff\xff")})
     monkeypatch.setattr(ctypes, "WinDLL", lambda name, **kw: SimpleNamespace(GetExtendedTcpTable=get), raising=False)
     windows_input_check()(*CONNECTION)
+
+
+@pytest.mark.parametrize("table", ["tcp", "tcp6"])
+def test_a_kernel_that_prints_the_pointer_as_0_is_read(tmp_path, monkeypatch, table):
+    """Kernels with upstream commit 7c0ec6288b49 ("net: Replace %pK output with 0") print every row's pointer column
+    as a literal 0. Each kind of row (a full socket, a time-wait socket, a request socket) still passes with it, in
+    either table, and the check verifies the daemon's end."""
+    host = "::ffff:127.0.0.1" if table == "tcp6" else "127.0.0.1"
+    rows = [proc_row_fields(table, 17), other_row(table, 17), other_row(table, 12),
+            proc_row_fields(table, 12, remote=kernel(host, 40002), state="03", slot="3:")]
+    for row in rows:
+        row[11] = "0"
+    paths = linux_inputs(tmp_path, monkeypatch)
+    write_table(paths, table, rows)
+    linux_input_check(paths)(*CONNECTION)
