@@ -82,8 +82,11 @@ def test_no_status_file_unless_asked_for(hub):
 def test_heartbeat_records_typed_values_only(make_hub, fake_daemon):
     hub = make_hub(status_seconds=0.02, build=SHA)
     status = wait_for_status(hub, lambda s: s.get("daemon_ok") is True)
-    assert set(status) == {"version", "build", "started_at", "written_at", "claim", "daemon_ok", "daemon_last_ok_at"}
+    assert set(status) == {"version", "build", "started_at", "written_at", "claim", "daemon_ok", "daemon_last_ok_at",
+                           "daemon_check", "daemon_unverified"}
     assert status["version"] == __version__ and status["build"] == SHA and status["claim"] == "unclaimed"
+    # How the daemon is verified (#264): this fake is an https daemon, and it answered.
+    assert status["daemon_check"] == "tls" and status["daemon_unverified"] is None
     assert status["daemon_last_ok_at"] <= status["written_at"]
     assert "/health" in "".join(fake_daemon.sent)
     assert "token" not in json.dumps(status)

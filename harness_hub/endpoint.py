@@ -3,9 +3,9 @@
 The Hub's daemon credentials (its `hub` key, and the verifier of a claim in progress) must reach only the daemon. An
 https daemon URL is checked by TLS: the certificate must be valid for the URL's host, from the system's CAs or
 `SSL_CERT_FILE` / `SSL_CERT_DIR`. A loopback `http://` URL is checked by nothing on the wire: a loopback address limits
-who can reach the port, not who listens on it, and while the daemon is not listening any local account can. The
-daemon offers no TLS or owner-protected local-socket listener (agent-harness at the commit CI pins), so the Hub checks
-the listener itself, in the operating system's connection table.
+who can reach the port, not who listens on it, and any local account can listen on a free port. The daemon offers no
+TLS or owner-protected local-socket listener (agent-harness at the commit CI pins), so the Hub checks the listener
+itself, in the operating system's connection table.
 
 For each new TCP connection to a loopback `http://` daemon, after the handshake and before a byte is written, the Hub
 finds the socket at the other end of that very connection and the account that owns it. The connection is used only
@@ -274,8 +274,8 @@ def listener_check(url: str, *, owner: str = "", allow_insecure_http: bool = Fal
 
 
 INSECURE_WARNING = ("--allow-insecure-http: the Hub sends its daemon key and any claim verifier to whatever listens on "
-                    "{url}, without checking which account that is. Any local account can listen there while the "
-                    "daemon is down. Remove the setting to restore the check (README, \"Daemon connection\").")
+                    "{url}, without checking which account that is: any local account can listen on a free port. "
+                    "Remove the setting to restore the check (README, \"Daemon connection\").")
 
 
 def identity_notice(url: str, check: ListenerCheck | None, *, allow_insecure_http: bool) -> tuple[int, str]:

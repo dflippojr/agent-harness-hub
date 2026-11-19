@@ -13,6 +13,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -169,12 +170,13 @@ def host_cli(daemon, *args) -> subprocess.CompletedProcess:
 
 
 class Hub:
-    def __init__(self, daemon, state_dir: Path, *, claim_file: Path | None = None, status_seconds: float = 0):
+    def __init__(self, daemon, state_dir: Path, *, claim_file: Path | None = None, status_seconds: float = 0,
+                 extra: tuple[str, ...] = ()):
         self.port = free_port()
         self.url = f"http://127.0.0.1:{self.port}"
         self.state_dir = state_dir
         args = [sys.executable, "-m", "harness_hub", "--daemon-url", daemon["url"], "--state-dir", str(state_dir),
-                "--port", str(self.port)]
+                "--port", str(self.port), *extra]
         if claim_file:
             args += ["--claim-file", str(claim_file)]
         if status_seconds:
@@ -635,6 +637,54 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         self.wfile.write(reply.content)
 
     do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = _forward
+
+
+def other_account() -> str:
+    """An account that is not the one the daemon (and these tests) run as, in the form --daemon-owner takes."""
+    return "NOWHERE\\hub-e2e-other" if os.name == "nt" else str(os.geteuid() + 4242)
+
+
+def requests_logged(daemon) -> int:
+    """How many requests the real daemon has answered so far, from uvicorn's access log in daemon.log."""
+    text = (daemon["root"] / "daemon.log").read_text(encoding="utf-8", errors="replace")
+    return len(re.findall(r'"[A-Z]+ /\S* HTTP/1\.1" \d{3}', text))
+
+
+def test_the_hub_verifies_the_real_daemons_listener_and_refuses_another_accounts(daemon, tmp_path):
+    """The protected default against the daemon at the pin (#264). With the default owner (the account the Hub
+    runs as, which runs the daemon here), the Hub verifies the daemon's listener and reads it; the main flow above
+    claims and administers it the same way. A Hub told that the daemon runs as another account refuses the same
+    listener: the installer's claim is never sent, Overview and Claim report why, and the daemon logs no request."""
+    state = tmp_path / "hub-identity"
+    state.mkdir()  # each Hub's log goes beside its state directory
+    hub = Hub(daemon, state / "default")
+    try:
+        hub.sign_in()
+        overview = hub.call("GET", "/api/overview").json()
+        assert overview["reachable"] and overview["error"] == "", overview["error"]
+        assert "nothing until the listener there is verified" in (state / f"hub-{hub.port}.log").read_text(
+            encoding="utf-8", errors="replace")
+    finally:
+        hub.stop()
+
+    claim_file = state / "other" / "claim.json"
+    before = requests_logged(daemon)
+    refusing = Hub(daemon, state / "other", claim_file=claim_file, extra=("--daemon-owner", other_account()))
+    try:
+        refusing.sign_in()
+        overview = refusing.call("GET", "/api/overview").json()
+        assert "not verified" in overview["error"] and overview["answered"] is False, overview["error"]
+        started = refusing.call("POST", "/api/claim")
+        assert started.status_code == 502 and "not verified" in started.json()["detail"], started.text
+        assert not claim_file.exists() and not refusing.token()
+        assert requests_logged(daemon) == before
+        log = (state / f"hub-{refusing.port}.log").read_text(encoding="utf-8", errors="replace")
+        assert "not verified" in log and "Hub claim not started" in log
+    finally:
+        refusing.stop()
+    # The count above would have seen a request: this one is logged.
+    assert httpx.get(daemon["url"] + "/health", timeout=10).status_code == 200
+    wait(lambda: requests_logged(daemon) == before + 1, 10, "the daemon to log the request")
 
 
 def test_a_slow_token_reply_is_still_stored_as_the_hub_key(daemon, tmp_path):

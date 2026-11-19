@@ -34,6 +34,11 @@ on, so their routes answer for real. Images and Remote Control need ComfyUI or C
 daemon's absent answer instead. The Hub claims it exactly as `claim.py` does; the owner's approval is the daemon's own
 CLI, `harness hub approve`.
 
+The cases call the daemon with their own HTTP client. The Hub's client also checks, on each new connection to a
+loopback daemon, that the listener belongs to the daemon's account before it sends anything (`harness_hub/endpoint.py`,
+README "Daemon connection"); `tests/e2e/test_real_daemon.py` proves that check against the same real daemon, which
+runs as the test's account.
+
 A case whose state the disposable daemon cannot produce (a skill proposal from an agent session, a connected Mac runner,
 Remote Control folders) calls `daemon_cannot(target, reason)`: it runs on the fake and is skipped on the daemon with
 the reason. Keep these to what truly cannot be produced.

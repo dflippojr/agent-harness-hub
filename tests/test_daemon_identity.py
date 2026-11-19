@@ -19,6 +19,7 @@ import asyncio
 import base64
 import contextlib
 import functools
+import json
 import logging
 import os
 import shutil
@@ -48,6 +49,7 @@ from harness_hub.endpoint import (
 )
 from harness_hub.server import create_app
 from harness_hub.state import StateStore
+from harness_hub.status import LISTENER_OWNER, STATUS_FILE, TLS, UNVERIFIED, StatusReporter, daemon_check
 
 from .conftest import HUB_HOST, FakeDaemon, HubClient, assert_no_secrets
 from .test_env_hostility import KEY, VERIFIER, Listener, every_call, real_hub, serving
@@ -587,3 +589,41 @@ def test_the_default_verifies_and_works_end_to_end_with_a_daemon_of_this_account
         assert check is not None and check.checks >= 1 and check.owner == resolve_owner("")
     assert any("nothing until the listener there is verified" in r.getMessage() for r in caplog.records)
     assert_no_secrets(hub.bodies, daemon.hub_token)
+
+
+# --- status.json ------------------------------------------------------------------------------------------------------
+
+def check_name(url: str, **kw) -> str:
+    async def name() -> str:
+        client = DaemonClient(url, **kw)
+        try:
+            return daemon_check(client, allow_insecure_http=kw.get("allow_insecure_http", False))
+        finally:
+            await client.aclose()
+
+    return run(name())
+
+
+def test_status_json_names_how_the_daemon_is_verified():
+    assert check_name("https://daemon.example.ts.net") == TLS
+    assert check_name(URL, allow_insecure_http=True) == UNVERIFIED
+    if endpoint.supported():
+        assert check_name(URL) == LISTENER_OWNER
+
+
+@needs_check
+def test_status_json_records_the_refusal_of_an_unverified_daemon(tmp_path):
+    async def beat(url: str) -> dict:
+        client = DaemonClient(url, owner=other_owner())
+        reporter = StatusReporter(tmp_path, client, lambda: "claimed", interval=60, build="0" * 40,
+                                  check=daemon_check(client, allow_insecure_http=False))
+        try:
+            return await reporter.beat()
+        finally:
+            await client.aclose()
+
+    with Listener() as listener:
+        status = run(beat(listener.url))
+    assert status["daemon_check"] == LISTENER_OWNER and status["daemon_ok"] is False
+    assert "not verified" in status["daemon_unverified"] and KEY not in json.dumps(status)
+    assert json.loads((tmp_path / STATUS_FILE).read_text(encoding="utf-8")) == status

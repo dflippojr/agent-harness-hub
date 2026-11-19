@@ -36,7 +36,7 @@ from .routes.common import HubContext
 from .routes.common import error as _error
 from .routes.session import SIGNIN_COMMAND
 from .state import SERVER_FILE, StateStore, write_private
-from .status import StatusReporter
+from .status import StatusReporter, daemon_check
 from .tailnet import PeerCheck, TailnetIdentity
 from .tuning import DEFAULT_TUNING, Tuning
 
@@ -99,7 +99,8 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
     sessions = Sessions(settings.state_dir)
     inventory = InventoryCache(store.dir, settings.daemon_url)
     peer_check = peer_check or PeerCheck()
-    status = StatusReporter(store.dir, daemon, claims.state, interval=settings.status_seconds, build=settings.build)
+    status = StatusReporter(store.dir, daemon, claims.state, interval=settings.status_seconds, build=settings.build,
+                            check=daemon_check(daemon, allow_insecure_http=settings.allow_insecure_http))
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):

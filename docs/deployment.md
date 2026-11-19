@@ -49,7 +49,7 @@ The scripts are bash:
 | `.venv-path`, `.venv-previous` | the active environment and the one it replaced (for rollback) |
 | `deployed.json`, `deployed.previous.json` | `commit`, `version`, `deployed_at`, `unmerged` of the active and previous deployment |
 | `ops/`, `ops.previous/` | the deployed copy of `ops/hub/*.sh` (the unit runs it) and the copy it replaced; a rollback swaps them with the environments. A deployment that fails is undone and never becomes `ops.previous` (`ops.previous.bak` holds the older copy only while it runs) |
-| `hub.env` | the host-specific values, owner-only (`0600`): `HUB_PORT`, `HUB_DAEMON_URL`, `HUB_PUBLIC_URL`, `HUB_STATUS_SECONDS` |
+| `hub.env` | the host-specific values, owner-only (`0600`): `HUB_PORT`, `HUB_DAEMON_URL`, `HUB_PUBLIC_URL`, `HUB_STATUS_SECONDS`, and the optional `HUB_DAEMON_OWNER` and `HUB_ALLOW_INSECURE_HTTP` ([Daemon connection](#daemon-connection)) |
 | `state/` | the Hub's `--state-dir`: key, sign-in codes, `status.json` |
 | `logs/` | `hub.log` (rotated at 20 MB when the Hub starts), `supervisor.log` (one line per start) |
 
@@ -147,7 +147,11 @@ systemctl --user status agent-harness-hub
 - the unit is not ordered on, and does not require, another service;
 - `/healthz` on `127.0.0.1:<port>` answers `ok` with the version in `deployed.json`;
 - `status.json` was written within five heartbeat intervals (five minutes by default; `HUB_STATUS_MAX_AGE` in seconds
-  overrides it) and names the deployed commit.
+  overrides it) and names the deployed commit;
+- how the Hub verifies its daemon (`daemon_check` in `status.json`): `ok` when it checks the loopback daemon's
+  listener, the default, or the daemon URL is https. It warns, and never fails, when the Hub runs with
+  `--allow-insecure-http` or when its last daemon poll was refused as unverified (`daemon_unverified`): a failed
+  check would roll the deployment back to the Hub before it, which may verify less.
 
 It warns when lingering is off. Every read-only fetch the sweep uses is in
 [production-signals.md](production-signals.md).
@@ -218,6 +222,28 @@ systemctl --user restart agent-harness-hub        # the Hub reads --public-url a
 node's serve config, which other services share, so it is the owner's step. Later deployments keep the address, since
 it is in `hub.env`; `--public-url ''` clears it.
 
+### Daemon connection
+
+The Hub sends its daemon nothing, the key and a claim's verifier included, until it has verified on each new
+connection that the daemon's loopback listener belongs to the daemon's account (README, "Daemon connection"). The unit
+runs the Hub as the tower's owner account, the account the daemon's own user unit runs as, so the default needs no
+setting, and `deploy-hub.sh` passes none: a deployment runs the protected default. `check-hub.sh` prints
+`ok    the Hub sends the daemon nothing until its listener is verified as the daemon's`.
+
+Two optional lines in `hub.env` change it, read through `EnvironmentFile=` and passed on by `run-hub.sh`;
+`install-unit.sh` keeps them when it rewrites the file. Restart the unit after a change
+(`systemctl --user restart agent-harness-hub`):
+
+- `HUB_DAEMON_OWNER=<user or uid>` when the daemon runs as another account (`--daemon-owner`);
+- `HUB_ALLOW_INSECURE_HTTP=1` to send the daemon key without checking who listens (`--allow-insecure-http`). This
+  is unsafe: any account on the tower could listen on the daemon's port and take the key. The Hub logs a warning at
+  every start and `check-hub.sh` repeats it.
+
+**Upgrading a deployment from before this check.** Deploy as usual. The new Hub verifies the daemon from its first
+start, with no change to `hub.env`. If Overview then says the daemon URL is not verified and names another account,
+something other than the daemon is listening on its port (stop it and start the daemon), or the daemon runs as an
+account other than the Hub's (set `HUB_DAEMON_OWNER`). Its key stays in `state/` meanwhile, and nothing is sent.
+
 **Sign-in on Linux uses sign-in links only.** The README's "With your tailnet identity" describes signing in with the
 tailnet identity that `tailscale serve` passes on. The Hub trusts that identity only after a peer check that
 tailscaled sent it, and that peer check is implemented for Windows only. On Linux the Hub removes the identity headers,
@@ -277,6 +303,10 @@ git -C "<checkout>" pull --ff-only  # the stable checkout, on main
 The first run registers the task if it does not exist (`install-task.ps1`): `AgentHarness-Hub`, at logon of the
 signed-in user, hidden, restarted by `run-hub.ps1` ten seconds after any exit. The tower auto-logs-in on boot, so the
 Hub comes back after every restart, next to the daemon.
+
+The task runs the Hub as the signed-in user, the account the daemon's `AgentHarness-Daemon` task runs as, so the Hub
+verifies the daemon's loopback listener as that account's before it sends anything (README, "Daemon connection"),
+with no setting. The PowerShell scripts pass neither `--daemon-owner` nor `--allow-insecure-http`.
 
 ### Check it
 
