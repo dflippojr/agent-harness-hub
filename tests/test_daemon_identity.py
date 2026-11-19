@@ -307,6 +307,8 @@ def test_a_listener_of_another_account_gets_no_claim_verifier(tmp_path, foreign)
 # --- the connection table (Linux) -------------------------------------------------------------------------------------
 
 HEADER = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+HEADER6 = ("  sl  local_address                         remote_address                        st tx_queue rx_queue tr "
+           "tm->when retrnsmt   uid  timeout inode\n")  # tcp6 names its third column remote_address
 TAIL = "00000000:00000000 00:00000000 00000000"
 
 
@@ -317,7 +319,7 @@ def row(n: int, local: str, remote: str, state: str, uid: int) -> str:
 def tables(tmp_path: Path, tcp: list[str], tcp6: list[str] | None) -> list[str]:
     (tmp_path / "tcp").write_text(HEADER + "".join(tcp), encoding="ascii")
     if tcp6 is not None:
-        (tmp_path / "tcp6").write_text(HEADER + "".join(tcp6), encoding="ascii")
+        (tmp_path / "tcp6").write_text(HEADER6 + "".join(tcp6), encoding="ascii")
     return [str(tmp_path / "tcp"), str(tmp_path / "tcp6")]
 
 
@@ -358,7 +360,8 @@ def test_a_not_yet_accepted_or_dual_stack_far_end_is_found(tmp_path):
     assert proc_owners(("::ffff:127.0.0.1", 40000), ("127.0.0.1", 8100), tables=paths) == [1001, 1002]
 
 
-def test_a_kernel_without_ipv6_is_read_and_one_without_the_table_raises(tmp_path):
+def test_a_kernel_without_ipv6_is_read_and_one_without_the_table_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(endpoint, "ipv6_available", lambda: False, raising=False)  # no AF_INET6 sockets at all
     paths = tables(tmp_path, [], None)
     assert proc_owners(*CONNECTION, tables=paths) == []
     with pytest.raises(FileNotFoundError):
@@ -770,6 +773,8 @@ class FakeProcess:
     accounts: dict[int, str] = {}
     started: dict[int, float] = {}  # when each process started, in seconds since the epoch
     replaced: frozenset[int] = frozenset()  # PIDs whose process changes while the Hub reads it
+    own: object = "TOWER\\owner"  # the Hub's own account, or the exception reading it raises
+    alive: dict[int, object] = {}  # what is_running answers for a PID (True if not listed), or the exception it raises
 
     def __init__(self, pid: int | None = None):
         self.pid = pid
@@ -778,7 +783,9 @@ class FakeProcess:
         import psutil
 
         if self.pid is None:
-            return "TOWER\\owner"
+            if isinstance(self.own, Exception):
+                raise self.own
+            return self.own
         if self.pid not in self.accounts:
             raise psutil.AccessDenied(self.pid)
         return self.accounts[self.pid]
@@ -791,7 +798,10 @@ class FakeProcess:
         return self.started[self.pid]
 
     def is_running(self) -> bool:
-        return self.pid not in self.replaced
+        answer = False if self.pid in self.replaced else self.alive.get(self.pid, True)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
 
 # Windows' own TCP table (GetExtendedTcpTable, TCP_TABLE_OWNER_MODULE_ALL), faked with rows written as Windows writes
@@ -799,7 +809,8 @@ class FakeProcess:
 # that read it instead would fail these tests too.
 
 FILETIME_UNIX_EPOCH = 116444736000000000  # 1970-01-01 as a FILETIME (100 ns units since 1601)
-WINDOWS_STATES = {"LISTEN": 2, "SYN_RECV": 4, "ESTABLISHED": 5, "TIME_WAIT": 11}  # MIB_TCP_STATE
+WINDOWS_STATES = {"LISTEN": 2, "SYN_RECV": 4, "ESTABLISHED": 5, "TIME_WAIT": 11,  # MIB_TCP_STATE
+                  "UNDEFINED": 99}  # a state Windows does not define
 WINDOWS_FAMILIES = {4: 2, 6: 23}  # AF_INET and AF_INET6 as Windows numbers them
 
 
@@ -870,7 +881,8 @@ def windows_scenario(monkeypatch, rows: list[WinRow], *, accounts: dict[int, str
     status = {"LISTEN": psutil.CONN_LISTEN, "SYN_RECV": psutil.CONN_SYN_RECV, "ESTABLISHED": psutil.CONN_ESTABLISHED,
               "TIME_WAIT": psutil.CONN_TIME_WAIT}
     monkeypatch.setattr(psutil, "net_connections", lambda kind: [
-        FakeConn(row.local, () if row.state == "LISTEN" else row.remote, status[row.state], row.pid) for row in rows])
+        FakeConn(row.local, () if row.state == "LISTEN" else row.remote, status.get(row.state, psutil.CONN_NONE),
+                 row.pid) for row in rows])
     monkeypatch.setattr(psutil, "Process", FakeProcess)
     monkeypatch.setattr(FakeProcess, "accounts", accounts)
     monkeypatch.setattr(FakeProcess, "started", started)
@@ -1181,3 +1193,154 @@ def test_the_docs_list_same_account_forwarders_as_not_covered_and_claim_no_more_
     rules = readme.split("\n## Security rules\n", 1)[1].split("\n## ", 1)[0]
     for text in (section, rules, endpoint.__doc__):
         assert "cannot change" not in text and "can't change" not in text and "never the key" not in text
+
+
+# --- every input of the owner check fails closed ----------------------------------------------------------------------
+
+def linux_inputs(tmp_path: Path, monkeypatch) -> dict[str, Path]:
+    """Every input the Linux owner check reads, as this test's files and fakes: the daemon (uid 1000) at the other end
+    of CONNECTION in tcp, an empty tcp6 on a kernel with IPv6, the overflow uid 65534, a uid map that maps every uid,
+    and a Hub of uid 1000. The check passes them as they are."""
+    paths = {name: tmp_path / name for name in ("tcp", "tcp6", "overflowuid", "uid_map")}
+    paths["tcp"].write_text(HEADER + row(0, DAEMON, HUB, "01", 1000), encoding="ascii")
+    paths["tcp6"].write_text(HEADER6, encoding="ascii")
+    paths["overflowuid"].write_text("65534\n", encoding="ascii")
+    paths["uid_map"].write_text("         0          0 4294967295\n", encoding="ascii")
+    monkeypatch.setattr(endpoint, "OVERFLOW_UID_FILE", str(paths["overflowuid"]))
+    monkeypatch.setattr(endpoint, "UID_MAP_FILE", str(paths["uid_map"]))
+    monkeypatch.setattr(endpoint, "ipv6_available", lambda: True, raising=False)
+    monkeypatch.setattr(os, "geteuid", lambda: 1000, raising=False)
+    return paths
+
+
+def linux_input_check(paths: dict[str, Path]) -> ListenerCheck:
+    """The Linux check for the daemon's account (uid 1000), with its own readers on those inputs."""
+    tables = [str(paths["tcp"]), str(paths["tcp6"])]
+    return ListenerCheck(URL, Owner(uid=1000), platform="linux",
+                         proc=lambda local, remote: proc_owners(local, remote, tables=tables))
+
+
+def windows_inputs(monkeypatch, rows: list[WinRow] | None = None,
+                   started: dict[int, float] | None = None) -> FakeGetExtendedTcpTable:
+    """Every input the Windows owner check reads, faked: the daemon's process (10, TOWER\\owner, started before its
+    sockets) at the other end of CONNECTION and on its listener, on a machine with IPv6. The check passes them."""
+    monkeypatch.setattr(endpoint, "ipv6_available", lambda: True, raising=False)
+    return windows_scenario(monkeypatch, daemon_rows() if rows is None else rows, accounts=dict(OWNERS),
+                            started={10: 900.0, 20: 950.0} if started is None else started)
+
+
+def windows_input_check() -> ListenerCheck:
+    return ListenerCheck(URL, Owner(account="TOWER\\owner"), platform="win32")
+
+
+def directory(path: Path) -> None:
+    """Replace a file with a directory: it is there, and it cannot be read."""
+    path.unlink()
+    path.mkdir()
+
+
+def on_linux(change):
+    """A cell on Linux: the passing inputs, with one changed by `change(paths, monkeypatch)`."""
+    def cell(tmp_path, monkeypatch):
+        paths = linux_inputs(tmp_path, monkeypatch)
+        change(paths, monkeypatch)
+        check = linux_input_check(paths)
+        return (lambda: check(*CONNECTION)), EndpointUnverified, "not verified"
+    return cell
+
+
+def on_windows(change=lambda get, monkeypatch: None, *, rows=None, started=None, phrase="not verified"):
+    """A cell on Windows: the passing inputs, with one changed by `change(get, monkeypatch)`, `rows` or `started`."""
+    def cell(tmp_path, monkeypatch):
+        change(windows_inputs(monkeypatch, rows, started), monkeypatch)
+        check = windows_input_check()
+        return (lambda: check(*CONNECTION)), EndpointUnverified, phrase
+    return cell
+
+
+def at_startup(own):
+    """A cell for the Hub's own Windows account, read when the Hub builds its check: the Hub refuses to build it."""
+    def cell(tmp_path, monkeypatch):
+        windows_inputs(monkeypatch)
+        monkeypatch.setattr(FakeProcess, "own", own)
+        return (lambda: listener_check(URL, platform="win32")), ValueError, "own account"
+    return cell
+
+
+def addresses(platform: str, local, remote):
+    """A cell for the connection's own two addresses, on one platform."""
+    def cell(tmp_path, monkeypatch):
+        paths = linux_inputs(tmp_path, monkeypatch)
+        windows_inputs(monkeypatch)
+        check = linux_input_check(paths) if platform == "linux" else windows_input_check()
+        return (lambda: check(local, remote)), EndpointUnverified, "not verified"
+    return cell
+
+
+def access_denied(pid: int | None = None) -> Exception:
+    import psutil
+
+    return psutil.AccessDenied(pid)
+
+
+GARBAGE_ROW = "   1: not a row the kernel writes\n"
+# Each input the owner check reads, unreadable or unparseable. Every cell starts from inputs the check passes
+# (test_the_owner_check_passes_inputs_that_read_and_parse) and changes that one input.
+FAIL_CLOSED = {
+    "linux-proc-net-tcp-unreadable": on_linux(lambda paths, mp: directory(paths["tcp"])),
+    "linux-proc-net-tcp-unparseable": on_linux(lambda paths, mp: paths["tcp"].write_text(
+        HEADER + row(0, DAEMON, HUB, "01", 1000) + GARBAGE_ROW, encoding="ascii")),
+    "linux-proc-net-tcp6-unreadable": on_linux(lambda paths, mp: paths["tcp6"].unlink()),  # with IPv6 there
+    "linux-proc-net-tcp6-unparseable": on_linux(lambda paths, mp: paths["tcp6"].write_text(
+        HEADER6 + GARBAGE_ROW, encoding="ascii")),
+    "linux-overflowuid-unreadable": on_linux(lambda paths, mp: directory(paths["overflowuid"])),
+    "linux-overflowuid-unparseable": on_linux(lambda paths, mp: paths["overflowuid"].write_text(
+        "not a number\n", encoding="ascii")),
+    "linux-uid-map-unreadable": on_linux(lambda paths, mp: directory(paths["uid_map"])),
+    "linux-uid-map-unparseable": on_linux(lambda paths, mp: paths["uid_map"].write_text(
+        "0 0 4294967295\nnot a row\n", encoding="ascii")),
+    "linux-hub-uid-unreadable": on_linux(lambda paths, mp: mp.delattr(os, "geteuid", raising=False)),
+    "linux-hub-uid-unparseable": on_linux(lambda paths, mp: mp.setattr(os, "geteuid", lambda: "not a uid",
+                                                                       raising=False)),
+    "windows-tcp-table-ipv4-unreadable": on_windows(lambda get, mp: get.tables.update({2: 5})),  # ACCESS_DENIED
+    "windows-tcp-table-ipv4-unparseable": on_windows(
+        rows=[*daemon_rows(), WinRow("UNDEFINED", ("127.0.0.1", 9), NO_PEER, 30, 1000.0)]),
+    "windows-tcp-table-ipv6-unreadable": on_windows(lambda get, mp: get.tables.update({23: 50})),  # NOT_SUPPORTED
+    "windows-tcp-table-ipv6-unparseable": on_windows(lambda get, mp: get.tables.update({23: struct.pack("=I4x", 1)})),
+    "windows-socket-creation-time-unreadable": on_windows(rows=daemon_rows(end_created=None)),
+    "windows-socket-creation-time-unparseable": on_windows(rows=daemon_rows(end_created=-2e10)),  # before 1601
+    "windows-process-start-unreadable": on_windows(started={20: 950.0}),
+    "windows-process-start-unparseable": on_windows(started={10: float("nan"), 20: 950.0}),
+    "windows-process-account-unreadable": on_windows(
+        lambda get, mp: mp.setattr(FakeProcess, "accounts", {20: "TOWER\\hub"}), phrase=UNREADABLE),
+    "windows-process-account-unparseable": on_windows(
+        lambda get, mp: mp.setattr(FakeProcess, "accounts", {10: "owner"}), phrase=UNREADABLE),
+    "windows-process-recheck-unreadable": on_windows(lambda get, mp: mp.setattr(FakeProcess, "alive",
+                                                                                {10: access_denied(10)})),
+    "windows-process-recheck-unparseable": on_windows(lambda get, mp: mp.setattr(FakeProcess, "alive", {10: "yes"})),
+    "windows-hub-account-unreadable": at_startup(access_denied()),
+    "windows-hub-account-unparseable": at_startup("owner"),
+    "windows-psutil-unimportable": on_windows(lambda get, mp: mp.setitem(sys.modules, "psutil", None)),
+    "linux-connection-addresses-unreadable": addresses("linux", None, None),
+    "linux-connection-addresses-unparseable": addresses("linux", ("not an address", 40000), CONNECTION[1]),
+    "windows-connection-addresses-unreadable": addresses("win32", None, None),
+    "windows-connection-addresses-unparseable": addresses("win32", ("not an address", 40000), CONNECTION[1]),
+}
+
+
+def test_the_owner_check_passes_inputs_that_read_and_parse(tmp_path, monkeypatch):
+    """The inputs every FAIL_CLOSED cell starts from: the check passes them, on Linux and on Windows."""
+    linux_input_check(linux_inputs(tmp_path, monkeypatch))(*CONNECTION)
+    windows_inputs(monkeypatch)
+    windows_input_check()(*CONNECTION)
+    assert listener_check(URL, platform="win32").owner == Owner(account="TOWER\\owner")
+
+
+@pytest.mark.parametrize("cell", list(FAIL_CLOSED))
+def test_every_input_of_the_owner_check_fails_closed(tmp_path, monkeypatch, cell):
+    """Each input the owner check reads, on Linux and on Windows, unreadable or unparseable: the check refuses the
+    connection and sends nothing, or, for the Hub's own account, the Hub refuses to build the check."""
+    attempt, refused, phrase = FAIL_CLOSED[cell](tmp_path, monkeypatch)
+    with pytest.raises(refused) as caught:
+        attempt()
+    assert phrase in str(caught.value), str(caught.value)
