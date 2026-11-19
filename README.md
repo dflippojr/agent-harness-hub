@@ -95,10 +95,10 @@ docker run -d --network host --mount type=bind,src="$HOME/.agent-harness-hub",ds
 The Hub's daemon key and a claim's verifier must reach only the daemon. An `https://` daemon URL is verified by TLS:
 its certificate must be valid for the URL's host (system CAs, or `SSL_CERT_FILE` / `SSL_CERT_DIR` for a private CA).
 A loopback `http://` URL, the default, is verified by the Hub itself: a loopback address limits who can reach the
-port, not who listens on it, and any account on the machine can listen on a free port. Agent Harness has no TLS
-or owner-protected local-socket listener of its own, so on each new connection, after it connects
-and before it writes a byte, the Hub looks up the socket at the other end in the operating system's connection table
-and goes on only when that socket belongs to the daemon's account. Otherwise it closes the connection unused.
+port, not who listens on it, and any account on the machine can listen on a free port. Agent Harness has no TLS or
+owner-protected local-socket listener of its own, so on each new connection, after it connects and before it writes a
+byte, the Hub looks up the socket at the other end in the operating system's connection table and goes on only when
+that socket belongs to the daemon's account. Otherwise it closes the connection unused.
 
 - **The daemon's account** is the one the Hub runs as, which is how the daemon installer, the Docker image's
   `--user` and the [deployment scripts](docs/deployment.md) run it. If the daemon runs as another account, name it
@@ -116,7 +116,7 @@ and goes on only when that socket belongs to the daemon's account. Otherwise it 
 - **What it does not cover**: root (Administrator) and the daemon's own account can still answer on the port, as
   they can read the Hub's owner-only state directory anyway. An HTTPS proxy in front of the daemon (such as
   `tailscale serve`) proves the proxy's identity, not the daemon's: the proxy forwards to the daemon's loopback port,
-  where the same squatting is possible. Point the Hub at the daemon's loopback URL on the daemon host.
+  where the same squatting is possible. A Hub on the daemon's host should use the daemon's loopback URL.
 
 `--allow-insecure-http` is the explicit compatibility setting that turns the check off: the Hub sends its key to
 whatever listens on the loopback URL, as Hub releases before this change did, and logs a warning when it starts.
