@@ -328,7 +328,8 @@ module fields are sent to the browser.
   other end belongs to the daemon's account ([Daemon connection](#daemon-connection)). A process of another account
   listening on the daemon's port gets an empty connection, never the key or a claim verifier. Plain HTTP without
   that check needs the explicit `--allow-insecure-http`, which warns at startup. `tests/test_daemon_identity.py`
-  checks this over real sockets, with a listener run as another account, and `tests/e2e` against the real daemon.
+  checks this over real sockets (with its listener run as a real other account when `HUB_TEST_OTHER_ACCOUNT` names
+  one, through `sudo -n`), and `tests/e2e` against the real daemon.
   An owner-protected local socket (a private Unix socket or a restricted named pipe) would also need no lookup, but
   it needs Agent Harness to listen on one.
 

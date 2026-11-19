@@ -10,11 +10,14 @@ daemon's account (harness_hub/endpoint.py). These tests cover:
 - real sockets on this machine: an endpoint whose listener is not the expected account's is sent nothing, by every
   kind of call and by calls sent in parallel, while the right one works and the opt-in keeps the old behaviour.
 
-Nothing here is skipped. A platform without a lookup (macOS, the BSDs) must refuse every loopback listener, so the
-real-socket tests expect exactly that there. The two cross-account tests run their listener as a real other account
-(`nobody`, through `sudo -n`) where this machine allows it, as on CI's Linux runners, and their test id says so
-(`another-account`). Elsewhere (`another-expected-account`) the listener is this account's and the Hub is told the
-daemon runs as another; a real socket and the platform's real lookup decide either way.
+A platform without a lookup (macOS, the BSDs) must refuse every loopback listener, so the real-socket tests expect
+exactly that there rather than skip. The two cross-account tests run twice. In `another-expected-account` the listener
+is this account's and the Hub is told the daemon runs as another; it runs everywhere. In `another-account` the
+listener runs as a real other account, through `sudo -n`. That case is opt-in: set HUB_TEST_OTHER_ACCOUNT to the
+account (`nobody` on a machine whose sudo allows it). Only its fixture reaches sudo, when the case runs, never when the
+tests are imported. Without the opt-in the case skips and names it; with it, a machine that cannot start the listener
+as that account fails it. A real socket and the platform's real lookup decide either way. The unmapped-uid test skips
+where unprivileged user namespaces are unavailable.
 """
 
 from __future__ import annotations
@@ -113,23 +116,29 @@ while True:
 """
 
 
-@functools.cache
-def other_account() -> str:
-    """The account the listener runs as, or '' when this machine cannot start a process as another account."""
+def sudo_problem(account: str) -> str:
+    """Why this machine cannot start the listener as `account` through `sudo -n`, or ''."""
     if sys.platform != "linux" or not shutil.which("sudo") or not Path(SYSTEM_PYTHON).is_file():
-        return ""
-    import pwd
+        return f"a listener as another account needs Linux, sudo and {SYSTEM_PYTHON}"
+    try:
+        done = subprocess.run(["sudo", "-n", "-u", account, SYSTEM_PYTHON, "-I", "-c", "pass"],
+                              capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"sudo -n -u {account} did not run: {exc}"
+    return "" if done.returncode == 0 else f"sudo -n -u {account} exited {done.returncode}: {done.stderr.strip()}"
 
-    try:
-        pwd.getpwnam(OTHER_ACCOUNT)
-    except KeyError:
-        return ""
-    try:
-        done = subprocess.run(["sudo", "-n", "-u", OTHER_ACCOUNT, SYSTEM_PYTHON, "-I", "-c", "pass"],
-                              capture_output=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-    return OTHER_ACCOUNT if done.returncode == 0 else ""
+
+@pytest.fixture
+def other_account() -> str:
+    """The real other account the `another-account` listener runs as. Opt-in through HUB_TEST_OTHER_ACCOUNT, and
+    reached through sudo only here, when a case that needs it runs: importing the tests never does."""
+    account = os.environ.get(OTHER_ACCOUNT_ENV, "").strip()
+    if not account:
+        pytest.skip(f"opt-in: set {OTHER_ACCOUNT_ENV} to an account sudo -n can run {SYSTEM_PYTHON} as (such as "
+                    f"{OTHER_ACCOUNT}) to run this listener as that account")
+    problem = sudo_problem(account)
+    assert not problem, f"{OTHER_ACCOUNT_ENV}={account}: {problem}"
+    return account
 
 
 def other_owner() -> str:
@@ -139,16 +148,14 @@ def other_owner() -> str:
 
 # Whether this platform has a listener lookup (Linux, Windows). Without one, every loopback listener is refused.
 LOOKUP = endpoint.supported()
-# How the cross-account tests make the listener foreign here (see the module docstring); shown in their test ids.
-FOREIGN = "another-account" if other_account() else "another-expected-account"
 
 
 class Squatter:
     """A listener of another local account on a loopback port, recording what each connection sent it."""
 
-    def __init__(self):
+    def __init__(self, account: str):
         self.received: list[bytes] = []
-        self.proc = subprocess.Popen(["sudo", "-n", "-u", other_account(), SYSTEM_PYTHON, "-I", "-c", SQUATTER],
+        self.proc = subprocess.Popen(["sudo", "-n", "-u", account, SYSTEM_PYTHON, "-I", "-c", SQUATTER],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         line = self.proc.stdout.readline().strip()
         assert line.isdigit(), f"the other account's listener did not start: {line!r}"
@@ -192,11 +199,13 @@ class Foreign:
     account: str
 
 
-@contextlib.contextmanager
-def foreign_listener(mode: str):
-    if mode == "another-account":
-        with Squatter() as squatter:
-            yield Foreign(squatter.url, squatter.received, {}, OTHER_ACCOUNT)
+@pytest.fixture(params=["another-account", "another-expected-account"])
+def foreign(request):
+    """A listener the Hub must not trust, made foreign as the test id says (see the module docstring)."""
+    if request.param == "another-account":
+        account = request.getfixturevalue("other_account")
+        with Squatter(account) as squatter:
+            yield Foreign(squatter.url, squatter.received, {}, account)
     else:
         with Listener() as listener:
             yield Foreign(listener.url, listener.heads, {"daemon_owner": other_owner()}, "")
@@ -260,41 +269,39 @@ def wait_until(predicate, timeout: float = 10.0) -> None:
         time.sleep(0.02)
 
 
-@pytest.mark.parametrize("mode", [FOREIGN])
-def test_a_listener_of_another_account_gets_no_key_from_the_parallel_overview_reads(tmp_path, mode):
+def test_a_listener_of_another_account_gets_no_key_from_the_parallel_overview_reads(tmp_path, foreign):
     """The default plain-HTTP loopback URL, no opt-in, and a listener of another account on it: Overview's reads
     (the public health read and the owner API reads with the key, sent together) reach it with nothing, and Overview
     reports why."""
-    with foreign_listener(mode) as listener:
-        store_key(tmp_path / "state", listener.url)
-        with hub_on(tmp_path, listener.url, **listener.settings) as hub:
-            hub.sign_in()
-            overview = hub.get("/api/overview")
-            assert overview.status_code == 200, overview.text
-            body = overview.json()
-            wait_until(lambda: len(listener.received) >= 1)
-            time.sleep(0.2)  # any read still on its way
-        sent = b"".join(listener.received)
-        assert KEY.encode() not in sent and b"authorization" not in sent.lower()
-        assert listener.received and all(data == b"" for data in listener.received), listener.received
-        assert "not verified" in body["error"] and listener.account in body["error"], body["error"]
-        assert body["answered"] is False
+    listener = foreign
+    store_key(tmp_path / "state", listener.url)
+    with hub_on(tmp_path, listener.url, **listener.settings) as hub:
+        hub.sign_in()
+        overview = hub.get("/api/overview")
+        assert overview.status_code == 200, overview.text
+        body = overview.json()
+        wait_until(lambda: len(listener.received) >= 1)
+        time.sleep(0.2)  # any read still on its way
+    sent = b"".join(listener.received)
+    assert KEY.encode() not in sent and b"authorization" not in sent.lower()
+    assert listener.received and all(data == b"" for data in listener.received), listener.received
+    assert "not verified" in body["error"] and listener.account in body["error"], body["error"]
+    assert body["answered"] is False
     assert StateStore(tmp_path / "state").get("key")["token"] == KEY  # an unverified endpoint never costs the key
     assert_no_secrets(hub.bodies, KEY)
 
 
-@pytest.mark.parametrize("mode", [FOREIGN])
-def test_a_listener_of_another_account_gets_no_claim_verifier(tmp_path, mode):
+def test_a_listener_of_another_account_gets_no_claim_verifier(tmp_path, foreign):
     """A pending claim's redeem carries the PKCE verifier, which would let its holder take the Hub key: a listener of
     another account never receives it."""
-    with foreign_listener(mode) as listener:
-        store_pending_claim(tmp_path / "state", listener.url)
-        with hub_on(tmp_path, listener.url, **listener.settings):
-            wait_until(lambda: len(listener.received) >= 1)
-            time.sleep(0.3)  # the poller retries an unanswered redeem every poll_seconds
-        sent = b"".join(listener.received)
-        assert VERIFIER.encode() not in sent and b"code_verifier" not in sent
-        assert all(data == b"" for data in listener.received), listener.received
+    listener = foreign
+    store_pending_claim(tmp_path / "state", listener.url)
+    with hub_on(tmp_path, listener.url, **listener.settings):
+        wait_until(lambda: len(listener.received) >= 1)
+        time.sleep(0.3)  # the poller retries an unanswered redeem every poll_seconds
+    sent = b"".join(listener.received)
+    assert VERIFIER.encode() not in sent and b"code_verifier" not in sent
+    assert all(data == b"" for data in listener.received), listener.received
 
 
 # --- the connection table (Linux) -------------------------------------------------------------------------------------
