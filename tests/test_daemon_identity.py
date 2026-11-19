@@ -64,7 +64,9 @@ from .conftest import HUB_HOST, FakeDaemon, HubClient, assert_no_secrets
 from .test_env_hostility import KEY, VERIFIER, Listener, every_call, real_hub, serving
 
 OTHER_ACCOUNT = "nobody"
+OTHER_ACCOUNT_ENV = "HUB_TEST_OTHER_ACCOUNT"  # opt-in: the real other account the another-account listener runs as
 SYSTEM_PYTHON = "/usr/bin/python3"
+ROOT = Path(__file__).resolve().parents[1]
 KEY_ID = "k-synthetic01"
 
 # A listener that records every connection it accepts (the bytes it received, base64, one line each) and answers 502.
@@ -198,6 +200,40 @@ def foreign_listener(mode: str):
     else:
         with Listener() as listener:
             yield Foreign(listener.url, listener.heads, {"daemon_owner": other_owner()}, "")
+
+
+# Runs pytest with an audit hook that records every process Python launches, and writes them to argv[1] as JSON.
+LAUNCH_TRIPWIRE = r"""
+import json, sys
+launched = []
+
+def hook(event, args):
+    if event in ("subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "os.spawn", "os.startfile"):
+        launched.append(repr(args))
+
+sys.addaudithook(hook)
+import pytest
+
+code = pytest.main(sys.argv[2:])
+with open(sys.argv[1], "w", encoding="utf-8") as out:
+    json.dump(launched, out)
+sys.exit(code)
+"""
+
+
+def test_importing_the_tests_never_reaches_sudo(tmp_path):
+    """The real other account is opt-in (HUB_TEST_OTHER_ACCOUNT), and only a test that needs it reaches sudo, when
+    it runs. Importing these tests, and running the another-account cases without the opt-in, launch no sudo: those
+    cases skip and name the opt-in."""
+    launched = tmp_path / "launched.json"
+    env = {name: value for name, value in os.environ.items() if name != OTHER_ACCOUNT_ENV}
+    done = subprocess.run([sys.executable, "-I", "-c", LAUNCH_TRIPWIRE, str(launched), "-q", "-rs", "-p",
+                           "no:cacheprovider", f"--basetemp={tmp_path / 'inner'}", "-k", "another-account", __file__],
+                          cwd=ROOT, env=env, capture_output=True, text=True, timeout=300, check=False)
+    output = done.stdout + done.stderr
+    sudo = [call for call in json.loads(launched.read_text(encoding="utf-8")) if "sudo" in call]
+    assert sudo == [], sudo
+    assert done.returncode == 0 and "2 skipped" in output and OTHER_ACCOUNT_ENV in output, output
 
 
 @contextlib.contextmanager
