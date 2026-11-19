@@ -422,7 +422,7 @@ def test_the_log_names_each_change_once(caplog):
     assert check.checks == 5
 
 
-def test_which_urls_are_checked():
+def test_which_urls_are_checked(linux_accounts):
     assert isinstance(listener_check("http://127.0.0.1:8100", platform="linux"), ListenerCheck)
     assert isinstance(listener_check("http://[::1]:8100", platform="linux"), ListenerCheck)
     assert isinstance(listener_check("http://localhost:8100", platform="darwin"), ListenerCheck)
@@ -448,9 +448,14 @@ class FakePwd:
         return SimpleNamespace(pw_name="owner")
 
 
-def test_a_linux_owner_is_a_user_name_or_a_uid(monkeypatch):
+@pytest.fixture
+def linux_accounts(monkeypatch):
+    """Linux's account lookups, on any platform: the faked `pwd` and an effective uid of 1000."""
     monkeypatch.setitem(sys.modules, "pwd", FakePwd)
     monkeypatch.setattr(os, "geteuid", lambda: 1000, raising=False)
+
+
+def test_a_linux_owner_is_a_user_name_or_a_uid(linux_accounts):
     assert resolve_owner("owner", "linux") == Owner(uid=1000) == resolve_owner("", "linux")
     assert resolve_owner("4242", "linux") == Owner(uid=4242)
     with pytest.raises(ValueError, match="no account named"):
