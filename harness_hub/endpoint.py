@@ -157,7 +157,9 @@ DEC = "(?:0|[1-9][0-9]*)"  # %u, %lu: no sign, no leading zero
 SDEC = "(?:0|-?[1-9][0-9]*)"  # %d
 X8 = "[0-9A-F]{8}"  # %08X
 LX8 = "(?:[0-9A-F]{8}|[1-9A-F][0-9A-F]{8,15})"  # %08lX: eight digits at least, and no leading zero past them
-POINTER = r"(?:[0-9a-f]{16}|[0-9a-f]{8}|\(____ptrval____\)|\(ptrval\))"  # %pK: hashed or zeroed, or not hashable yet
+# The pointer column: %pK, hashed or zeroed (or not hashable yet), or the literal 0 that kernels print since upstream
+# commit 7c0ec6288b49 ("net: Replace %pK output with 0").
+POINTER = r"(?:0|[0-9a-f]{16}|[0-9a-f]{8}|\(____ptrval____\)|\(ptrval\))"
 
 
 # The C types the kernel prints /proc/net/tcp's fields from, by their largest and least values.
