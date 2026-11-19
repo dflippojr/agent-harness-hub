@@ -23,8 +23,8 @@ when it opened and is not checked again.
   the overflow uid.
 - Windows: the TCP table (GetExtendedTcpTable, with each socket's creation time) names the process at the other end
   by PID, and that process's token gives the account. Windows reuses PIDs, so the socket counts as the process's only
-  when the process also holds the port's listening socket and started before that socket was created. A table
-  without creation times refuses, as does another user's process, whose account the Hub cannot read.
+  when the process also holds the port's listening socket and started before both sockets were created. A socket
+  without a creation time refuses, as does another user's process, whose account the Hub cannot read.
 - Elsewhere (macOS, the BSDs) there is no check, so a loopback `http://` daemon is refused unless the Hub runs with
   `--allow-insecure-http`.
 
@@ -294,9 +294,10 @@ def filetime_seconds(filetime: int) -> float:
 def windows_owners(local: Address, remote: Address, rows: Callable[[], list[TcpRow]] = windows_rows) -> list[str]:
     """The accounts (DOMAIN\\user) of the processes at the other end of the connection `local` -> `remote`, from
     Windows' TCP table. The table names a socket's process by PID, and Windows reuses PIDs, so a socket counts as its
-    process's only when that process also holds the listening socket on its port and started before that socket was
-    created. Otherwise, or when the table gives the listener no creation time, this raises `Unattributed`. A process
-    whose account cannot be read (another user's) counts as `UNREADABLE`."""
+    process's only when that process also holds the listening socket on its port and started before every socket the
+    check relies on was created: the socket itself and each such listener. Otherwise, or when the table gives any of
+    them no creation time, this raises `Unattributed`. A process whose account cannot be read (another user's) counts
+    as `UNREADABLE`."""
     import psutil  # Windows-only dependency, as in tailnet.py
 
     table = rows()
@@ -311,17 +312,22 @@ def windows_owners(local: Address, remote: Address, rows: Callable[[], list[TcpR
         if not end.pid or not listeners:
             raise Unattributed(f"the socket at the other end belongs to process {end.pid}, which holds no listening "
                                f"socket on port {port}")
-        if not all(row.created > 0 for row in listeners):
-            raise Unattributed(f"Windows gives no creation time for the listening socket on port {port}, so the Hub "
-                               f"cannot tell whether process {end.pid} created it")
+        # Every socket the check relies on: the far end itself, and each listener of its process on the port.
+        sockets = [("the socket at the other end", end)]
+        sockets += [(f"the listening socket on port {port}", row) for row in listeners]
+        for name, row in sockets:
+            if row.created <= 0:
+                raise Unattributed(f"Windows gives no creation time for {name}, so the Hub cannot tell whether process "
+                                   f"{end.pid} created it")
         try:
             process = psutil.Process(end.pid)
             started = process.create_time()
         except (psutil.Error, OSError) as exc:
             raise Unattributed(f"the Hub cannot read when process {end.pid} started ({type(exc).__name__})") from exc
-        if started >= filetime_seconds(min(row.created for row in listeners)):
-            raise Unattributed(f"process {end.pid} started after the listening socket on port {port} was created, so "
-                               "it is not the process that created that socket")
+        for name, row in sockets:
+            if started >= filetime_seconds(row.created):
+                raise Unattributed(f"process {end.pid} started after {name} was created, so it is not the process "
+                                   "that created that socket")
         try:
             account = process.username()
         except (psutil.Error, OSError):
