@@ -825,15 +825,16 @@ class WinRow:
     remote: tuple[str, int]
     pid: int
     created: float | None
+    filetime: int | None = None  # the creation time as a raw FILETIME, in place of `created`
 
 
-def windows_table(rows: list[WinRow], version: int) -> bytes:
+def windows_table(rows: list[WinRow], version: int, high_port_bytes: bytes = b"\0\0") -> bytes:
     """MIB_TCPTABLE_OWNER_MODULE (MIB_TCP6TABLE_OWNER_MODULE for IPv6) as GetExtendedTcpTable writes it: the row
     count, padding to the rows' 8-byte alignment, then the rows. A port is a DWORD in network byte order (the port in
     its low 16 bits), as an IPv4 address is, and the creation time a FILETIME."""
 
-    def port(number: int) -> bytes:
-        return struct.pack("!H", number) + b"\0\0"
+    def port(number: int) -> bytes:  # the upper 16 bits may be uninitialized (MIB_TCPROW_OWNER_PID)
+        return struct.pack("!H", number) + high_port_bytes
 
     packed = []
     for row in rows:
@@ -841,6 +842,7 @@ def windows_table(rows: list[WinRow], version: int) -> bytes:
         if local.version != version:
             continue
         created = FILETIME_UNIX_EPOCH + round(row.created * 10_000_000) if row.created is not None else 0
+        created = row.filetime if row.filetime is not None else created
         state = WINDOWS_STATES[row.state]
         if version == 4:
             packed.append(struct.pack("=I4s4s4s4sIq128x", state, local.packed, port(row.local[1]), remote.packed,
@@ -1411,8 +1413,12 @@ def proc_row_fields(table: str, shape: int, *, local: str = "", remote: str = ""
     if shape == 17:
         return [slot, local, remote, state or "01", "00000000:00000000", "00:00000000", "00000000", uid, "0", "54321",
                 "1", "0000000000000000", "20", "4", "0", "10", "-1"]
-    return [slot, local, remote, state or "03", "00000000:00000000", "01:00000063", "00000000", uid, "0", "0", "0",
-            "0000000000000000"]
+    state = state or "03"
+    if state == "03":  # a request socket: timer code 1, refcount 0
+        return [slot, local, remote, state, "00000000:00000000", "01:00000063", "00000000", uid, "0", "0", "0",
+                "0000000000000000"]
+    return [slot, local, remote, state, "00000000:00000000", "03:00001770", "00000000", uid, "0", "0", "3",
+            "0000000000000000"]  # a time-wait socket: timer code 3
 
 
 def other_row(table: str, shape: int) -> list[str]:
@@ -1561,3 +1567,133 @@ def test_a_windows_tcp_row_windows_never_writes_is_refused(monkeypatch, case):
     windows_inputs(monkeypatch, rows=[*daemon_rows(), *WINDOWS_MALFORMED[case]])
     with pytest.raises(EndpointUnverified, match="not verified"):
         windows_input_check()(*CONNECTION)
+
+
+# --- the last pass: every parsed field within its kernel or Win32 type ------------------------------------------------
+
+U8, U32, U64 = 2 ** 8 - 1, 2 ** 32 - 1, 2 ** 64 - 1
+INT_MIN, INT_MAX, LONG_MAX = -(2 ** 31), 2 ** 31 - 1, 2 ** 63 - 1
+
+
+def kind_row(kind: str) -> list[str]:
+    """A tcp row other than the far end: a full socket (17 fields), or a request or time-wait socket (12)."""
+    if kind == "full":
+        return other_row("tcp", 17)
+    if kind == "request":
+        return proc_row_fields("tcp", 12, remote=kernel("127.0.0.1", 40001), state="03", slot="1:")
+    return other_row("tcp", 12)
+
+
+# (kind, field, value, whether the check passes): each decimal field at the edges of its kernel type, the timer codes
+# each kind prints, and the constants the short shapes print. Field numbers follow PROC_FIELDS.
+PROC_BOUNDARIES = [
+    ("full", 0, f"{INT_MAX}:", True), ("full", 0, f"{INT_MAX + 1}:", False),  # slot: int
+    *[("full", 5, f"0{code}:00000000", code in "0124") for code in "012345"],  # the timer codes a full socket prints
+    ("full", 5, "00:7FFFFFFFFFFFFFFF", True), ("full", 5, "00:8000000000000000", False),  # when: clock_t, not negative
+    ("full", 6, "000000FF", True), ("full", 6, "00000100", False),  # retransmits: u8
+    ("full", 7, str(U32), True), ("full", 7, str(U32 + 1), False),  # uid: uid_t
+    ("full", 8, str(U8), True), ("full", 8, str(U8 + 1), False), ("full", 8, "-1", False),  # timeout: u8 probes
+    ("full", 9, str(U64), True), ("full", 9, str(U64 + 1), False),  # inode: unsigned long
+    ("full", 10, str(INT_MIN), True), ("full", 10, str(INT_MAX), True),  # refcount: printed as int
+    ("full", 10, str(INT_MIN - 1), False), ("full", 10, str(INT_MAX + 1), False),
+    ("full", 12, str(LONG_MAX), True), ("full", 12, str(LONG_MAX + 1), False),  # rto: clock_t
+    ("full", 13, str(LONG_MAX), True), ("full", 13, str(LONG_MAX + 1), False),  # ato: clock_t
+    ("full", 14, "511", True), ("full", 14, "512", False),  # (u8 quick << 1) | pingpong
+    ("full", 15, str(U32), True), ("full", 15, str(U32 + 1), False),  # cwnd: u32
+    ("full", 16, str(INT_MIN), True), ("full", 16, str(INT_MAX), True),  # ssthresh: printed as int
+    ("full", 16, str(INT_MIN - 1), False), ("full", 16, str(INT_MAX + 1), False),
+    ("request", 4, "00000001:00000000", False),  # a request socket prints empty queues
+    ("request", 5, "00:00000063", False), ("request", 5, "03:00000063", False),  # and timer code 1
+    ("request", 5, "01:8000000000000000", False),
+    ("request", 6, "000000FF", True), ("request", 6, "00000100", False),  # retransmits: u8 timeouts
+    ("request", 7, str(U32), True), ("request", 7, str(U32 + 1), False),  # uid: the listener's
+    ("request", 8, "1", False), ("request", 9, "1", False), ("request", 10, "1", False),  # timeout, inode, refcount: 0
+    ("time-wait", 3, "05", True),  # FIN_WAIT2, a time-wait socket's other substate
+    ("time-wait", 4, "00000001:00000000", False),  # a time-wait socket prints empty queues
+    ("time-wait", 5, "01:00001770", False), ("time-wait", 5, "03:8000000000000000", False),  # and timer code 3
+    ("time-wait", 6, "00000001", False), ("time-wait", 7, "1", False),  # no retransmits, uid 0
+    ("time-wait", 8, "1", False), ("time-wait", 9, "1", False),  # timeout, inode: 0
+    ("time-wait", 10, str(INT_MIN), True), ("time-wait", 10, str(INT_MAX), True),  # refcount: int
+    ("time-wait", 10, str(INT_MAX + 1), False),
+]
+
+
+@pytest.mark.parametrize(("kind", "field", "value", "passes"), PROC_BOUNDARIES,
+                         ids=[f"{kind}-{PROC_FIELDS[field]}-{value}-{'passes' if passes else 'refused'}"
+                              for kind, field, value, passes in PROC_BOUNDARIES])
+def test_each_proc_net_tcp_field_is_held_to_its_kernel_type(tmp_path, monkeypatch, kind, field, value, passes):
+    """Each field at the edges of the kernel type it is printed from, and each value the kernel prints in a field it
+    prints as a constant, in a row beside a valid far end: inside the type the check passes, outside it refuses."""
+    row = kind_row(kind)
+    row[field] = value
+    paths = linux_inputs(tmp_path, monkeypatch)
+    write_table(paths, "tcp", [proc_row_fields("tcp", 17), row])
+    check = linux_input_check(paths)
+    if passes:
+        check(*CONNECTION)
+    else:
+        with pytest.raises(EndpointUnverified, match="not verified"):
+            check(*CONNECTION)
+
+
+# (uid map row beside BASE_MAP, whether the check passes): each number of a uid_map row at the edges of its u32 range,
+# with the ranges map_write accepts.
+UID_MAP_BOUNDARIES = {
+    "first-at-its-largest": (map_line(4294967294, 5000, 1), True),
+    "first-one-past": (map_line(4294967295, 5000, 1), False),
+    "outside-at-its-largest": (map_line(5000, 4294967294, 1), True),
+    "outside-one-past": (map_line(5000, 4294967295, 1), False),
+    "count-at-its-smallest": (map_line(5000, 5000, 1), True),
+    "count-one-below": (map_line(5000, 5000, 0), False),
+    "count-reaching-the-end": (map_line(5000, 5000, 4294967295 - 5000), True),
+    "count-one-past-the-end": (map_line(5000, 5000, 4294967296 - 5000), False),
+}
+
+
+@pytest.mark.parametrize("case", list(UID_MAP_BOUNDARIES))
+def test_each_uid_map_number_is_held_to_its_type(tmp_path, monkeypatch, case):
+    row, passes = UID_MAP_BOUNDARIES[case]
+    paths = linux_inputs(tmp_path, monkeypatch)
+    paths["uid_map"].write_text(BASE_MAP + row, encoding="ascii")
+    check = linux_input_check(paths)
+    if passes:
+        check(*CONNECTION)
+    else:
+        with pytest.raises(EndpointUnverified, match="not verified"):
+            check(*CONNECTION)
+
+
+# (extra row, whether the check passes): each Windows TCP row field at the edges of its Win32 type.
+WINDOWS_BOUNDARIES = {
+    "state-1": ([WinRow("STATE-1", ("127.0.0.1", 9000), NO_PEER, 30, 1000.0)], True),
+    "state-12": ([WinRow("STATE-12", ("127.0.0.1", 9000), NO_PEER, 30, 1000.0)], True),
+    "state-0": ([WinRow("STATE-0", ("127.0.0.1", 9000), NO_PEER, 30, 1000.0)], False),
+    "state-13": ([WinRow("STATE-13", ("127.0.0.1", 9000), NO_PEER, 30, 1000.0)], False),
+    "creation-time-at-its-largest": ([WinRow("LISTEN", ("127.0.0.1", 9000), NO_PEER, 30, None, 2 ** 63 - 1)], True),
+    "creation-time-zero": ([WinRow("LISTEN", ("127.0.0.1", 9000), NO_PEER, 30, None, 0)], True),
+    "creation-time-one-below-zero": ([WinRow("LISTEN", ("127.0.0.1", 9000), NO_PEER, 30, None, -1)], False),
+    "pid-at-its-largest": ([WinRow("LISTEN", ("127.0.0.1", 9000), NO_PEER, U32, 1000.0)], True),
+}
+
+
+@pytest.mark.parametrize("case", list(WINDOWS_BOUNDARIES))
+def test_each_windows_tcp_row_field_is_held_to_its_win32_type(monkeypatch, case):
+    rows, passes = WINDOWS_BOUNDARIES[case]
+    for name, state in (("STATE-0", 0), ("STATE-1", 1), ("STATE-12", 12), ("STATE-13", 13)):
+        monkeypatch.setitem(WINDOWS_STATES, name, state)
+    windows_inputs(monkeypatch, rows=[*daemon_rows(), *rows])
+    check = windows_input_check()
+    if passes:
+        check(*CONNECTION)
+    else:
+        with pytest.raises(EndpointUnverified, match="not verified"):
+            check(*CONNECTION)
+
+
+def test_a_windows_port_is_read_from_its_low_16_bits_only(monkeypatch):
+    """MIB_TCPROW_OWNER_PID: a port's upper 16 bits may be uninitialized. Set, they change nothing."""
+    windows_inputs(monkeypatch)
+    get = FakeGetExtendedTcpTable({2: windows_table(daemon_rows(), 4, high_port_bytes=b"\xff\xff"),
+                                   23: windows_table(daemon_rows(), 6, high_port_bytes=b"\xff\xff")})
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **kw: SimpleNamespace(GetExtendedTcpTable=get), raising=False)
+    windows_input_check()(*CONNECTION)
