@@ -222,6 +222,12 @@ systemctl --user restart agent-harness-hub        # the Hub reads --public-url a
 node's serve config, which other services share, so it is the owner's step. Later deployments keep the address, since
 it is in `hub.env`; `--public-url ''` clears it.
 
+**Sign-in on Linux uses sign-in links only.** The README's "With your tailnet identity" describes signing in with the
+tailnet identity that `tailscale serve` passes on. The Hub trusts that identity only after a peer check that
+tailscaled sent it, and that peer check is implemented for Windows only. On Linux the Hub removes the identity headers,
+so open the Hub with a sign-in link (`signin-link`, as in [First claim](#first-claim)). The
+`--trust-unverified-identity-headers` option trusts any local process and is not used here.
+
 ### Daemon connection
 
 The Hub sends its daemon nothing, the key and a claim's verifier included, until it has verified on each new
@@ -243,12 +249,6 @@ Two optional lines in `hub.env` change it, read through `EnvironmentFile=` and p
 start, with no change to `hub.env`. If Overview then says the daemon URL is not verified and names another account,
 something other than the daemon is listening on its port (stop it and start the daemon), or the daemon runs as an
 account other than the Hub's (set `HUB_DAEMON_OWNER`). Its key stays in `state/` meanwhile, and nothing is sent.
-
-**Sign-in on Linux uses sign-in links only.** The README's "With your tailnet identity" describes signing in with the
-tailnet identity that `tailscale serve` passes on. The Hub trusts that identity only after a peer check that
-tailscaled sent it, and that peer check is implemented for Windows only. On Linux the Hub removes the identity headers,
-so open the Hub with a sign-in link (`signin-link`, as in [First claim](#first-claim)). The
-`--trust-unverified-identity-headers` option trusts any local process and is not used here.
 
 ## Windows (logon task)
 
