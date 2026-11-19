@@ -29,7 +29,10 @@ when it opened and is not checked again.
   `--allow-insecure-http`.
 
 Every input the check reads fails closed: a connection table, `/proc` file, socket creation time or process lookup
-that cannot be read or parsed refuses the connection, on Linux and on Windows.
+that cannot be read or parsed refuses the connection, on Linux and on Windows. Each record it parses is validated in
+full: a /proc/net/tcp row must be in one of the two shapes the kernel prints, every field in its printed format and its
+state one that shape prints; /proc/self/uid_map must be a map the kernel would write; and each Windows TCP row must
+have a state Windows defines and a creation time that is a FILETIME.
 
 The check proves which account holds the socket at the other end, not which program that is or where it sends what
 it gets. Root and the daemon's own account are outside it, and so is a same-account forwarder: a program of the
@@ -47,13 +50,14 @@ import ipaddress
 import logging
 import math
 import os
+import re
 import socket
-import string
 import struct
 import sys
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -68,9 +72,9 @@ log = logging.getLogger("harness_hub.endpoint")
 PLATFORM = sys.platform  # the platform whose connection table the check reads; tests replace it
 
 PROC_TABLES = ("/proc/net/tcp", "/proc/net/tcp6")
-# The first columns of each table's header, by whether it is tcp6 (which names its third column remote_address).
-PROC_HEADERS = {False: ["sl", "local_address", "rem_address", "st"],
-                True: ["sl", "local_address", "remote_address", "st"]}
+# Each table's header, by whether it is tcp6 (which names its third column remote_address).
+PROC_HEADERS = {six: ["sl", "local_address", "remote_address" if six else "rem_address", "st", "tx_queue", "rx_queue",
+                      "tr", "tm->when", "retrnsmt", "uid", "timeout", "inode"] for six in (False, True)}
 # The far end of a connection the Hub has just opened: established, or still a request socket (SYN_RECV, listed with
 # its listener's uid) until the daemon's side has processed the handshake's last ACK.
 PROC_LIVE_STATES = frozenset({"01", "03"})
@@ -146,25 +150,45 @@ def _proc_hex(ip: ipaddress.IPv4Address | ipaddress.IPv6Address, port: int, tabl
     return "".join(f"{word:08X}" for word in words) + f":{port:04X}"
 
 
-def _hex(text: str) -> bool:
-    return bool(text) and all(char in string.hexdigits for char in text)
+# The formats the kernel prints /proc/net/tcp's fields in (net/ipv4/tcp_ipv4.c and net/ipv6/tcp_ipv6.c: get_openreq*,
+# get_timewait*_sock, get_tcp*_sock).
+DEC = "(?:0|[1-9][0-9]*)"  # %u, %lu: no sign, no leading zero
+SDEC = "(?:0|-?[1-9][0-9]*)"  # %d
+X8 = "[0-9A-F]{8}"  # %08X
+LX8 = "(?:[0-9A-F]{8}|[1-9A-F][0-9A-F]{8,15})"  # %08lX: eight digits at least, and no leading zero past them
+POINTER = r"(?:[0-9a-f]{16}|[0-9a-f]{8}|\(____ptrval____\)|\(ptrval\))"  # %pK: hashed or zeroed, or not hashable yet
+
+
+def _proc_row_formats(width: int) -> dict[int, list[re.Pattern[str]]]:
+    """Each field's printed format in a /proc/net/tcp row (`width` 8) or tcp6 row (32), by the row's field count: 12
+    for a request or time-wait socket, 17 for a full socket."""
+    address = f"[0-9A-F]{{{width}}}:[0-9A-F]{{4}}"
+    # slot, both addresses, state, queues, timer, retransmits, uid, timeout, inode, refcount, pointer
+    short = [f"{DEC}:", address, address, "[0-9A-F]{2}", f"{X8}:{X8}", f"[0-9A-F]{{2}}:{LX8}", X8, DEC, SDEC, DEC,
+             SDEC, POINTER]
+    full = [*short, DEC, DEC, DEC, DEC, SDEC]  # rto, ato, quick and pingpong, cwnd, ssthresh
+    return {12: [re.compile(field) for field in short], 17: [re.compile(field) for field in full]}
+
+
+PROC_ROW_FORMATS = {width: _proc_row_formats(width) for width in (8, 32)}
+# The states each shape prints: a full socket any socket state from ESTABLISHED (1) to CLOSING (11); a request socket
+# SYN_RECV (3); a time-wait socket FIN_WAIT2 (5) or TIME_WAIT (6).
+PROC_ROW_STATES = {17: frozenset(range(1, 12)), 12: frozenset({3, 5, 6})}
 
 
 def _proc_row(fields: list[str], width: int) -> bool:
-    """Whether a row of /proc/net/tcp (`width` 8) or tcp6 (32) has the fields the check reads, in the format the
-    kernel writes: its slot, both addresses (hex digits, a colon, a four-digit hex port), its state and its uid."""
-    def address(field: str) -> bool:
-        host, colon, port = field.partition(":")
-        return bool(colon) and len(host) == width and len(port) == 4 and _hex(host) and _hex(port)
-
-    return (len(fields) > 7 and fields[0].endswith(":") and fields[0][:-1].isdigit() and address(fields[1])
-            and address(fields[2]) and len(fields[3]) == 2 and _hex(fields[3]) and fields[7].isdigit())
+    """Whether a row of /proc/net/tcp (`width` 8) or tcp6 (32) is in a shape the kernel prints, every field in its
+    printed format, with a state that shape prints."""
+    formats = PROC_ROW_FORMATS[width].get(len(fields))
+    return (formats is not None and all(form.fullmatch(field) for form, field in zip(formats, fields, strict=True))
+            and int(fields[3], 16) in PROC_ROW_STATES[len(fields)])
 
 
 def proc_owners(local: Address, remote: Address, tables: Iterable[str] = PROC_TABLES) -> list[int]:
     """The uids of the live sockets at the other end of the connection `local` -> `remote`: those whose own address
     is `remote` and whose peer is `local`. A table that cannot be read, or whose header or any row is not in the
-    kernel's format, raises, and the check refuses. A missing tcp6 reads as empty only on a machine without IPv6."""
+    kernel's printed form (`_proc_row`), raises, and the check refuses. A missing tcp6 reads as empty only on a machine
+    without IPv6."""
     near, far = (_ip(local[0]), int(local[1])), (_ip(remote[0]), int(remote[1]))
     uids = []
     for table in tables:
@@ -178,13 +202,13 @@ def proc_owners(local: Address, remote: Address, tables: Iterable[str] = PROC_TA
             if six and not ipv6_available():
                 continue  # no IPv6 here, so no IPv6 or dual-stack socket to list
             raise
-        if not lines or lines[0].split()[:4] != PROC_HEADERS[six]:
+        if not lines or lines[0].split() != PROC_HEADERS[six]:
             raise ValueError(f"{table} does not start with the header the kernel writes")
         for line in lines[1:]:
             fields = line.split()
             if not _proc_row(fields, 32 if six else 8):
                 raise ValueError(f"{table} has a row the Hub cannot parse")
-            if fields[1].upper() == own and fields[2].upper() == peer and fields[3] in PROC_LIVE_STATES:
+            if fields[1] == own and fields[2] == peer and fields[3] in PROC_LIVE_STATES:
                 uids.append(int(fields[7]))
     return uids
 
@@ -207,21 +231,40 @@ def overflow_uid() -> int | None:
     return int(text) if text.isdigit() and _is_uid(int(text)) else None
 
 
-def uid_mapped(uid: int) -> bool | None:
-    """Whether `uid` has a mapping in this process's user namespace (/proc/self/uid_map), or None when the map cannot
-    be read or has a row other than the kernel's three numbers (the check then refuses)."""
+UID_MAP_MAX_ROWS = 340  # UID_GID_MAP_MAX_EXTENTS
+
+
+def uid_map_rows() -> list[tuple[int, int, int]] | None:
+    """This process's uid map (/proc/self/uid_map) as (first, outside, count) rows, or None when it cannot be read or
+    is not a map the kernel writes (uid_m_show prints what map_write accepted): at most 340 rows of three unsigned
+    32-bit numbers, each range non-empty and inside the 32-bit space, no two ranges overlapping inside or outside."""
     try:
-        rows = Path(UID_MAP_FILE).read_text(encoding="ascii").splitlines()
+        lines = Path(UID_MAP_FILE).read_text(encoding="ascii").splitlines()
     except (OSError, ValueError):
         return None
-    mapped = False
-    for row in rows:
-        fields = row.split()
-        if len(fields) != 3 or not all(field.isdigit() for field in fields):
+    if len(lines) > UID_MAP_MAX_ROWS:
+        return None
+    rows = []
+    for line in lines:
+        fields = line.split()
+        if len(fields) != 3 or not all(re.fullmatch(DEC, field) for field in fields):
             return None
-        first, _, count = (int(field) for field in fields)
-        mapped = mapped or first <= uid < first + count
-    return mapped
+        first, outside, count = (int(field) for field in fields)
+        if count < 1 or first + count >= 2 ** 32 or outside + count >= 2 ** 32:
+            return None
+        rows.append((first, outside, count))
+    for side in (0, 1):  # the ranges inside the namespace, then outside it
+        ranges = sorted((row[side], row[side] + row[2]) for row in rows)
+        if any(end > start for (_, end), (start, _) in pairwise(ranges)):
+            return None
+    return rows
+
+
+def uid_mapped(uid: int) -> bool | None:
+    """Whether `uid` has a mapping in this process's user namespace, or None when its uid map cannot be read or is not
+    one the kernel writes (the check then refuses)."""
+    rows = uid_map_rows()
+    return None if rows is None else any(first <= uid < first + count for first, _, count in rows)
 
 
 def own_uid() -> int:
@@ -297,7 +340,10 @@ class TcpRow:
 
 def parse_tcp_table(data: bytes, version: int) -> list[TcpRow]:
     """The rows of a TCP_TABLE_OWNER_MODULE_ALL table as GetExtendedTcpTable writes it: a 32-bit row count, then the
-    rows, aligned as a row is. A table cut short, or a row in a state Windows does not define, raises ValueError."""
+    rows, aligned as a row is. Each row is checked in full where Windows defines a format: a state Windows defines,
+    and a creation time that is a FILETIME (0 where Windows gives none). Any value is an address, PID or scope id; a
+    port's upper 16 bits may be uninitialized (MIB_TCPROW_OWNER_PID), so only the low 16 are read; the owning module
+    information is opaque. A table cut short, or a row that fails the check, raises ValueError."""
     row_type, ip = (_Row4, ipaddress.IPv4Address) if version == 4 else (_Row6, ipaddress.IPv6Address)
     (count,) = struct.unpack_from("=I", data)
     if not count:
@@ -310,8 +356,11 @@ def parse_tcp_table(data: bytes, version: int) -> list[TcpRow]:
 
     parsed = [TcpRow(row.state, end(row.local_addr, row.local_port), end(row.remote_addr, row.remote_port), row.pid,
                      row.created) for row in rows]
-    if any(row.state not in TCP_STATES for row in parsed):
-        raise ValueError("the TCP table has a row in a state Windows does not define")
+    for row in parsed:
+        if row.state not in TCP_STATES:
+            raise ValueError("the TCP table has a row in a state Windows does not define")
+        if row.created < 0:
+            raise ValueError("the TCP table has a row whose creation time is not a FILETIME")
     return parsed
 
 
