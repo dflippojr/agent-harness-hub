@@ -1487,6 +1487,7 @@ PROC_MALFORMED = {
     "uid-with-a-leading-zero": changed(17, 7, "01000"),
     "long-timer-with-a-leading-zero": changed(17, 5, "00:012345678"),
     "pointer-of-12-digits": changed(17, 11, "000000000000"),
+    "pointer-of-two-zeros": changed(17, 11, "00"),  # only the literal 0 of upstream 7c0ec6288b49, not any zeros
     "uppercase-pointer": changed(17, 11, "FFFF888012345678"),
     "negative-inode": changed(17, 9, "-1"),
     "queue-of-7-digits": changed(17, 4, "0000000:00000000"),
@@ -1722,3 +1723,33 @@ def test_a_kernel_that_prints_the_pointer_as_0_is_read(tmp_path, monkeypatch, ta
     paths = linux_inputs(tmp_path, monkeypatch)
     write_table(paths, table, rows)
     linux_input_check(paths)(*CONNECTION)
+
+
+def kind_row_in(table: str, kind: str) -> list[str]:
+    """A row of `table` other than the far end: a full socket, a time-wait socket or a request socket."""
+    if kind == "full":
+        return other_row(table, 17)
+    if kind == "time-wait":
+        return other_row(table, 12)
+    host = "::ffff:127.0.0.1" if table == "tcp6" else "127.0.0.1"
+    return proc_row_fields(table, 12, remote=kernel(host, 40001), state="03", slot="1:")
+
+
+# Every column of every kind of row that the kernel prints in a fixed-width hex form, or (the slot) with its colon. A
+# literal 0 is accepted in the pointer column alone (upstream 7c0ec6288b49); decimal columns print zero as 0 (%u, %d),
+# and always have.
+ZERO_ELSEWHERE = [(table, kind, field) for table in ("tcp", "tcp6") for kind in ("full", "time-wait", "request")
+                  for field in range(7)]
+
+
+@pytest.mark.parametrize(("table", "kind", "field"), ZERO_ELSEWHERE,
+                         ids=[f"{table}-{kind}-{PROC_FIELDS[field]}" for table, kind, field in ZERO_ELSEWHERE])
+def test_a_literal_0_is_refused_in_every_fixed_width_column(tmp_path, monkeypatch, table, kind, field):
+    """The pointer column's literal 0 loosens no other column: a bare 0 in the slot, an address, the state, the
+    queues, the timer or the retransmits of any kind of row, in either table, is refused beside a valid far end."""
+    row = kind_row_in(table, kind)
+    row[field] = "0"
+    paths = linux_inputs(tmp_path, monkeypatch)
+    write_table(paths, table, [proc_row_fields(table, 17), row])
+    with pytest.raises(EndpointUnverified, match="not verified"):
+        linux_input_check(paths)(*CONNECTION)
