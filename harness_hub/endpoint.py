@@ -164,100 +164,79 @@ POINTER = r"(?:[0-9a-f]{16}|[0-9a-f]{8}|\(____ptrval____\)|\(ptrval\))"  # %pK: 
 U8, U32, U64 = 2 ** 8 - 1, 2 ** 32 - 1, 2 ** 64 - 1
 INT_MIN, INT_MAX, LONG_MAX = -(2 ** 31), 2 ** 31 - 1, 2 ** 63 - 1
 
-Field = Callable[[str], bool]  # whether a field is in its printed format and within its kernel type
-
-
-def _printed(pattern: str, within: Callable[[str], bool] = lambda field: True) -> Field:
-    form = re.compile(pattern)
-    return lambda field: form.fullmatch(field) is not None and within(field)
-
-
-def _decimal(least: int, most: int) -> Field:
-    """A decimal field (%u, %lu or %d) printed from a kernel type that runs from `least` to `most`."""
-    return _printed(SDEC if least < 0 else DEC, lambda field: least <= int(field) <= most)
-
-
-def _hex8(most: int) -> Field:
-    """An %08X field printed from a kernel type no larger than `most`."""
-    return _printed(X8, lambda field: int(field, 16) <= most)
-
-
-def _timer(codes: frozenset[int]) -> Field:
-    """%02X:%08lX: a timer code this kind of socket prints, and a delay (a clock_t the kernel never prints negative)."""
-    def within(field: str) -> bool:
-        code, _, delay = field.partition(":")
-        return int(code, 16) in codes and int(delay, 16) <= LONG_MAX
-
-    return _printed(f"[0-9A-F]{{2}}:{LX8}", within)
-
-
-def _exactly(text: str) -> Field:
-    """A field the kernel prints as a constant."""
-    return lambda field: field == text
-
 
 @dataclass(frozen=True)
 class ProcRowKind:
-    """A kind of row the kernel prints in /proc/net/tcp: each of its fields, and the states it is printed in."""
+    """A kind of row the kernel prints in /proc/net/tcp: its printed form (one pattern for the whole row, a named
+    group for each field it bounds), the states it is printed in, its timer codes, and each bounded field's range:
+    (group, base, least, most)."""
 
-    fields: tuple[Field, ...]
+    form: re.Pattern[str]
     states: frozenset[int]
+    codes: frozenset[int]
+    bounds: tuple[tuple[str, int, int, int], ...]
 
 
-def _proc_row_kinds(width: int) -> dict[int, list[ProcRowKind]]:
-    """The kinds of /proc/net/tcp row (`width` 8) or tcp6 row (32), by field count, each field as the kernel prints it
-    (net/ipv4/tcp_ipv4.c and net/ipv6/tcp_ipv6.c): a full socket (get_tcp*_sock, 17 fields), a request socket
-    (get_openreq*, 12) and a time-wait socket (get_timewait*_sock, 12)."""
-    address = _printed(f"[0-9A-F]{{{width}}}:[0-9A-F]{{4}}")  # u32 words and a u16 port: their widths bound them
+def _proc_row_kinds(width: int) -> list[ProcRowKind]:
+    """The kinds of /proc/net/tcp row (`width` 8) or tcp6 row (32), each as the kernel prints it (net/ipv4/tcp_ipv4.c
+    and net/ipv6/tcp_ipv6.c): a full socket (get_tcp*_sock, 17 fields), a time-wait socket (get_timewait*_sock, 12)
+    and a request socket (get_openreq*, 12). Fields the kernel prints as constants are literal in the pattern; hex
+    fields of a fixed width (addresses, the port, the pointer) are bounded by it."""
+    address, x2 = f"[0-9A-F]{{{width}}}:[0-9A-F]{{4}}", "[0-9A-F]{2}"
     # slot (an int count), local and remote address, state (checked against the kind)
-    head = (_printed(f"{DEC}:", lambda field: int(field[:-1]) <= INT_MAX), address, address, _printed("[0-9A-F]{2}"))
-    empty_queues, zero, pointer = _exactly("00000000:00000000"), _exactly("0"), _printed(POINTER)
-    full = ProcRowKind((
-        *head,
-        # send queue (within the send buffer, an int) and receive queue (an int the kernel never prints negative):
-        # neither above 7FFFFFFF. A send queue read mid-update (the kernel reads it unlocked) is refused, and the
-        # next connection tries again.
-        _printed(f"{X8}:{X8}", lambda field: all(int(queue, 16) <= INT_MAX for queue in field.split(":"))),
-        _timer(frozenset({0, 1, 2, 4})),  # none, retransmit, keepalive, zero-window probe
-        _hex8(U8),  # retransmits (u8)
-        _decimal(0, U32),  # uid (uid_t)
-        _decimal(0, U8),  # timeout: unanswered probes (u8)
-        _decimal(0, U64),  # inode (unsigned long)
-        _decimal(INT_MIN, INT_MAX),  # refcount, printed as an int
-        pointer,
-        _decimal(0, LONG_MAX),  # rto (clock_t)
-        _decimal(0, LONG_MAX),  # ato (clock_t)
-        _decimal(0, 511),  # (u8 quick << 1) | pingpong
-        _decimal(0, U32),  # cwnd (u32)
-        _decimal(INT_MIN, INT_MAX),  # ssthresh, printed as an int (-1 in initial slow start)
-    ), frozenset(range(1, 12)) - {6})  # ESTABLISHED (1) to CLOSING (11), but TIME_WAIT only in the short shape
-    request = ProcRowKind((
-        *head, empty_queues, _timer(frozenset({1})),
-        _hex8(U8),  # timeouts so far (u8)
-        _decimal(0, U32),  # the listener's uid (uid_t)
-        zero, zero, zero, pointer,  # timeout, inode, refcount
-    ), frozenset({3}))  # SYN_RECV
-    time_wait = ProcRowKind((
-        *head, empty_queues, _timer(frozenset({3})),
-        _exactly("00000000"), zero, zero, zero,  # retransmits, uid, timeout, inode
-        _decimal(INT_MIN, INT_MAX),  # refcount, printed as an int
-        pointer,
-    ), frozenset({5, 6}))  # FIN_WAIT2, TIME_WAIT
-    return {17: [full], 12: [request, time_wait]}
+    head = f"(?P<slot>{DEC}): +(?P<local>{address}) +(?P<remote>{address}) +(?P<state>{x2}) +"
+    slot = ("slot", 10, 0, INT_MAX)
+    delay = ("delay", 16, 0, LONG_MAX)  # the timer's delay, a clock_t the kernel never prints negative
+    full = ProcRowKind(
+        re.compile(head + f"(?P<send>{X8}):(?P<receive>{X8}) +(?P<code>{x2}):(?P<delay>{LX8}) +(?P<retransmits>{X8})"
+                   f" +(?P<uid>{DEC}) +(?P<timeout>{DEC}) +(?P<inode>{DEC}) +(?P<refcount>{SDEC}) +{POINTER}"
+                   f" +(?P<rto>{DEC}) +(?P<ato>{DEC}) +(?P<quick>{DEC}) +(?P<cwnd>{DEC}) +(?P<ssthresh>{SDEC})"),
+        frozenset(range(1, 12)) - {6},  # ESTABLISHED (1) to CLOSING (11), but TIME_WAIT only in the short shape
+        frozenset({0, 1, 2, 4}),  # no timer, retransmit, keepalive, zero-window probe
+        (slot,
+         # the send queue (within the send buffer, an int) and the receive queue (an int the kernel never prints
+         # negative): neither above 7FFFFFFF. A send queue read mid-update (the kernel reads it unlocked) is
+         # refused, and the next connection tries again.
+         ("send", 16, 0, INT_MAX), ("receive", 16, 0, INT_MAX),
+         delay,
+         ("retransmits", 16, 0, U8),  # u8
+         ("uid", 10, 0, U32),  # uid_t
+         ("timeout", 10, 0, U8),  # unanswered probes, u8
+         ("inode", 10, 0, U64),  # unsigned long
+         ("refcount", 10, INT_MIN, INT_MAX),  # printed as an int
+         ("rto", 10, 0, LONG_MAX), ("ato", 10, 0, LONG_MAX),  # clock_t
+         ("quick", 10, 0, 511),  # (u8 quick << 1) | pingpong
+         ("cwnd", 10, 0, U32),  # u32
+         ("ssthresh", 10, INT_MIN, INT_MAX)))  # printed as an int (-1 in initial slow start)
+    time_wait = ProcRowKind(
+        re.compile(head + f"00000000:00000000 +(?P<code>03):(?P<delay>{LX8}) +00000000 +(?P<uid>0) +0 +0"
+                   f" +(?P<refcount>{SDEC}) +{POINTER}"),  # empty queues, no retransmits; uid, timeout, inode 0
+        frozenset({5, 6}),  # FIN_WAIT2, TIME_WAIT
+        frozenset({3}),
+        (slot, delay, ("refcount", 10, INT_MIN, INT_MAX)))
+    request = ProcRowKind(
+        re.compile(head + f"00000000:00000000 +(?P<code>01):(?P<delay>{LX8}) +(?P<retransmits>{X8})"
+                   f" +(?P<uid>{DEC}) +0 +0 +0 +{POINTER}"),  # empty queues; timeout, inode, refcount 0
+        frozenset({3}),  # SYN_RECV
+        frozenset({1}),
+        (slot, delay, ("retransmits", 16, 0, U8), ("uid", 10, 0, U32)))  # timeouts so far (u8), the listener's uid
+    return [full, time_wait, request]
 
 
 PROC_ROW_KINDS = {width: _proc_row_kinds(width) for width in (8, 32)}
 
 
-def _proc_row(fields: list[str], width: int) -> bool:
-    """Whether a row of /proc/net/tcp (`width` 8) or tcp6 (32) is one the kernel prints: a kind of row with that many
-    fields, in a state that kind is printed in, every field in its printed format and within the kernel type it is
-    printed from, or the constant the kernel prints there."""
-    if len(fields) < 4 or not re.fullmatch("[0-9A-F]{2}", fields[3]):
-        return False
-    state = int(fields[3], 16)
-    return any(state in kind.states and all(valid(field) for valid, field in zip(kind.fields, fields, strict=True))
-               for kind in PROC_ROW_KINDS[width].get(len(fields), []))
+def _proc_row(line: str, width: int) -> re.Match[str] | None:
+    """A row of /proc/net/tcp (`width` 8) or tcp6 (32) as its fields, when it is one the kernel prints: a kind's
+    printed form, in a state and with a timer code that kind prints, every bounded field within the kernel type it
+    is printed from. Otherwise None."""
+    row = line.strip()
+    for kind in PROC_ROW_KINDS[width]:
+        fields = kind.form.fullmatch(row)
+        if (fields is not None and int(fields["state"], 16) in kind.states and int(fields["code"], 16) in kind.codes
+                and all(least <= int(fields[group], base) <= most for group, base, least, most in kind.bounds)):
+            return fields
+    return None
 
 
 def proc_owners(local: Address, remote: Address, tables: Iterable[str] = PROC_TABLES) -> list[int]:
@@ -281,11 +260,11 @@ def proc_owners(local: Address, remote: Address, tables: Iterable[str] = PROC_TA
         if not lines or lines[0].split() != PROC_HEADERS[six]:
             raise ValueError(f"{table} does not start with the header the kernel writes")
         for line in lines[1:]:
-            fields = line.split()
-            if not _proc_row(fields, 32 if six else 8):
+            fields = _proc_row(line, 32 if six else 8)
+            if fields is None:
                 raise ValueError(f"{table} has a row the Hub cannot parse")
-            if fields[1] == own and fields[2] == peer and fields[3] in PROC_LIVE_STATES:
-                uids.append(int(fields[7]))
+            if fields["local"] == own and fields["remote"] == peer and fields["state"] in PROC_LIVE_STATES:
+                uids.append(int(fields["uid"]))
     return uids
 
 
