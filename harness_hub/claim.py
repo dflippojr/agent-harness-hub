@@ -22,7 +22,7 @@ import secrets
 import time
 from pathlib import Path
 
-from .daemon import DaemonClient, DaemonUnreachable
+from .daemon import DaemonClient, DaemonUnreachable, DaemonUnverified
 from .state import StateStore, write_private
 
 log = logging.getLogger("harness_hub.claim")
@@ -161,10 +161,12 @@ class ClaimManager:
             try:
                 async with asyncio.timeout(self.wait_seconds):
                     reply = await self.daemon.start_hub_claim(self.name, challenge)
-            except (DaemonUnreachable, TimeoutError):
+            except (DaemonUnreachable, TimeoutError) as exc:
                 await self._finish(FAILED)
                 self.ensure_polling()
-                raise ClaimError(FAILED, "the daemon did not answer; check that it is running") from None
+                # An unverified listener was sent nothing, the challenge included; say which account answered.
+                raise ClaimError(FAILED, str(exc) if isinstance(exc, DaemonUnverified)
+                                 else "the daemon did not answer; check that it is running") from None
             if reply.status == 409 and reply.code == "hub_claimed":
                 await self._finish(REFUSED)
                 self.ensure_polling()

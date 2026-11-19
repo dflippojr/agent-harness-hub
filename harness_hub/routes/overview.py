@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from ..daemon import DaemonUnreachable
+from ..daemon import DaemonUnreachable, DaemonUnverified
 from ..guard import leaks
 from ..inventory import valid_inventory
 from ..restart import observe_recovery, observe_restart
@@ -80,10 +80,12 @@ async def get_overview(request: Request):
                         error, ownership = (refusal, ownership) if refusal else (error, None)
                     elif pairing is not None and pairing.ok:
                         attention = pairing_attention(pairing.body, time.time())
-    except DaemonUnreachable:
+    except DaemonUnreachable as exc:
         # As after a discovery refusal, ownership the daemon refused once is not shown when it cannot confirm it.
         ownership = None
-        error = f"the daemon at {ctx.settings.daemon_url} did not answer"
+        # An unverified listener was sent nothing; its refusal says which account answered and how to fix it.
+        error = (str(exc) if isinstance(exc, DaemonUnverified)
+                 else f"the daemon at {ctx.settings.daemon_url} did not answer")
     finally:
         if pairing_task:
             pairing_task.cancel()

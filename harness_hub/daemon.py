@@ -14,6 +14,8 @@ from typing import Any
 
 import httpx
 
+from .endpoint import DaemonTransport, EndpointUnverified, ListenerCheck, listener_check
+
 ADMIN = "/api/admin/v1"
 CLAIM_REQUESTS = "/api/v1/pair/requests"
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)
@@ -128,6 +130,26 @@ class DaemonUnreachable(Exception):
         self.sent = sent
 
 
+class DaemonUnverified(DaemonUnreachable):
+    """The Hub sent nothing: the daemon URL's listener is not verified as the daemon's (endpoint.py). The message says
+    which account answered and how to fix it, and names no credential."""
+
+    def __init__(self, message: str):
+        super().__init__(message, sent=False)
+
+
+def unverified(exc: BaseException) -> EndpointUnverified | None:
+    """The endpoint check's refusal behind an httpx error, if that is what it is (httpx raises its own ConnectError
+    from httpcore's)."""
+    seen = 0
+    cause: BaseException | None = exc
+    while cause is not None and seen < 5:
+        if isinstance(cause, EndpointUnverified):
+            return cause
+        cause, seen = cause.__cause__ or cause.__context__, seen + 1
+    return None
+
+
 @dataclass
 class Reply:
     status: int
@@ -152,15 +174,22 @@ class Reply:
 
 
 class DaemonClient:
-    def __init__(self, base_url: str, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(self, base_url: str, transport: httpx.AsyncBaseTransport | None = None, *, owner: str = "",
+                 allow_insecure_http: bool = False):
         self.base_url = base_url
+        # A loopback http:// daemon's listener must belong to the daemon's account (`owner`, by default the Hub's
+        # own) before any call is written on a connection; only the explicit opt-in turns that off (endpoint.py).
+        self.check: ListenerCheck | None = listener_check(base_url, owner=owner,
+                                                          allow_insecure_http=allow_insecure_http)
         # No Origin header is ever sent: the Hub claims as a native client, so its key is not bound to a browser.
         # trust_env=False: proxy settings (HTTP_PROXY and friends, or the Windows system proxy) must never
         # see the Hub key or the claim verifier, and a proxy cannot reach the loopback daemon anyway.
         # The SSL context still honours SSL_CERT_FILE / SSL_CERT_DIR, so a private-CA HTTPS daemon keeps working.
-        self._client = httpx.AsyncClient(base_url=base_url, timeout=TIMEOUT, transport=transport,
-                                         follow_redirects=False, trust_env=False,
-                                         verify=httpx.create_ssl_context(trust_env=True),
+        verify = httpx.create_ssl_context(trust_env=True)
+        self._client = httpx.AsyncClient(base_url=base_url, timeout=TIMEOUT,
+                                         transport=transport if transport is not None
+                                         else DaemonTransport(verify, self.check),
+                                         follow_redirects=False, trust_env=False, verify=verify,
                                          headers={"Accept": "application/json"})
 
     async def aclose(self) -> None:
@@ -173,6 +202,9 @@ class DaemonClient:
             response = await self._client.request(
                 method, path, json=json, headers=headers, params=params, timeout=timeout)
         except httpx.HTTPError as exc:
+            refusal = unverified(exc)
+            if refusal is not None:
+                raise DaemonUnverified(str(refusal)) from None
             raise DaemonUnreachable(type(exc).__name__, sent=not isinstance(exc, NOT_SENT)) from None
         try:
             body = response.json()

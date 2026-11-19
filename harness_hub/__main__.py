@@ -34,6 +34,13 @@ def serve_parser() -> argparse.ArgumentParser:
                                      "daemon. Subcommand: signin-link (print a one-time sign-in link).")
     parser.add_argument("--version", action="version", version=f"harness_hub {__version__}")
     parser.add_argument("--daemon-url", default=DEFAULT_DAEMON_URL, help="the daemon this Hub administers")
+    parser.add_argument("--daemon-owner", default="", metavar="ACCOUNT",
+                        help="the account that runs the daemon: a loopback http:// daemon URL is used only when its "
+                             "listener belongs to it (a user name or uid on Linux, DOMAIN\\user on Windows; default: "
+                             "the account the Hub runs as)")
+    parser.add_argument("--allow-insecure-http", action="store_true",
+                        help="UNSAFE compatibility setting: send the Hub key and claim verifier to a loopback http:// "
+                             "daemon URL without checking which account listens there; the Hub warns at startup")
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR,
                         help="owner-only directory for the Hub key and claim state")
     parser.add_argument("--host", default=DEFAULT_HOST, help="listen address (default: loopback only)")
@@ -117,6 +124,8 @@ def serve(argv: list[str]) -> int:
             trust_unverified_identity_headers=args.trust_unverified_identity_headers,
             status_seconds=args.status_interval,
             build=build_commit(os.environ.get("HUB_BUILD_COMMIT")),
+            daemon_owner=args.daemon_owner,
+            allow_insecure_http=args.allow_insecure_http,
         )
     except ValueError as exc:
         parser.error(str(exc))
