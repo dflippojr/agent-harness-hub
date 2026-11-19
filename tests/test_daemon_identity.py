@@ -1134,3 +1134,18 @@ def test_the_startup_notice_is_an_error_when_the_owner_cannot_be_singled_out():
     level, text = identity_notice(URL, linux_check([1000], me=65534, unmapped=frozenset({65534})),
                                   allow_insecure_http=False)
     assert level == logging.ERROR and "own uid is unmapped" in text
+
+
+# --- what the documentation claims ------------------------------------------------------------------------------------
+
+def test_the_docs_list_same_account_forwarders_as_not_covered_and_claim_no_more_than_the_check():
+    """The check proves which account holds the socket at the other end, not which program it is or where it sends
+    what it gets: README lists same-account forwarders under what it does not cover, and neither README nor the
+    module says a connection's other end cannot change after the check."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    section = readme.split("\n## Daemon connection\n", 1)[1].split("\n## ", 1)[0]
+    not_covered = section.split("**What it does not cover**", 1)[1].split("\n\n", 1)[0]
+    assert "same-account forwarders" in not_covered and "ssh -L" in not_covered, not_covered
+    rules = readme.split("\n## Security rules\n", 1)[1].split("\n## ", 1)[0]
+    for text in (section, rules, endpoint.__doc__):
+        assert "cannot change" not in text and "can't change" not in text and "never the key" not in text
