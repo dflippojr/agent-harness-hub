@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import ctypes
 import functools
 import ipaddress
 import json
@@ -29,6 +30,7 @@ import logging
 import os
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -705,6 +707,8 @@ class FakeConn:
 
 class FakeProcess:
     accounts: dict[int, str] = {}
+    started: dict[int, float] = {}  # when each process started, in seconds since the epoch
+    replaced: frozenset[int] = frozenset()  # PIDs whose process changes while the Hub reads it
 
     def __init__(self, pid: int | None = None):
         self.pid = pid
@@ -717,6 +721,16 @@ class FakeProcess:
         if self.pid not in self.accounts:
             raise psutil.AccessDenied(self.pid)
         return self.accounts[self.pid]
+
+    def create_time(self) -> float:
+        import psutil
+
+        if self.pid not in self.started:
+            raise psutil.AccessDenied(self.pid)
+        return self.started[self.pid]
+
+    def is_running(self) -> bool:
+        return self.pid not in self.replaced
 
 
 def test_the_windows_lookup_reads_the_far_ends_process_account(monkeypatch):
@@ -738,6 +752,127 @@ def test_the_windows_lookup_reads_the_far_ends_process_account(monkeypatch):
     assert endpoint.windows_owners(hub, daemon) == ["TOWER\\owner", "TOWER\\dual", UNREADABLE, UNREADABLE]
     assert endpoint.windows_account() == "TOWER\\owner"
     assert resolve_owner("", "win32") == Owner(account="TOWER\\owner")
+
+
+# Windows' own TCP table (GetExtendedTcpTable, TCP_TABLE_OWNER_MODULE_ALL), faked with rows written as Windows writes
+# them. psutil's table (TCP_TABLE_OWNER_PID_ALL, which has no creation times) is faked with the same rows, so a lookup
+# that read it instead would fail these tests too.
+
+FILETIME_UNIX_EPOCH = 116444736000000000  # 1970-01-01 as a FILETIME (100 ns units since 1601)
+WINDOWS_STATES = {"LISTEN": 2, "SYN_RECV": 4, "ESTABLISHED": 5, "TIME_WAIT": 11}  # MIB_TCP_STATE
+WINDOWS_FAMILIES = {4: 2, 6: 23}  # AF_INET and AF_INET6 as Windows numbers them
+
+
+@dataclass
+class WinRow:
+    """A socket in Windows' TCP table: its state, its own and its peer's address, the PID that owns it, and when it
+    was created (seconds since the epoch; None where Windows gives no time)."""
+
+    state: str
+    local: tuple[str, int]
+    remote: tuple[str, int]
+    pid: int
+    created: float | None
+
+
+def windows_table(rows: list[WinRow], version: int) -> bytes:
+    """MIB_TCPTABLE_OWNER_MODULE (MIB_TCP6TABLE_OWNER_MODULE for IPv6) as GetExtendedTcpTable writes it: the row
+    count, padding to the rows' 8-byte alignment, then the rows. A port is a DWORD in network byte order (the port in
+    its low 16 bits), as an IPv4 address is, and the creation time a FILETIME."""
+
+    def port(number: int) -> bytes:
+        return struct.pack("!H", number) + b"\0\0"
+
+    packed = []
+    for row in rows:
+        local, remote = ipaddress.ip_address(row.local[0]), ipaddress.ip_address(row.remote[0])
+        if local.version != version:
+            continue
+        created = FILETIME_UNIX_EPOCH + round(row.created * 10_000_000) if row.created is not None else 0
+        state = WINDOWS_STATES[row.state]
+        if version == 4:
+            packed.append(struct.pack("=I4s4s4s4sIq128x", state, local.packed, port(row.local[1]), remote.packed,
+                                      port(row.remote[1]), row.pid, created))
+        else:
+            packed.append(struct.pack("=16sI4s16sI4sIIq128x", local.packed, 0, port(row.local[1]), remote.packed, 0,
+                                      port(row.remote[1]), state, row.pid, created))
+    return struct.pack("=I4x", len(packed)) + b"".join(packed)
+
+
+class FakeGetExtendedTcpTable:
+    """iphlpapi's GetExtendedTcpTable over faked tables: it says how large a buffer the table needs, then fills it."""
+
+    def __init__(self, tables: dict[int, bytes | int]):
+        self.tables = tables  # by Windows address family: the table, or the error code the call returns
+        self.calls: list[tuple[int, int]] = []
+
+    def __call__(self, buffer, size, order, family, table_class, reserved) -> int:
+        self.calls.append((family, table_class))
+        table = self.tables[family]
+        if isinstance(table, int):
+            return table
+        if buffer is None or size._obj.value < len(table):
+            size._obj.value = len(table)
+            return 122  # ERROR_INSUFFICIENT_BUFFER
+        ctypes.memmove(buffer, table, len(table))
+        return 0
+
+
+def windows_scenario(monkeypatch, rows: list[WinRow], *, accounts: dict[int, str], started: dict[int, float],
+                     replaced: frozenset[int] = frozenset()) -> FakeGetExtendedTcpTable:
+    """This machine's TCP table, and its processes' accounts and start times, as Windows gives them to the Hub."""
+    import psutil
+
+    get = FakeGetExtendedTcpTable({WINDOWS_FAMILIES[version]: windows_table(rows, version) for version in (4, 6)})
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **kw: SimpleNamespace(GetExtendedTcpTable=get), raising=False)
+    status = {"LISTEN": psutil.CONN_LISTEN, "SYN_RECV": psutil.CONN_SYN_RECV, "ESTABLISHED": psutil.CONN_ESTABLISHED,
+              "TIME_WAIT": psutil.CONN_TIME_WAIT}
+    monkeypatch.setattr(psutil, "net_connections", lambda kind: [
+        FakeConn(row.local, () if row.state == "LISTEN" else row.remote, status[row.state], row.pid) for row in rows])
+    monkeypatch.setattr(psutil, "Process", FakeProcess)
+    monkeypatch.setattr(FakeProcess, "accounts", accounts)
+    monkeypatch.setattr(FakeProcess, "started", started)
+    monkeypatch.setattr(FakeProcess, "replaced", replaced)
+    return get
+
+
+DAEMON_END, HUB_END, NO_PEER = CONNECTION[1], CONNECTION[0], ("0.0.0.0", 0)  # noqa: S104 - a listener's empty peer
+OWNERS = {10: "TOWER\\owner", 11: "TOWER\\owner", 20: "TOWER\\hub"}
+
+
+def daemon_rows(*, listener_pid: int = 10, end_pid: int = 10, listener_created: float | None = 1000.0) -> list[WinRow]:
+    """The daemon's listener, the daemon's end of the Hub's connection, and the Hub's own end."""
+    return [WinRow("LISTEN", DAEMON_END, NO_PEER, listener_pid, listener_created),
+            WinRow("ESTABLISHED", DAEMON_END, HUB_END, end_pid, 2000.0),
+            WinRow("ESTABLISHED", HUB_END, DAEMON_END, 20, 2000.0)]
+
+
+def test_the_windows_check_passes_a_listener_its_own_process_created(monkeypatch):
+    windows_scenario(monkeypatch, daemon_rows(), accounts=OWNERS, started={10: 900.0, 20: 950.0})
+    ListenerCheck(URL, Owner(account="TOWER\\owner"), platform="win32")(*CONNECTION)
+
+
+# Each way the far end of the Hub's connection fails to be tied to the process the table names: the rows, the
+# processes' start times, the PIDs whose process changes while read, and a phrase of the refusal that says which.
+UNTIED = {
+    "a-process-younger-than-its-listener": ({}, {10: 1500.0}, frozenset(), "started after"),
+    "an-end-whose-process-holds-no-listener": ({"listener_pid": 11}, {10: 900.0, 11: 900.0}, frozenset(),
+                                               "no listening socket"),
+    "a-listener-without-a-creation-time": ({"listener_created": None}, {10: 900.0}, frozenset(), "no creation time"),
+    "a-process-that-changes-while-read": ({}, {10: 900.0}, frozenset({10}), "changed while"),
+    "a-process-whose-start-cannot-be-read": ({}, {}, frozenset(), "when process 10 started"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(UNTIED))
+def test_the_windows_check_refuses_a_far_end_it_cannot_tie_to_its_process(monkeypatch, case):
+    """Windows' TCP table names a socket's process by PID, and Windows reuses PIDs. The far end of the Hub's
+    connection counts as its process's only when that process also holds the listening socket on the daemon's port
+    and started before that socket was created. Without a creation time the Hub cannot tell, and refuses."""
+    rows, started, replaced, phrase = UNTIED[case]
+    windows_scenario(monkeypatch, daemon_rows(**rows), accounts=OWNERS, started=started, replaced=replaced)
+    text = refusal(ListenerCheck(URL, Owner(account="TOWER\\owner"), platform="win32"))
+    assert "not verified" in text and phrase in text and "sent it nothing" in text, text
 
 
 def test_addresses_compare_across_spellings():
