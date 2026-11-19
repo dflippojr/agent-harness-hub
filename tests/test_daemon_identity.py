@@ -773,3 +773,80 @@ def test_a_refusal_is_said_as_it_is_and_anything_else_with_the_callers_words():
     assert unanswered(DaemonUnverified("the daemon URL is not verified: synthetic"), "fallback") == (
         "the daemon URL is not verified: synthetic")
     assert unanswered(DaemonUnreachable("ConnectError", sent=False), "fallback") == "fallback"
+
+
+# --- the owner check fails closed on an unmapped or overflow uid ------------------------------------------------------
+
+def overflow_uid() -> int:
+    """The kernel's overflow uid (its default where the setting cannot be read)."""
+    try:
+        return int(Path("/proc/sys/kernel/overflowuid").read_text(encoding="ascii"))
+    except (OSError, ValueError):
+        return 65534
+
+
+@functools.cache
+def unmapped_user_namespace() -> bool:
+    """Whether this machine lets an unprivileged process run in a new user namespace with no uid mapping."""
+    if sys.platform != "linux" or not shutil.which("unshare"):
+        return False
+    try:
+        done = subprocess.run(["unshare", "--user", "cat", "/proc/self/uid_map"], capture_output=True, text=True,
+                              timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return done.returncode == 0 and done.stdout.strip() == ""
+
+
+# One owner API read with the Hub's own client and its default owner, printed as JSON: whether it was sent, and the
+# refusal when it was not.
+UNMAPPED_PROBE = r"""
+import asyncio, json, os, sys
+from harness_hub.daemon import DaemonClient, DaemonUnreachable
+
+async def read(url, key):
+    client = DaemonClient(url)
+    try:
+        reply = await client.admin(key)
+        return {"sent": True, "status": reply.status}
+    except DaemonUnreachable as exc:
+        return {"sent": exc.sent, "refusal": str(exc)}
+    finally:
+        await client.aclose()
+
+print(json.dumps({"euid": os.geteuid(), **asyncio.run(read(sys.argv[1], sys.argv[2]))}))
+"""
+
+
+def test_owner_check_fails_closed_on_an_unmapped_uid():
+    """A Hub whose own uid has no mapping in its user namespace sends its daemon nothing, and says why."""
+    if not unmapped_user_namespace():
+        pytest.skip("unprivileged user namespaces are unavailable here")
+    with Listener() as listener:
+        done = subprocess.run(["unshare", "--user", sys.executable, "-I", "-c", UNMAPPED_PROBE, listener.url, KEY],
+                              capture_output=True, text=True, timeout=120, check=False)
+        assert done.returncode == 0, done.stderr
+        result = json.loads(done.stdout)
+        wait_for_heads(listener, 1)
+    assert result["euid"] == overflow_uid(), result  # the namespace really has no mapping for this account
+    assert listener.heads == [b""] * len(listener.heads) and listener.authorizations() == [], listener.heads
+    assert result["sent"] is False and "not verified" in result["refusal"], result
+    assert "unmapped" in result["refusal"] or "overflow" in result["refusal"], result
+
+
+def test_owner_check_fails_closed_on_the_overflow_uid():
+    """An expected owner that is the overflow uid matches no socket, even one the table lists with that uid."""
+    overflow = overflow_uid()
+    check = ListenerCheck(URL, Owner(uid=overflow), platform="linux", proc=lambda local, remote: [overflow])
+    with pytest.raises(EndpointUnverified) as caught:
+        check(*CONNECTION)
+    assert "overflow" in str(caught.value)
+
+
+@pytest.mark.parametrize("owner", ["nobody", str(overflow_uid())])
+def test_daemon_owner_refuses_nobody_and_the_overflow_uid(tmp_path, monkeypatch, owner):
+    monkeypatch.setattr("uvicorn.run", lambda app, **kw: None)  # a Hub that starts must not block this test
+    with pytest.raises(ValueError, match="overflow uid|DOMAIN"):
+        Settings(daemon_owner=owner)
+    with pytest.raises(SystemExit):
+        cli.main(["--daemon-owner", owner, "--state-dir", str(tmp_path)])
