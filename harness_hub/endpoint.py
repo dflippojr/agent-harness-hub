@@ -30,9 +30,10 @@ when it opened and is not checked again.
 
 Every input the check reads fails closed: a connection table, `/proc` file, socket creation time or process lookup
 that cannot be read or parsed refuses the connection, on Linux and on Windows. Each record it parses is validated in
-full: a /proc/net/tcp row must be in one of the two shapes the kernel prints, every field in its printed format and its
-state one that shape prints; /proc/self/uid_map must be a map the kernel would write; and each Windows TCP row must
-have a state Windows defines and a creation time that is a FILETIME.
+full: a /proc/net/tcp row must be in one of the two shapes the kernel prints, its state one that shape prints, and every
+field in its printed format and within the kernel type it is printed from (or the constant the kernel prints there);
+/proc/self/uid_map must be a map the kernel would write; and each Windows TCP row must have a state Windows defines and
+a creation time that is a FILETIME.
 
 The check proves which account holds the socket at the other end, not which program that is or where it sends what
 it gets. Root and the daemon's own account are outside it, and so is a same-account forwarder: a program of the
@@ -159,29 +160,101 @@ LX8 = "(?:[0-9A-F]{8}|[1-9A-F][0-9A-F]{8,15})"  # %08lX: eight digits at least, 
 POINTER = r"(?:[0-9a-f]{16}|[0-9a-f]{8}|\(____ptrval____\)|\(ptrval\))"  # %pK: hashed or zeroed, or not hashable yet
 
 
-def _proc_row_formats(width: int) -> dict[int, list[re.Pattern[str]]]:
-    """Each field's printed format in a /proc/net/tcp row (`width` 8) or tcp6 row (32), by the row's field count: 12
-    for a request or time-wait socket, 17 for a full socket."""
-    address = f"[0-9A-F]{{{width}}}:[0-9A-F]{{4}}"
-    # slot, both addresses, state, queues, timer, retransmits, uid, timeout, inode, refcount, pointer
-    short = [f"{DEC}:", address, address, "[0-9A-F]{2}", f"{X8}:{X8}", f"[0-9A-F]{{2}}:{LX8}", X8, DEC, SDEC, DEC,
-             SDEC, POINTER]
-    full = [*short, DEC, DEC, DEC, DEC, SDEC]  # rto, ato, quick and pingpong, cwnd, ssthresh
-    return {12: [re.compile(field) for field in short], 17: [re.compile(field) for field in full]}
+# The C types the kernel prints /proc/net/tcp's fields from, by their largest and least values.
+U8, U32, U64 = 2 ** 8 - 1, 2 ** 32 - 1, 2 ** 64 - 1
+INT_MIN, INT_MAX, LONG_MAX = -(2 ** 31), 2 ** 31 - 1, 2 ** 63 - 1
+
+Field = Callable[[str], bool]  # whether a field is in its printed format and within its kernel type
 
 
-PROC_ROW_FORMATS = {width: _proc_row_formats(width) for width in (8, 32)}
-# The states each shape prints: a full socket any socket state from ESTABLISHED (1) to CLOSING (11); a request socket
-# SYN_RECV (3); a time-wait socket FIN_WAIT2 (5) or TIME_WAIT (6).
-PROC_ROW_STATES = {17: frozenset(range(1, 12)), 12: frozenset({3, 5, 6})}
+def _printed(pattern: str, within: Callable[[str], bool] = lambda field: True) -> Field:
+    form = re.compile(pattern)
+    return lambda field: form.fullmatch(field) is not None and within(field)
+
+
+def _decimal(least: int, most: int) -> Field:
+    """A decimal field (%u, %lu or %d) printed from a kernel type that runs from `least` to `most`."""
+    return _printed(SDEC if least < 0 else DEC, lambda field: least <= int(field) <= most)
+
+
+def _hex8(most: int) -> Field:
+    """An %08X field printed from a kernel type no larger than `most`."""
+    return _printed(X8, lambda field: int(field, 16) <= most)
+
+
+def _timer(codes: frozenset[int]) -> Field:
+    """%02X:%08lX: a timer code this kind of socket prints, and a delay (a clock_t the kernel never prints negative)."""
+    def within(field: str) -> bool:
+        code, _, delay = field.partition(":")
+        return int(code, 16) in codes and int(delay, 16) <= LONG_MAX
+
+    return _printed(f"[0-9A-F]{{2}}:{LX8}", within)
+
+
+def _exactly(text: str) -> Field:
+    """A field the kernel prints as a constant."""
+    return lambda field: field == text
+
+
+@dataclass(frozen=True)
+class ProcRowKind:
+    """A kind of row the kernel prints in /proc/net/tcp: each of its fields, and the states it is printed in."""
+
+    fields: tuple[Field, ...]
+    states: frozenset[int]
+
+
+def _proc_row_kinds(width: int) -> dict[int, list[ProcRowKind]]:
+    """The kinds of /proc/net/tcp row (`width` 8) or tcp6 row (32), by field count, each field as the kernel prints it
+    (net/ipv4/tcp_ipv4.c and net/ipv6/tcp_ipv6.c): a full socket (get_tcp*_sock, 17 fields), a request socket
+    (get_openreq*, 12) and a time-wait socket (get_timewait*_sock, 12)."""
+    address = _printed(f"[0-9A-F]{{{width}}}:[0-9A-F]{{4}}")  # u32 words and a u16 port: their widths bound them
+    # slot (an int count), local and remote address, state (checked against the kind)
+    head = (_printed(f"{DEC}:", lambda field: int(field[:-1]) <= INT_MAX), address, address, _printed("[0-9A-F]{2}"))
+    empty_queues, zero, pointer = _exactly("00000000:00000000"), _exactly("0"), _printed(POINTER)
+    full = ProcRowKind((
+        *head,
+        _printed(f"{X8}:{X8}"),  # send and receive queues (u32, int): eight hex digits are their range
+        _timer(frozenset({0, 1, 2, 4})),  # none, retransmit, keepalive, zero-window probe
+        _hex8(U8),  # retransmits (u8)
+        _decimal(0, U32),  # uid (uid_t)
+        _decimal(0, U8),  # timeout: unanswered probes (u8)
+        _decimal(0, U64),  # inode (unsigned long)
+        _decimal(INT_MIN, INT_MAX),  # refcount, printed as an int
+        pointer,
+        _decimal(0, LONG_MAX),  # rto (clock_t)
+        _decimal(0, LONG_MAX),  # ato (clock_t)
+        _decimal(0, 511),  # (u8 quick << 1) | pingpong
+        _decimal(0, U32),  # cwnd (u32)
+        _decimal(INT_MIN, INT_MAX),  # ssthresh, printed as an int (-1 in initial slow start)
+    ), frozenset(range(1, 12)))  # ESTABLISHED (1) to CLOSING (11)
+    request = ProcRowKind((
+        *head, empty_queues, _timer(frozenset({1})),
+        _hex8(U8),  # timeouts so far (u8)
+        _decimal(0, U32),  # the listener's uid (uid_t)
+        zero, zero, zero, pointer,  # timeout, inode, refcount
+    ), frozenset({3}))  # SYN_RECV
+    time_wait = ProcRowKind((
+        *head, empty_queues, _timer(frozenset({3})),
+        _exactly("00000000"), zero, zero, zero,  # retransmits, uid, timeout, inode
+        _decimal(INT_MIN, INT_MAX),  # refcount, printed as an int
+        pointer,
+    ), frozenset({5, 6}))  # FIN_WAIT2, TIME_WAIT
+    return {17: [full], 12: [request, time_wait]}
+
+
+PROC_ROW_KINDS = {width: _proc_row_kinds(width) for width in (8, 32)}
 
 
 def _proc_row(fields: list[str], width: int) -> bool:
-    """Whether a row of /proc/net/tcp (`width` 8) or tcp6 (32) is in a shape the kernel prints, every field in its
-    printed format, with a state that shape prints."""
-    formats = PROC_ROW_FORMATS[width].get(len(fields))
-    return (formats is not None and all(form.fullmatch(field) for form, field in zip(formats, fields, strict=True))
-            and int(fields[3], 16) in PROC_ROW_STATES[len(fields)])
+    """Whether a row of /proc/net/tcp (`width` 8) or tcp6 (32) is one the kernel prints: a kind of row with that many
+    fields, in a state that kind is printed in, every field in its printed format and within the kernel type it is
+    printed from, or the constant the kernel prints there."""
+    if len(fields) < 4 or not re.fullmatch("[0-9A-F]{2}", fields[3]):
+        return False
+    state = int(fields[3], 16)
+    return any(state in kind.states and all(valid(field) for valid, field in zip(kind.fields, fields, strict=True))
+               for kind in PROC_ROW_KINDS[width].get(len(fields), []))
 
 
 def proc_owners(local: Address, remote: Address, tables: Iterable[str] = PROC_TABLES) -> list[int]:
@@ -250,7 +323,7 @@ def uid_map_rows() -> list[tuple[int, int, int]] | None:
         if len(fields) != 3 or not all(re.fullmatch(DEC, field) for field in fields):
             return None
         first, outside, count = (int(field) for field in fields)
-        if count < 1 or first + count >= 2 ** 32 or outside + count >= 2 ** 32:
+        if count < 1 or first + count > U32 or outside + count > U32:  # u32 each, and no range wrapping past one
             return None
         rows.append((first, outside, count))
     for side in (0, 1):  # the ranges inside the namespace, then outside it
@@ -340,10 +413,11 @@ class TcpRow:
 
 def parse_tcp_table(data: bytes, version: int) -> list[TcpRow]:
     """The rows of a TCP_TABLE_OWNER_MODULE_ALL table as GetExtendedTcpTable writes it: a 32-bit row count, then the
-    rows, aligned as a row is. Each row is checked in full where Windows defines a format: a state Windows defines,
-    and a creation time that is a FILETIME (0 where Windows gives none). Any value is an address, PID or scope id; a
-    port's upper 16 bits may be uninitialized (MIB_TCPROW_OWNER_PID), so only the low 16 are read; the owning module
-    information is opaque. A table cut short, or a row that fails the check, raises ValueError."""
+    rows, aligned as a row is. Each field is held to its Win32 type: the state (DWORD) to the MIB_TCP_STATE values
+    (1 to 12), and the creation time (LARGE_INTEGER) to a FILETIME, 0 to 2**63 - 1, 0 where Windows gives none. An
+    address (DWORD or 16 bytes), PID or scope id (DWORD) is valid at any value; only a port's low 16 bits are read, as
+    its upper 16 may be uninitialized (MIB_TCPROW_OWNER_PID); the owning-module information is opaque. A table cut
+    short, or a row outside its types, raises ValueError."""
     row_type, ip = (_Row4, ipaddress.IPv4Address) if version == 4 else (_Row6, ipaddress.IPv6Address)
     (count,) = struct.unpack_from("=I", data)
     if not count:
@@ -539,7 +613,7 @@ class ListenerCheck:
     def __init__(self, url: str, owner: Owner, *, platform: str | None = None,
                  proc: Callable[[Address, Address], list[int]] = proc_owners,
                  windows: Callable[[Address, Address], list[str]] = windows_owners,
-                 overflow: Callable[[], int] = overflow_uid, mapped: Callable[[int], bool] = uid_mapped,
+                 overflow: Callable[[], int | None] = overflow_uid, mapped: Callable[[int], bool | None] = uid_mapped,
                  me: Callable[[], int] = own_uid):
         self.url, self.owner, self.platform = url, owner, platform or PLATFORM
         self.proc, self.windows = proc, windows

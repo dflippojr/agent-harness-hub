@@ -117,9 +117,10 @@ that socket belongs to the daemon's account. Otherwise it closes the connection 
   or process lookup that can't be read or parsed refuses the connection, as does a connection address that can't be
   parsed. A missing IPv6 table counts as empty only on a machine without IPv6. On Windows, a Hub that can't read its
   own account doesn't start until `--daemon-owner` names the daemon's account. Each record is validated in full: a
-  `/proc/net/tcp` row must be in one of the two shapes the kernel prints, every field in its printed format and with a
-  state that shape prints; `/proc/self/uid_map` must be a map the kernel would write; and a Windows TCP row must have a
-  state Windows defines and a creation time that is a FILETIME.
+  `/proc/net/tcp` row must be in one of the two shapes the kernel prints, with a state that shape prints and every
+  field in its printed format and within the kernel type it's printed from (or the constant the kernel prints there);
+  `/proc/self/uid_map` must be a map the kernel would write; and a Windows TCP row must have a state Windows defines
+  and a creation time that is a FILETIME.
 - **Where it is implemented**: Linux (`/proc/net/tcp` and `/proc/net/tcp6` give each socket's owner) and Windows
   (the TCP table names the process at the other end and says when each socket was created, and the process's token
   gives the account). Windows reuses process ids, so there the process must also hold the port's listening socket, and
