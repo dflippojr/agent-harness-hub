@@ -627,3 +627,61 @@ def test_status_json_records_the_refusal_of_an_unverified_daemon(tmp_path):
     assert status["daemon_check"] == LISTENER_OWNER and status["daemon_ok"] is False
     assert "not verified" in status["daemon_unverified"] and KEY not in json.dumps(status)
     assert json.loads((tmp_path / STATUS_FILE).read_text(encoding="utf-8")) == status
+
+
+# --- the Windows lookup, against a faked psutil (the real one runs in CI's Windows jobs) ------------------------------
+
+class FakeConn:
+    def __init__(self, laddr, raddr, status, pid):
+        self.laddr, self.raddr, self.status, self.pid = laddr, raddr, status, pid
+
+
+class FakeProcess:
+    accounts: dict[int, str] = {}
+
+    def __init__(self, pid: int | None = None):
+        self.pid = pid
+
+    def username(self) -> str:
+        import psutil
+
+        if self.pid is None:
+            return "TOWER\\owner"
+        if self.pid not in self.accounts:
+            raise psutil.AccessDenied(self.pid)
+        return self.accounts[self.pid]
+
+
+def test_the_windows_lookup_reads_the_far_ends_process_account(monkeypatch):
+    psutil = pytest.importorskip("psutil")
+    daemon, hub = ("127.0.0.1", 8100), ("127.0.0.1", 40000)
+    table = [
+        FakeConn(daemon, (), psutil.CONN_LISTEN, 10),  # the listener: not this connection
+        FakeConn(daemon, hub, psutil.CONN_ESTABLISHED, 10),  # the daemon's end
+        FakeConn(hub, daemon, psutil.CONN_ESTABLISHED, 20),  # the Hub's own end
+        FakeConn(daemon, hub, psutil.CONN_TIME_WAIT, 0),
+        FakeConn(("::ffff:127.0.0.1", 8100), ("::ffff:127.0.0.1", 40000), psutil.CONN_SYN_RECV, 30),  # dual stack
+        FakeConn(daemon, hub, psutil.CONN_ESTABLISHED, 0),  # no process to read
+        FakeConn(daemon, hub, psutil.CONN_ESTABLISHED, 40),  # another user's: AccessDenied
+    ]
+    monkeypatch.setattr(psutil, "net_connections", lambda kind: table)
+    monkeypatch.setattr(psutil, "Process", FakeProcess)
+    monkeypatch.setattr(FakeProcess, "accounts", {10: "TOWER\\owner", 20: "TOWER\\hub", 30: "TOWER\\dual"})
+    assert endpoint.windows_owners(hub, daemon) == ["TOWER\\owner", "TOWER\\dual", UNREADABLE, UNREADABLE]
+    assert endpoint.windows_account() == "TOWER\\owner"
+    assert resolve_owner("", "win32") == Owner(account="TOWER\\owner")
+
+
+def test_addresses_compare_across_spellings():
+    assert endpoint._same(("::ffff:127.0.0.1", 8100), ("127.0.0.1", 8100))
+    assert endpoint._same(("fe80::1%3", 8100), ("fe80::1", 8100))
+    assert not endpoint._same(("127.0.0.1", 8100), ("127.0.0.1", 8101))
+    assert not endpoint._same(("not an address", 8100), ("127.0.0.1", 8100))
+    assert not endpoint._same((), ("127.0.0.1", 8100))
+
+
+def test_the_checked_backend_has_no_socket_path_and_sleeps_as_httpcore_does():
+    backend = endpoint.CheckedBackend(lambda local, remote: None)
+    with pytest.raises(EndpointUnverified):
+        run(backend.connect_unix_socket("/run/daemon.sock"))
+    run(backend.sleep(0))
