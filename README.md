@@ -79,7 +79,7 @@ docker run -d --network host --mount type=bind,src="$HOME/.agent-harness-hub",ds
 | Option | Default | What |
 | --- | --- | --- |
 | `--daemon-url` | `http://127.0.0.1:8100` | the daemon this Hub administers |
-| `--daemon-owner` | the Hub's own account | the account that runs a loopback daemon: the Hub uses a connection only when its listener belongs to it (a user name or uid on Linux, `DOMAIN\user` on Windows) |
+| `--daemon-owner` | the Hub's own account | the account that runs a loopback daemon: the Hub uses a connection only when its listener belongs to it (a user name or uid on Linux, `DOMAIN\user` on Windows; never `nobody` or the kernel's overflow uid) |
 | `--allow-insecure-http` | off | **unsafe** compatibility setting: send the Hub key to a loopback `http://` daemon without checking which account listens there; the Hub warns at startup ([Daemon connection](#daemon-connection)) |
 | `--state-dir` | `~/.agent-harness-hub` | owner-only directory holding the Hub key and claim state |
 | `--host`, `--port` | `127.0.0.1`, `8120` | where the Hub listens |
@@ -109,6 +109,11 @@ that socket belongs to the daemon's account. Otherwise it closes the connection 
 - **When the check fails**, the Hub sends nothing, keeps its key, and Overview, a claim attempt, the log and
   `status.json` (`daemon_unverified`) say which account answered and what to do: start the daemon as its account,
   set `--daemon-owner`, or use an https daemon URL.
+- **It fails closed on an unmapped or overflow uid** (Linux). The connection table can't single out an account in
+  three cases: the Hub's own uid has no mapping in its user namespace, the expected owner has no mapping, or the
+  expected owner is the kernel's overflow uid. In each case the Hub refuses every connection and logs the reason as an
+  error at startup. `--daemon-owner` refuses `nobody` and the overflow uid. A normal install, and a rootless container
+  that maps the Hub's uid, aren't affected.
 - **Where it is implemented**: Linux (`/proc/net/tcp` and `/proc/net/tcp6` give each socket's owner) and Windows
   (the TCP table gives the process at the other end, and its token the account; another user's process cannot be
   read, and that refuses too). On other platforms, such as macOS, the Hub refuses a loopback `http://` daemon and

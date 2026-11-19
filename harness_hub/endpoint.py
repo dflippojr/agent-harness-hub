@@ -17,7 +17,10 @@ when it opened, and the far end of an open TCP connection cannot change.
 
 - Linux: `/proc/net/tcp` and `/proc/net/tcp6` give each socket's owner uid. A connection the daemon has not accepted
   yet is listed with its listener's uid. Root, or the daemon's own account, can still answer: both can read the Hub's
-  owner-only state directory anyway.
+  owner-only state directory anyway. The check fails closed on an unmapped or overflow uid: it refuses when the
+  Hub's own uid or the expected owner has no mapping in the Hub's user namespace, or when the expected owner is the
+  kernel's overflow uid, since the table cannot single out an account there. `--daemon-owner` refuses `nobody` and
+  the overflow uid.
 - Windows: the TCP table gives the process at the other end (psutil, as `tailnet.py` uses it) and its token the
   account. The Hub cannot read the account of another user's process, and that refuses the connection too.
 - Elsewhere (macOS, the BSDs) there is no check, so a loopback `http://` daemon is refused unless the Hub runs with
@@ -37,6 +40,7 @@ import sys
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import anyio
@@ -122,6 +126,42 @@ def proc_owners(local: Address, remote: Address, tables: Iterable[str] = PROC_TA
     return uids
 
 
+OVERFLOW_UID_FILE = "/proc/sys/kernel/overflowuid"
+UID_MAP_FILE = "/proc/self/uid_map"
+DEFAULT_OVERFLOW_UID = 65534  # the kernel's default overflowuid
+
+
+def overflow_uid() -> int:
+    """The kernel's overflow uid, which it shows for an account it cannot map (its default where the setting cannot be
+    read)."""
+    try:
+        return int(Path(OVERFLOW_UID_FILE).read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return DEFAULT_OVERFLOW_UID
+
+
+def uid_mapped(uid: int) -> bool:
+    """Whether `uid` has a mapping in this process's user namespace (/proc/self/uid_map). A map that cannot be read
+    counts as no mapping."""
+    try:
+        rows = Path(UID_MAP_FILE).read_text(encoding="ascii").splitlines()
+    except OSError:
+        return False
+    for row in rows:
+        fields = row.split()
+        if len(fields) == 3 and all(field.isdigit() for field in fields):
+            first, _, count = (int(field) for field in fields)
+            if first <= uid < first + count:
+                return True
+    return False
+
+
+def own_uid() -> int:
+    """The Hub's effective uid as its user namespace shows it (-1 where there is none)."""
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid() if geteuid else -1
+
+
 def uid_name(uid: int) -> str:
     try:
         import pwd
@@ -193,7 +233,13 @@ def resolve_owner(owner: str = "", platform: str | None = None) -> Owner:
     this Hub runs as. Raises ValueError for one that cannot be the daemon's. Elsewhere the check is not supported,
     and the owner is only kept for the error message."""
     owner, platform = owner.strip(), platform or PLATFORM
+    if owner == "nobody" or (owner.isdigit() and int(owner) == overflow_uid()):
+        raise ValueError(f"--daemon-owner cannot be nobody or the kernel's overflow uid ({overflow_uid()}): the "
+                         "connection table cannot single out that account. Name the account that runs the daemon")
     if platform == "linux":
+        if owner and resolve_uid(owner) == overflow_uid():
+            raise ValueError(f"--daemon-owner {owner!r} is the kernel's overflow uid ({overflow_uid()}), which the "
+                             "connection table cannot single out. Name the account that runs the daemon")
         return Owner(uid=resolve_uid(owner) if owner else os.geteuid())
     if platform == "win32":
         if owner and "\\" not in owner:
@@ -209,9 +255,12 @@ class ListenerCheck:
 
     def __init__(self, url: str, owner: Owner, *, platform: str | None = None,
                  proc: Callable[[Address, Address], list[int]] = proc_owners,
-                 windows: Callable[[Address, Address], list[str]] = windows_owners):
+                 windows: Callable[[Address, Address], list[str]] = windows_owners,
+                 overflow: Callable[[], int] = overflow_uid, mapped: Callable[[int], bool] = uid_mapped,
+                 me: Callable[[], int] = own_uid):
         self.url, self.owner, self.platform = url, owner, platform or PLATFORM
         self.proc, self.windows = proc, windows
+        self.overflow, self.mapped, self.me = overflow, mapped, me
         self._lock = threading.Lock()
         self._failure = ""  # the last refusal, so the log names each change once, not every poll
         self.checks = 0
@@ -232,6 +281,9 @@ class ListenerCheck:
         if not local or not remote:
             return f"the daemon URL {self.url} is not verified: the connection has no address to look up."
         if self.platform == "linux":
+            blocked = self.unidentifiable()
+            if blocked:
+                return blocked
             found = self.proc(local, remote)
             matches = bool(found) and all(uid == self.owner.uid for uid in found)
             names = sorted({uid_name(uid) for uid in found})
@@ -250,6 +302,27 @@ class ListenerCheck:
                     "end of the Hub's connection, so it sent nothing. " + FIX.format(owner=expected))
         return (f"the daemon URL {self.url} is not verified: it is answered by a process of {', '.join(names)}, "
                 f"not of {expected}, the daemon's account, so the Hub sent it nothing. " + FIX.format(owner=expected))
+
+    def unidentifiable(self) -> str:
+        """Why the connection table cannot single out the expected owner here, or ''. The owner check fails closed on
+        an unmapped or overflow uid: the Hub's own uid or the expected one without a mapping in the Hub's user
+        namespace, or an expected owner that is the kernel's overflow uid. Only Linux has uids to check."""
+        if self.platform != "linux":
+            return ""
+        overflow, me, expected = self.overflow(), self.me(), self.owner.uid
+        if not self.mapped(me):
+            reason = (f"this Hub's own uid is unmapped in its user namespace (it reads as {me}; the kernel's "
+                      f"overflow uid is {overflow}), so the connection table cannot single out an account. Run the "
+                      "Hub with its uid mapped, or outside the user namespace")
+        elif expected is None or not self.mapped(expected):
+            reason = (f"the expected owner, uid {expected}, is unmapped in this Hub's user namespace, so the "
+                      "connection table cannot show it. Set --daemon-owner to a mapped account that runs the daemon")
+        elif expected == overflow:
+            reason = (f"the expected owner is uid {overflow}, the kernel's overflow uid, which the connection table "
+                      "cannot single out. Set --daemon-owner to the account that runs the daemon")
+        else:
+            return ""
+        return f"the daemon URL {self.url} is not verified: {reason}. The Hub sends it nothing."
 
     def _remember(self, refusal: str) -> None:
         with self._lock:
@@ -292,6 +365,9 @@ def identity_notice(url: str, check: ListenerCheck | None, *, allow_insecure_htt
         return logging.ERROR, (f"the daemon URL {url} cannot be verified on this platform ({check.platform}), so the "
                                "Hub will send the daemon nothing. Use an https daemon URL, or --allow-insecure-http to "
                                "send the Hub key without the check (unsafe).")
+    blocked = check.unidentifiable()
+    if blocked:
+        return logging.ERROR, blocked
     return logging.INFO, (f"the Hub sends the daemon at {url} nothing on a new connection until it has verified that "
                           f"the listener belongs to {check.owner.describe()}")
 

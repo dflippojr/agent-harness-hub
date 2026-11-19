@@ -362,9 +362,13 @@ def test_the_far_end_of_a_real_connection_is_found_before_and_after_accept():
 URL = "http://127.0.0.1:8100"
 
 
-def linux_check(found, owner_uid: int = 1000) -> ListenerCheck:
+def linux_check(found, owner_uid: int = 1000, *, me: int = 1000, unmapped: frozenset[int] = frozenset(),
+                overflow: int = 65534) -> ListenerCheck:
+    """A Linux check on any host: `found` is what the table lists, `me` the Hub's own uid, and every uid but those in
+    `unmapped` has a mapping in the Hub's user namespace."""
     lookup = found if callable(found) else (lambda local, remote: list(found))
-    return ListenerCheck(URL, Owner(uid=owner_uid), platform="linux", proc=lookup)
+    return ListenerCheck(URL, Owner(uid=owner_uid), platform="linux", proc=lookup, me=lambda: me,
+                         mapped=lambda uid: uid not in unmapped, overflow=lambda: overflow)
 
 
 def windows_check(found, account: str = "TOWER\\owner") -> ListenerCheck:
@@ -395,6 +399,7 @@ def test_a_failed_lookup_refuses():
 
 def test_windows_accounts_compare_without_case_and_an_unreadable_one_is_refused():
     windows_check(["tower\\OWNER"])(*CONNECTION)
+    assert windows_check([]).unidentifiable() == ""  # no uids on Windows: nothing to fail closed on
     assert "OTHER\\someone" in refusal(windows_check(["OTHER\\someone"]))
     assert UNREADABLE in refusal(windows_check([UNREADABLE]))
     assert "no socket at the other end" in refusal(windows_check([]))
@@ -850,3 +855,53 @@ def test_daemon_owner_refuses_nobody_and_the_overflow_uid(tmp_path, monkeypatch,
         Settings(daemon_owner=owner)
     with pytest.raises(SystemExit):
         cli.main(["--daemon-owner", owner, "--state-dir", str(tmp_path)])
+
+
+def test_the_owner_check_refuses_each_unmapped_or_overflow_case_before_reading_the_table():
+    def table(local, remote):
+        raise AssertionError("the table is not read when the owner cannot be singled out")
+
+    own = refusal(linux_check(table, me=65534, unmapped=frozenset({65534})))
+    assert "own uid is unmapped" in own and "overflow uid is 65534" in own and "sends it nothing" in own
+    expected = refusal(linux_check(table, owner_uid=2000, unmapped=frozenset({2000})))
+    assert "uid 2000, is unmapped" in expected and "--daemon-owner" in expected
+    overflow = refusal(linux_check(table, owner_uid=70000, overflow=70000))
+    assert "uid 70000, the kernel's overflow uid" in overflow
+    assert refusal(ListenerCheck(URL, Owner(), platform="linux", proc=table, me=lambda: 1000,
+                                 mapped=lambda uid: True)).startswith("the daemon URL")  # no expected uid at all
+    linux_check([1000])(*CONNECTION)  # a mapped Hub expecting a mapped owner still passes
+
+
+def test_the_namespace_readers_parse_the_kernels_files(tmp_path, monkeypatch):
+    uid_map, overflow = tmp_path / "uid_map", tmp_path / "overflowuid"
+    monkeypatch.setattr(endpoint, "UID_MAP_FILE", str(uid_map))
+    monkeypatch.setattr(endpoint, "OVERFLOW_UID_FILE", str(overflow))
+    uid_map.write_text("         0          0 4294967295\n", encoding="ascii")  # the initial namespace
+    assert endpoint.uid_mapped(0) and endpoint.uid_mapped(1000) and endpoint.uid_mapped(4294967294)
+    uid_map.write_text("0 1000 1\n1 100000 65536\n", encoding="ascii")  # a rootless container
+    assert endpoint.uid_mapped(0) and endpoint.uid_mapped(65536) and not endpoint.uid_mapped(65537)
+    uid_map.write_text("", encoding="ascii")  # a namespace whose map was never written
+    assert not endpoint.uid_mapped(65534)
+    uid_map.unlink()
+    assert not endpoint.uid_mapped(0)  # an unreadable map counts as no mapping
+    overflow.write_text("70000\n", encoding="ascii")
+    assert endpoint.overflow_uid() == 70000
+    overflow.write_text("not a number", encoding="ascii")
+    assert endpoint.overflow_uid() == endpoint.DEFAULT_OVERFLOW_UID
+    monkeypatch.delattr(os, "geteuid", raising=False)
+    assert endpoint.own_uid() == -1
+
+
+def test_daemon_owner_refuses_an_account_whose_uid_is_the_overflow_uid(linux_accounts, monkeypatch):
+    monkeypatch.setattr(FakePwd, "getpwnam", staticmethod(
+        lambda name: SimpleNamespace(pw_uid={"owner": 1000, "nfsnobody": 65534}[name])))
+    monkeypatch.setattr(endpoint, "overflow_uid", lambda: 65534)
+    with pytest.raises(ValueError, match="overflow uid"):
+        resolve_owner("nfsnobody", "linux")
+    assert resolve_owner("owner", "linux") == Owner(uid=1000)
+
+
+def test_the_startup_notice_is_an_error_when_the_owner_cannot_be_singled_out():
+    level, text = identity_notice(URL, linux_check([1000], me=65534, unmapped=frozenset({65534})),
+                                  allow_insecure_http=False)
+    assert level == logging.ERROR and "own uid is unmapped" in text

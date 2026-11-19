@@ -240,7 +240,8 @@ Two optional lines in `hub.env` change it, read through `EnvironmentFile=` and p
 `install-unit.sh` keeps them when it rewrites the file. Restart the unit after a change
 (`systemctl --user restart agent-harness-hub`):
 
-- `HUB_DAEMON_OWNER=<user or uid>` when the daemon runs as another account (`--daemon-owner`);
+- `HUB_DAEMON_OWNER=<user or uid>` when the daemon runs as another account (`--daemon-owner`; never `nobody` or the
+  kernel's overflow uid, which the Hub refuses);
 - `HUB_ALLOW_INSECURE_HTTP=1` to send the daemon key without checking who listens (`--allow-insecure-http`). This
   is unsafe: any account on the tower could listen on the daemon's port and take the key. The Hub logs a warning at
   every start and `check-hub.sh` repeats it.
