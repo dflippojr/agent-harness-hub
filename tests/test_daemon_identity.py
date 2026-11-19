@@ -1392,3 +1392,172 @@ def test_the_hubs_own_account_and_overflow_uid_are_refused_at_startup_when_they_
     with pytest.raises(ValueError, match="overflow uid \\(unreadable here\\)"):
         resolve_owner("nobody", "linux")
     assert not endpoint.is_account("TOWER\\owner\\extra") and not endpoint.is_account(None)
+
+
+# --- every parsed OS record is validated in full ----------------------------------------------------------------------
+
+# The fields of a /proc/net/tcp (or tcp6) row, as the kernel prints them: a request or time-wait socket prints the first
+# 12 (get_openreq*, get_timewait*), a full socket all 17 (get_tcp4_sock, get_tcp6_sock).
+PROC_FIELDS = ["slot", "local-address", "remote-address", "state", "queues", "timer", "retransmits", "uid", "timeout",
+               "inode", "refcount", "pointer", "rto", "ato", "quick-pingpong", "cwnd", "ssthresh"]
+
+
+def proc_row_fields(table: str, shape: int, *, local: str = "", remote: str = "", state: str = "", uid: str = "1000",
+                    slot: str = "0:") -> list[str]:
+    """A row of `table` ("tcp" or "tcp6") in one of the kernel's two shapes: 17 fields for a full socket, 12 for a
+    request or time-wait socket. By default the daemon's end of CONNECTION (dual-stack in tcp6), owned by uid 1000."""
+    host = "::ffff:127.0.0.1" if table == "tcp6" else "127.0.0.1"
+    local, remote = local or kernel(host, 8100), remote or kernel(host, 40000)
+    if shape == 17:
+        return [slot, local, remote, state or "01", "00000000:00000000", "00:00000000", "00000000", uid, "0", "54321",
+                "1", "0000000000000000", "20", "4", "0", "10", "-1"]
+    return [slot, local, remote, state or "03", "00000000:00000000", "01:00000063", "00000000", uid, "0", "0", "0",
+            "0000000000000000"]
+
+
+def other_row(table: str, shape: int) -> list[str]:
+    """A row of the same table and shape that is not the daemon's end of CONNECTION: the daemon's listener (a full
+    socket), or a time-wait socket on another of the Hub's ports."""
+    six = table == "tcp6"
+    host = "::ffff:127.0.0.1" if six else "127.0.0.1"
+    if shape == 17:
+        return proc_row_fields(table, 17, remote=kernel("::" if six else "0.0.0.0", 0), state="0A", slot="1:")  # noqa: S104
+    return proc_row_fields(table, 12, remote=kernel(host, 40001), state="06", uid="0", slot="1:")
+
+
+def write_table(paths: dict[str, Path], table: str, rows: list[list[str]]) -> None:
+    """`rows` as `table`, after its header, with the other table empty."""
+    for name, header in (("tcp", HEADER), ("tcp6", HEADER6)):
+        body = "".join(" ".join(row) + "\n" for row in rows) if name == table else ""
+        paths[name].write_text(header + body, encoding="ascii")
+
+
+PROC_FAULTS = [(table, shape, field, fault) for table in ("tcp", "tcp6") for shape in (17, 12)
+               for field in range(shape) for fault in ("missing", "malformed")]
+
+
+@pytest.mark.parametrize(("table", "shape"), [(table, shape) for table in ("tcp", "tcp6") for shape in (17, 12)])
+def test_both_row_shapes_the_kernel_prints_pass(tmp_path, monkeypatch, table, shape):
+    """The far end and another row, in either shape the kernel prints, in either table: the check passes them."""
+    paths = linux_inputs(tmp_path, monkeypatch)
+    write_table(paths, table, [proc_row_fields(table, shape), other_row(table, shape)])
+    linux_input_check(paths)(*CONNECTION)
+
+
+@pytest.mark.parametrize(("table", "shape", "field", "fault"), PROC_FAULTS,
+                         ids=[f"{t}-{shape}-{PROC_FIELDS[field]}-{fault}" for t, shape, field, fault in PROC_FAULTS])
+def test_each_field_of_a_proc_net_tcp_row_is_validated(tmp_path, monkeypatch, table, shape, field, fault):
+    """Each field of both shapes, missing or malformed, in a row other than the far end's: the table is not in the
+    kernel's printed form, so the check refuses even though the far end's own row is valid."""
+    bad = other_row(table, shape)
+    if fault == "missing":
+        del bad[field]
+    else:
+        bad[field] = "zz"
+    paths = linux_inputs(tmp_path, monkeypatch)
+    write_table(paths, table, [proc_row_fields(table, shape), bad])
+    with pytest.raises(EndpointUnverified, match="not verified"):
+        linux_input_check(paths)(*CONNECTION)
+
+
+def changed(shape: int, field: int, value: str) -> list[str]:
+    row = other_row("tcp", shape)
+    row[field] = value
+    return row
+
+
+# Rows the kernel never prints, each beside a valid far end in tcp.
+PROC_MALFORMED = {
+    "undefined-state-FF": changed(17, 3, "FF"),
+    "undefined-state-00": changed(17, 3, "00"),
+    "full-socket-in-a-request-state-0C": changed(17, 3, "0C"),  # TCP_NEW_SYN_RECV: printed in the 12-field shape
+    "short-row-in-an-established-state-01": changed(12, 3, "01"),  # an established socket prints all 17 fields
+    "lowercase-hex-address": changed(17, 1, kernel("127.0.0.1", 8100).lower()),
+    "uid-with-a-leading-zero": changed(17, 7, "01000"),
+    "long-timer-with-a-leading-zero": changed(17, 5, "00:012345678"),
+    "pointer-of-12-digits": changed(17, 11, "000000000000"),
+    "uppercase-pointer": changed(17, 11, "FFFF888012345678"),
+    "negative-inode": changed(17, 9, "-1"),
+    "queue-of-7-digits": changed(17, 4, "0000000:00000000"),
+    "cut-short-after-the-uid": other_row("tcp", 17)[:8],
+    "an-extra-field": [*other_row("tcp", 17), "0"],
+    "a-blank-row": [],
+}
+
+
+@pytest.mark.parametrize("case", list(PROC_MALFORMED))
+def test_a_proc_net_tcp_row_the_kernel_never_prints_is_refused(tmp_path, monkeypatch, case):
+    paths = linux_inputs(tmp_path, monkeypatch)
+    write_table(paths, "tcp", [proc_row_fields("tcp", 17), PROC_MALFORMED[case]])
+    with pytest.raises(EndpointUnverified, match="not verified"):
+        linux_input_check(paths)(*CONNECTION)
+
+
+def map_line(first: int, outside: int, count: int) -> str:
+    return f"{first:10d} {outside:10d} {count:10d}\n"  # uid_m_show: "%10u %10u %10u\n"
+
+
+BASE_MAP = map_line(0, 0, 2000)  # maps the Hub's uid and the daemon's (1000)
+# uid maps the kernel never writes (kernel/user_namespace.c, map_write), each after a valid row.
+UID_MAP_MALFORMED = {
+    "a-value-past-32-bits": BASE_MAP + "      5000       5000 4294967296\n",
+    "a-leading-zero": BASE_MAP + "     05000       5000         10\n",
+    "an-empty-range": BASE_MAP + map_line(5000, 5000, 0),
+    "a-range-past-the-32-bit-space": BASE_MAP + map_line(4294967290, 5000, 10),
+    "an-outside-range-past-the-32-bit-space": BASE_MAP + map_line(5000, 4294967290, 10),
+    "overlapping-ranges-inside": BASE_MAP + map_line(1500, 9000, 10),
+    "overlapping-ranges-outside": BASE_MAP + map_line(5000, 1500, 10),
+    "more-than-340-rows": BASE_MAP + "".join(map_line(10000 + 10 * n, 10000 + 10 * n, 1) for n in range(340)),
+    "two-fields": BASE_MAP + "      5000       5000\n",
+    "four-fields": BASE_MAP + map_line(5000, 5000, 10).rstrip("\n") + "          1\n",
+    "a-negative-number": BASE_MAP + "        -1       5000         10\n",
+}
+
+
+def test_a_uid_map_in_the_kernels_form_passes(tmp_path, monkeypatch):
+    """The kernel's own maps: the initial namespace's, a rootless container's, and the most rows it allows (340)."""
+    for text in (map_line(0, 0, 4294967295), map_line(0, 1000, 1) + map_line(1, 100000, 65536),
+                 BASE_MAP + "".join(map_line(10000 + 10 * n, 10000 + 10 * n, 1) for n in range(339))):
+        paths = linux_inputs(tmp_path, monkeypatch)
+        paths["uid_map"].write_text(text, encoding="ascii")
+        linux_input_check(paths)(*CONNECTION)
+
+
+@pytest.mark.parametrize("case", list(UID_MAP_MALFORMED))
+def test_a_uid_map_the_kernel_never_writes_is_refused(tmp_path, monkeypatch, case):
+    paths = linux_inputs(tmp_path, monkeypatch)
+    paths["uid_map"].write_text(UID_MAP_MALFORMED[case], encoding="ascii")
+    with pytest.raises(EndpointUnverified, match="not verified"):
+        linux_input_check(paths)(*CONNECTION)
+
+
+def test_windows_rows_in_every_state_windows_defines_pass(monkeypatch):
+    """A table with a row in each MIB_TCP_STATE (1 to 12), and an unrelated row without a creation time (Windows gives
+    none for some): the check passes the far end."""
+    for state in range(1, 13):
+        monkeypatch.setitem(WINDOWS_STATES, f"STATE-{state}", state)
+    extra = [WinRow(f"STATE-{state}", ("127.0.0.1", 9000 + state), NO_PEER, 30, 1000.0) for state in range(1, 13)]
+    extra.append(WinRow("LISTEN", ("127.0.0.1", 9100), NO_PEER, 4, None))  # not a socket the check relies on
+    windows_inputs(monkeypatch, rows=[*daemon_rows(), *extra])
+    windows_input_check()(*CONNECTION)
+
+
+# Windows TCP rows Windows never writes, each beside a valid far end: the IPv4 or IPv6 table.
+WINDOWS_MALFORMED = {
+    "ipv4-state-0": [WinRow("STATE-0", ("127.0.0.1", 9000), NO_PEER, 30, 1000.0)],
+    "ipv4-state-13": [WinRow("STATE-13", ("127.0.0.1", 9000), NO_PEER, 30, 1000.0)],
+    "ipv4-state-4294967295": [WinRow("STATE-MAX", ("127.0.0.1", 9000), NO_PEER, 30, 1000.0)],
+    "ipv6-state-13": [WinRow("STATE-13", ("::1", 9000), ("::", 0), 30, 1000.0)],
+    "ipv4-negative-creation-time": [WinRow("LISTEN", ("127.0.0.1", 9000), NO_PEER, 30, -2e10)],
+    "ipv6-negative-creation-time": [WinRow("LISTEN", ("::1", 9000), ("::", 0), 30, -2e10)],
+}
+
+
+@pytest.mark.parametrize("case", list(WINDOWS_MALFORMED))
+def test_a_windows_tcp_row_windows_never_writes_is_refused(monkeypatch, case):
+    monkeypatch.setitem(WINDOWS_STATES, "STATE-0", 0)
+    monkeypatch.setitem(WINDOWS_STATES, "STATE-13", 13)
+    monkeypatch.setitem(WINDOWS_STATES, "STATE-MAX", 4294967295)
+    windows_inputs(monkeypatch, rows=[*daemon_rows(), *WINDOWS_MALFORMED[case]])
+    with pytest.raises(EndpointUnverified, match="not verified"):
+        windows_input_check()(*CONNECTION)
