@@ -25,13 +25,14 @@ UNKNOWN_BUILD = "unknown"
 # How the Hub verifies its daemon (endpoint.py): the loopback listener's account, the https certificate, or nothing
 # (--allow-insecure-http).
 LISTENER_OWNER, TLS, UNVERIFIED = "listener-owner", "tls", "none"
+log = logging.getLogger("harness_hub.status")
 
 
 def daemon_check(client: DaemonClient, *, allow_insecure_http: bool) -> str:
+    """`daemon_check` for status.json: how `client` verifies its daemon."""
     if client.check is not None:
         return LISTENER_OWNER
     return UNVERIFIED if allow_insecure_http else TLS
-log = logging.getLogger("harness_hub.status")
 
 
 def build_commit(value: str | None) -> str:

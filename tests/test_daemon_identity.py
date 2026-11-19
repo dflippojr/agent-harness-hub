@@ -43,7 +43,7 @@ from fastapi.testclient import TestClient
 from harness_hub import __main__ as cli
 from harness_hub import endpoint
 from harness_hub.config import Settings
-from harness_hub.daemon import DaemonClient, DaemonUnverified
+from harness_hub.daemon import DaemonClient, DaemonUnreachable, DaemonUnverified, unanswered
 from harness_hub.endpoint import (
     UNREADABLE,
     EndpointUnverified,
@@ -748,3 +748,28 @@ def test_the_checked_backend_has_no_socket_path_and_sleeps_as_httpcore_does():
     with pytest.raises(EndpointUnverified):
         run(backend.connect_unix_socket("/run/daemon.sock"))
     run(backend.sleep(0))
+
+
+def test_without_httpxs_pool_the_checked_transport_refuses_to_exist(monkeypatch):
+    """The check is installed in httpx's connection pool (`_pool`). An httpx that keeps it elsewhere must stop the
+    Hub at construction, never run it without the check."""
+    import httpx
+
+    built = httpx.AsyncHTTPTransport.__init__
+
+    def without_pool(self, *args, **kw):
+        built(self, *args, **kw)
+        del self._pool
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "__init__", without_pool)
+    with pytest.raises(RuntimeError, match="without the check"):
+        endpoint.DaemonTransport(httpx.create_ssl_context(), check=lambda local, remote: None)
+    with pytest.raises(RuntimeError, match="without the check"):
+        DaemonClient(URL)
+    endpoint.DaemonTransport(httpx.create_ssl_context())  # no check to install: https or the opt-in
+
+
+def test_a_refusal_is_said_as_it_is_and_anything_else_with_the_callers_words():
+    assert unanswered(DaemonUnverified("the daemon URL is not verified: synthetic"), "fallback") == (
+        "the daemon URL is not verified: synthetic")
+    assert unanswered(DaemonUnreachable("ConnectError", sent=False), "fallback") == "fallback"

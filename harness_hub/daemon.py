@@ -138,6 +138,12 @@ class DaemonUnverified(DaemonUnreachable):
         super().__init__(message, sent=False)
 
 
+def unanswered(exc: BaseException, fallback: str) -> str:
+    """What to say when a call raised `exc`: the refusal itself for an unverified endpoint, which names the account
+    that answered and the fix, else `fallback`."""
+    return str(exc) if isinstance(exc, DaemonUnverified) else fallback
+
+
 def unverified(exc: BaseException) -> EndpointUnverified | None:
     """The endpoint check's refusal behind an httpx error, if that is what it is (httpx raises its own ConnectError
     from httpcore's)."""
@@ -174,6 +180,10 @@ class Reply:
 
 
 class DaemonClient:
+    """The Hub's client for its daemon. `check` is the endpoint check its own transport applies to every new
+    connection (endpoint.py). A `transport` passed in (tests) replaces that transport and so bypasses the check,
+    though `check` still says what the client's own transport would apply."""
+
     def __init__(self, base_url: str, transport: httpx.AsyncBaseTransport | None = None, *, owner: str = "",
                  allow_insecure_http: bool = False):
         self.base_url = base_url

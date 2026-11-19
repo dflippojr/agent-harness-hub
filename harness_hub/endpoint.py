@@ -53,12 +53,15 @@ PROC_TABLES = ("/proc/net/tcp", "/proc/net/tcp6")
 # The far end of a connection the Hub has just opened: established, or still a request socket (SYN_RECV, listed with
 # its listener's uid) until the daemon's side has processed the handshake's last ACK.
 PROC_LIVE_STATES = frozenset({"01", "03"})
-# httpx's own defaults (httpx.AsyncClient builds its transport with these when none is given).
+# httpx's own defaults (httpx.AsyncClient builds its transport with these when none is given), and the pool settings
+# both transports below use, checked or not.
 LIMITS = httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=5.0)
+POOL = {"max_connections": LIMITS.max_connections, "max_keepalive_connections": LIMITS.max_keepalive_connections,
+        "keepalive_expiry": LIMITS.keepalive_expiry, "http1": True, "http2": False}
 FIX = ("Start the daemon as {owner}, set --daemon-owner to the account that runs it, or use an https daemon URL. "
        "--allow-insecure-http turns the check off (unsafe).")
 
-Address = tuple  # (host, port, ...) as the socket module gives it
+Address = tuple[object, ...]  # (host, port, ...) as the socket module gives it
 
 
 class EndpointUnverified(httpcore.ConnectError):
@@ -329,11 +332,11 @@ class DaemonTransport(httpx.AsyncHTTPTransport):
     written on them."""
 
     def __init__(self, verify, check: Callable[[Address, Address], None] | None = None):
-        super().__init__(verify=verify, trust_env=False, limits=LIMITS)
+        super().__init__(verify=verify, trust_env=False, limits=LIMITS, http1=POOL["http1"], http2=POOL["http2"])
         if check is not None:
-            # The pool httpx built, rebuilt with the same settings and the checked network backend.
-            self._pool = httpcore.AsyncConnectionPool(
-                ssl_context=verify, max_connections=LIMITS.max_connections,
-                max_keepalive_connections=LIMITS.max_keepalive_connections,
-                keepalive_expiry=LIMITS.keepalive_expiry, http1=True, http2=False,
-                network_backend=CheckedBackend(check))
+            # httpx keeps the connection pool in `_pool` (httpx is pinned). If a release moves it, refuse to start
+            # rather than send without the check.
+            if not isinstance(getattr(self, "_pool", None), httpcore.AsyncConnectionPool):
+                raise RuntimeError("httpx's transport has no connection pool where the daemon identity check is "
+                                   "installed; the Hub will not send its daemon anything without the check")
+            self._pool = httpcore.AsyncConnectionPool(ssl_context=verify, network_backend=CheckedBackend(check), **POOL)

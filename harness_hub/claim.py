@@ -22,7 +22,7 @@ import secrets
 import time
 from pathlib import Path
 
-from .daemon import DaemonClient, DaemonUnreachable, DaemonUnverified
+from .daemon import DaemonClient, DaemonUnreachable, unanswered
 from .state import StateStore, write_private
 
 log = logging.getLogger("harness_hub.claim")
@@ -165,8 +165,8 @@ class ClaimManager:
                 await self._finish(FAILED)
                 self.ensure_polling()
                 # An unverified listener was sent nothing, the challenge included; say which account answered.
-                raise ClaimError(FAILED, str(exc) if isinstance(exc, DaemonUnverified)
-                                 else "the daemon did not answer; check that it is running") from None
+                detail = unanswered(exc, "the daemon did not answer; check that it is running")
+                raise ClaimError(FAILED, detail) from None
             if reply.status == 409 and reply.code == "hub_claimed":
                 await self._finish(REFUSED)
                 self.ensure_polling()
