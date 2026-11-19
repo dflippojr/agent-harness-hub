@@ -1769,3 +1769,23 @@ def test_windows_accounts_are_compared_as_windows_compares_them(monkeypatch):
     assert "not verified" in text and f"{KELVIN}hub" in text, text
     monkeypatch.setattr(FakeProcess, "accounts", {10: "tower\\KHUB", 20: "TOWER\\hub"})
     ListenerCheck(URL, Owner(account="TOWER\\khub"), platform="win32")(*CONNECTION)
+
+
+def test_on_windows_account_names_are_compared_by_windows_itself(monkeypatch):
+    """On Windows the comparison is CompareStringOrdinal's, ignoring case: equal (2) is the same account, anything
+    else is not, and a failed call (0) raises, so the check refuses."""
+    calls = []
+
+    def compare(a, length_a, b, length_b, ignore_case):
+        calls.append((a, length_a, b, length_b, ignore_case))
+        return {"TOWER\\owner": 2, "TOWER\\other": 1}.get(b, 0)
+
+    monkeypatch.setattr(endpoint, "ON_WINDOWS", True)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **kw: SimpleNamespace(CompareStringOrdinal=compare),
+                        raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 87, raising=False)  # Windows-only: ERROR_INVALID_PARAMETER
+    assert endpoint.windows_names_equal("tower\\OWNER", "TOWER\\owner")
+    assert not endpoint.windows_names_equal("tower\\OWNER", "TOWER\\other")
+    with pytest.raises(OSError, match="CompareStringOrdinal"):
+        endpoint.windows_names_equal("tower\\OWNER", "TOWER\\broken")
+    assert calls[0] == ("tower\\OWNER", -1, "TOWER\\owner", -1, True)  # null-terminated, ignoring case

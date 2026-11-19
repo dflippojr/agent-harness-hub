@@ -123,7 +123,8 @@ that socket belongs to the daemon's account. Otherwise it closes the connection 
   and a creation time that is a FILETIME.
 - **Where it is implemented**: Linux (`/proc/net/tcp` and `/proc/net/tcp6` give each socket's owner) and Windows
   (the TCP table names the process at the other end and says when each socket was created, and the process's token
-  gives the account). Windows reuses process ids, so there the process must also hold the port's listening socket, and
+  gives the account, compared as Windows compares account names: ordinally, ignoring case with its own uppercase
+  table). Windows reuses process ids, so there the process must also hold the port's listening socket, and
   must have started before both that socket and the socket at the other end were created. A socket without a creation
   time refuses, and so does another user's process, whose account can't be read. On other platforms, such as macOS,
   the Hub refuses a loopback `http://` daemon and logs why at startup.

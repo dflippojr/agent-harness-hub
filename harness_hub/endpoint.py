@@ -22,7 +22,8 @@ when it opened and is not checked again.
   kernel's overflow uid, since the table cannot single out an account there. `--daemon-owner` refuses `nobody` and
   the overflow uid.
 - Windows: the TCP table (GetExtendedTcpTable, with each socket's creation time) names the process at the other end
-  by PID, and that process's token gives the account. Windows reuses PIDs, so the socket counts as the process's only
+  by PID, and that process's token gives the account, compared as Windows compares account names (ordinally,
+  ignoring case with its own uppercase table). Windows reuses PIDs, so the socket counts as the process's only
   when the process also holds the port's listening socket and started before both sockets were created. A socket
   without a creation time refuses, as does another user's process, whose account the Hub cannot read.
 - Elsewhere (macOS, the BSDs) there is no check, so a loopback `http://` daemon is refused unless the Hub runs with
@@ -355,6 +356,31 @@ def resolve_uid(owner: str) -> int:
 # --- Windows ----------------------------------------------------------------------------------------------------------
 
 UNREADABLE = "an account this Hub cannot read"
+ON_WINDOWS = sys.platform == "win32"  # whether this process can call Windows itself; tests replace it
+CSTR_EQUAL = 2  # CompareStringOrdinal's answer for two equal strings
+
+
+def _simple_upper(name: str) -> str:
+    """`name` with each character mapped to its simple uppercase, as an ordinal case-insensitive comparison maps it:
+    a character whose uppercase is more than one character keeps its own."""
+    return "".join(upper if len(upper := char.upper()) == 1 else char for char in name)
+
+
+def windows_names_equal(a: str, b: str) -> bool:
+    """Whether two account names (DOMAIN\\user) name the same Windows account: compared ordinally, ignoring case with
+    the operating system's own uppercase table (CompareStringOrdinal), the comparison under which Windows keeps
+    account names unique. Python's casefold() is broader and equates names Windows keeps distinct, such as k and the
+    Kelvin sign. Off Windows, where only tests compare Windows names, the simple uppercase mapping stands in for the
+    system's table."""
+    if not ON_WINDOWS:
+        return _simple_upper(a) == _simple_upper(b)
+    compare = ctypes.WinDLL("kernel32", use_last_error=True).CompareStringOrdinal
+    compare.argtypes = [ctypes.c_wchar_p, ctypes.c_int, ctypes.c_wchar_p, ctypes.c_int, ctypes.c_int]
+    compare.restype = ctypes.c_int
+    answer = compare(a, -1, b, -1, True)  # -1: each string to its terminating null, surrogate pairs and all
+    if answer == 0:
+        raise OSError(ctypes.get_last_error(), "CompareStringOrdinal failed")
+    return answer == CSTR_EQUAL
 # GetExtendedTcpTable's TCP_TABLE_OWNER_MODULE_ALL: the TCP table with each socket's creation time, which psutil's
 # table (TCP_TABLE_OWNER_PID_ALL) leaves out.
 TCP_TABLE_OWNER_MODULE_ALL = 8
@@ -637,7 +663,7 @@ class ListenerCheck:
             except Unattributed as exc:
                 return (f"the daemon URL {self.url} is not verified: {exc}, so the Hub sent it nothing. "
                         + FIX.format(owner=expected))
-            matches = bool(accounts) and all(a.casefold() == self.owner.account.casefold() for a in accounts)
+            matches = bool(accounts) and all(windows_names_equal(a, self.owner.account) for a in accounts)
             names = sorted(set(accounts))
         else:
             return (f"the daemon URL {self.url} is not verified: on this platform ({self.platform}) the Hub cannot "
