@@ -317,6 +317,11 @@ def row(n: int, local: str, remote: str, state: str, uid: int) -> str:
     return f"{n:4d}: {local} {remote} {state} {TAIL} {uid:5d}        0 {1000 + n} 1 0000000000000000 20 4 30 10 -1\n"
 
 
+def time_wait_row(n: int, local: str, remote: str) -> str:
+    """A time-wait socket as get_timewait*_sock prints it: 12 fields, timer code 3, uid 0."""
+    return f"{n:4d}: {local} {remote} 06 00000000:00000000 03:00001770 00000000     0        0 0 3 0000000000000000\n"
+
+
 def tables(tmp_path: Path, tcp: list[str], tcp6: list[str] | None) -> list[str]:
     (tmp_path / "tcp").write_text(HEADER + "".join(tcp), encoding="ascii")
     if tcp6 is not None:
@@ -347,7 +352,7 @@ def test_the_far_end_is_read_from_the_table_as_the_kernel_prints_it(tmp_path):
         row(0, DAEMON, "00000000:0000", "0A", 1000),  # the listener: not this connection
         row(1, DAEMON, HUB, "01", 1000),  # the daemon's end
         row(2, HUB, DAEMON, "01", 2000),  # the Hub's own end
-        row(3, DAEMON, HUB, "06", 0),  # TIME_WAIT lists uid 0
+        time_wait_row(3, DAEMON, HUB),  # TIME_WAIT, in the short shape, lists uid 0
     ], [])
     assert proc_owners(*CONNECTION, tables=paths) == [1000]
 
@@ -1590,6 +1595,11 @@ PROC_BOUNDARIES = [
     ("full", 0, f"{INT_MAX}:", True), ("full", 0, f"{INT_MAX + 1}:", False),  # slot: int
     *[("full", 5, f"0{code}:00000000", code in "0124") for code in "012345"],  # the timer codes a full socket prints
     ("full", 5, "00:7FFFFFFFFFFFFFFF", True), ("full", 5, "00:8000000000000000", False),  # when: clock_t, not negative
+    ("full", 3, "05", True), ("full", 3, "06", False),  # TIME_WAIT is printed only in the short shape (#266)
+    ("full", 4, "00000000:7FFFFFFF", True), ("full", 4, "00000000:80000000", False),  # receive queue: int, not negative
+    ("full", 4, "00000000:FFFFFFFF", False),
+    ("full", 4, "7FFFFFFF:00000000", True), ("full", 4, "80000000:00000000", False),  # send queue: within the send
+    ("full", 4, "FFFFFFFF:00000000", False),  # buffer, an int
     ("full", 6, "000000FF", True), ("full", 6, "00000100", False),  # retransmits: u8
     ("full", 7, str(U32), True), ("full", 7, str(U32 + 1), False),  # uid: uid_t
     ("full", 8, str(U8), True), ("full", 8, str(U8 + 1), False), ("full", 8, "-1", False),  # timeout: u8 probes
@@ -1608,7 +1618,7 @@ PROC_BOUNDARIES = [
     ("request", 6, "000000FF", True), ("request", 6, "00000100", False),  # retransmits: u8 timeouts
     ("request", 7, str(U32), True), ("request", 7, str(U32 + 1), False),  # uid: the listener's
     ("request", 8, "1", False), ("request", 9, "1", False), ("request", 10, "1", False),  # timeout, inode, refcount: 0
-    ("time-wait", 3, "05", True),  # FIN_WAIT2, a time-wait socket's other substate
+    ("time-wait", 3, "05", True), ("time-wait", 3, "06", True),  # FIN_WAIT2 and TIME_WAIT
     ("time-wait", 4, "00000001:00000000", False),  # a time-wait socket prints empty queues
     ("time-wait", 5, "01:00001770", False), ("time-wait", 5, "03:8000000000000000", False),  # and timer code 3
     ("time-wait", 6, "00000001", False), ("time-wait", 7, "1", False),  # no retransmits, uid 0
