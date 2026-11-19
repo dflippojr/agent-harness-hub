@@ -214,7 +214,10 @@ def _proc_row_kinds(width: int) -> dict[int, list[ProcRowKind]]:
     empty_queues, zero, pointer = _exactly("00000000:00000000"), _exactly("0"), _printed(POINTER)
     full = ProcRowKind((
         *head,
-        _printed(f"{X8}:{X8}"),  # send and receive queues (u32, int): eight hex digits are their range
+        # send queue (within the send buffer, an int) and receive queue (an int the kernel never prints negative):
+        # neither above 7FFFFFFF. A send queue read mid-update (the kernel reads it unlocked) is refused, and the
+        # next connection tries again.
+        _printed(f"{X8}:{X8}", lambda field: all(int(queue, 16) <= INT_MAX for queue in field.split(":"))),
         _timer(frozenset({0, 1, 2, 4})),  # none, retransmit, keepalive, zero-window probe
         _hex8(U8),  # retransmits (u8)
         _decimal(0, U32),  # uid (uid_t)
@@ -227,7 +230,7 @@ def _proc_row_kinds(width: int) -> dict[int, list[ProcRowKind]]:
         _decimal(0, 511),  # (u8 quick << 1) | pingpong
         _decimal(0, U32),  # cwnd (u32)
         _decimal(INT_MIN, INT_MAX),  # ssthresh, printed as an int (-1 in initial slow start)
-    ), frozenset(range(1, 12)))  # ESTABLISHED (1) to CLOSING (11)
+    ), frozenset(range(1, 12)) - {6})  # ESTABLISHED (1) to CLOSING (11), but TIME_WAIT only in the short shape
     request = ProcRowKind((
         *head, empty_queues, _timer(frozenset({1})),
         _hex8(U8),  # timeouts so far (u8)
