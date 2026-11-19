@@ -879,13 +879,28 @@ class FakeGetExtendedTcpTable:
         return 0
 
 
+REAL_WINDLL = getattr(ctypes, "WinDLL", None)  # Windows' own DLL loader, where there is one
+
+
+def fake_iphlpapi(monkeypatch, get: FakeGetExtendedTcpTable) -> None:
+    """ctypes.WinDLL with iphlpapi's GetExtendedTcpTable faked by `get`. Any other DLL is Windows' own, so on a
+    Windows runner the account comparison still calls kernel32's CompareStringOrdinal (elsewhere it never calls
+    Windows)."""
+    def windll(name, **kw):
+        if name == "iphlpapi":
+            return SimpleNamespace(GetExtendedTcpTable=get)
+        return REAL_WINDLL(name, **kw)
+
+    monkeypatch.setattr(ctypes, "WinDLL", windll, raising=False)
+
+
 def windows_scenario(monkeypatch, rows: list[WinRow], *, accounts: dict[int, str], started: dict[int, float],
                      replaced: frozenset[int] = frozenset()) -> FakeGetExtendedTcpTable:
     """This machine's TCP table, and its processes' accounts and start times, as Windows gives them to the Hub."""
     import psutil
 
     get = FakeGetExtendedTcpTable({WINDOWS_FAMILIES[version]: windows_table(rows, version) for version in (4, 6)})
-    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **kw: SimpleNamespace(GetExtendedTcpTable=get), raising=False)
+    fake_iphlpapi(monkeypatch, get)
     status = {"LISTEN": psutil.CONN_LISTEN, "SYN_RECV": psutil.CONN_SYN_RECV, "ESTABLISHED": psutil.CONN_ESTABLISHED,
               "TIME_WAIT": psutil.CONN_TIME_WAIT}
     monkeypatch.setattr(psutil, "net_connections", lambda kind: [
@@ -953,7 +968,7 @@ def test_the_windows_table_is_read_as_windows_writes_it(monkeypatch):
     windows_scenario(monkeypatch, [], accounts={}, started={})
     monkeypatch.setattr(endpoint, "ipv6_available", lambda: False)  # a machine without IPv6: no AF_INET6 sockets
     get = FakeGetExtendedTcpTable({2: [windows_table([listener], 4), table], 23: 50})  # 50: ERROR_NOT_SUPPORTED
-    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **kw: SimpleNamespace(GetExtendedTcpTable=get), raising=False)
+    fake_iphlpapi(monkeypatch, get)
     assert [row.pid for row in endpoint.windows_rows()] == [10, 10, 20]
     assert get.calls == [(2, 8), (2, 8), (2, 8), (23, 8)]  # sized, too small once it grew, filled; no IPv6
 
@@ -1706,7 +1721,7 @@ def test_a_windows_port_is_read_from_its_low_16_bits_only(monkeypatch):
     windows_inputs(monkeypatch)
     get = FakeGetExtendedTcpTable({2: windows_table(daemon_rows(), 4, high_port_bytes=b"\xff\xff"),
                                    23: windows_table(daemon_rows(), 6, high_port_bytes=b"\xff\xff")})
-    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **kw: SimpleNamespace(GetExtendedTcpTable=get), raising=False)
+    fake_iphlpapi(monkeypatch, get)
     windows_input_check()(*CONNECTION)
 
 
