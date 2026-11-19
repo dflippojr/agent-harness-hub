@@ -662,7 +662,7 @@ def test_the_hub_verifies_the_real_daemons_listener_and_refuses_another_accounts
         hub.sign_in()
         overview = hub.call("GET", "/api/overview").json()
         assert overview["reachable"] and overview["error"] == "", overview["error"]
-        assert "nothing until the listener there is verified" in (state / f"hub-{hub.port}.log").read_text(
+        assert "until it has verified that the listener belongs to" in (state / f"hub-{hub.port}.log").read_text(
             encoding="utf-8", errors="replace")
     finally:
         hub.stop()

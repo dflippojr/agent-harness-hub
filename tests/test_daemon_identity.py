@@ -500,7 +500,7 @@ def test_the_startup_notice_says_how_the_daemon_is_verified():
     level, text = identity_notice(URL, ListenerCheck(URL, Owner(), platform="darwin"), allow_insecure_http=False)
     assert level == logging.ERROR and "cannot be verified on this platform" in text
     level, text = identity_notice(URL, linux_check([1000]), allow_insecure_http=False)
-    assert level == logging.INFO and "nothing until the listener there is verified" in text
+    assert level == logging.INFO and "until it has verified that the listener belongs to" in text
 
 
 # --- real sockets on this machine -------------------------------------------------------------------------------------
@@ -645,7 +645,7 @@ def test_the_default_verifies_and_works_end_to_end_with_a_daemon_of_this_account
                 assert started.status_code == 502 and "on this platform" in started.json()["detail"]
                 assert daemon.requests == {}
         assert check is not None and check.checks >= 1 and check.owner == resolve_owner("")
-    notice = "nothing until the listener there is verified" if LOOKUP else "cannot be verified on this platform"
+    notice = "until it has verified that the listener belongs to" if LOOKUP else "cannot be verified on this platform"
     assert any(notice in r.getMessage() for r in caplog.records)
     assert_no_secrets(hub.bodies, daemon.hub_token)
 

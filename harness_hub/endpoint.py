@@ -289,8 +289,8 @@ def identity_notice(url: str, check: ListenerCheck | None, *, allow_insecure_htt
         return logging.ERROR, (f"the daemon URL {url} cannot be verified on this platform ({check.platform}), so the "
                                "Hub will send the daemon nothing. Use an https daemon URL, or --allow-insecure-http to "
                                "send the Hub key without the check (unsafe).")
-    return logging.INFO, (f"the Hub sends the daemon at {url} nothing until the listener there is verified as "
-                          f"{check.owner.describe()}'s, on each new connection")
+    return logging.INFO, (f"the Hub sends the daemon at {url} nothing on a new connection until it has verified that "
+                          f"the listener belongs to {check.owner.describe()}")
 
 
 # --- the transport ----------------------------------------------------------------------------------------------------
