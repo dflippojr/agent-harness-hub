@@ -21,8 +21,10 @@ when it opened, and the far end of an open TCP connection cannot change.
   Hub's own uid or the expected owner has no mapping in the Hub's user namespace, or when the expected owner is the
   kernel's overflow uid, since the table cannot single out an account there. `--daemon-owner` refuses `nobody` and
   the overflow uid.
-- Windows: the TCP table gives the process at the other end (psutil, as `tailnet.py` uses it) and its token the
-  account. The Hub cannot read the account of another user's process, and that refuses the connection too.
+- Windows: the TCP table (GetExtendedTcpTable, with each socket's creation time) names the process at the other end
+  by PID, and that process's token gives the account. Windows reuses PIDs, so the socket counts as the process's only
+  when the process also holds the port's listening socket and started before that socket was created. A table
+  without creation times refuses, as does another user's process, whose account the Hub cannot read.
 - Elsewhere (macOS, the BSDs) there is no check, so a loopback `http://` daemon is refused unless the Hub runs with
   `--allow-insecure-http`.
 
@@ -32,6 +34,7 @@ the Hub starts.
 
 from __future__ import annotations
 
+import ctypes
 import ipaddress
 import logging
 import os
@@ -187,21 +190,141 @@ def resolve_uid(owner: str) -> int:
 # --- Windows ----------------------------------------------------------------------------------------------------------
 
 UNREADABLE = "an account this Hub cannot read"
+# GetExtendedTcpTable's TCP_TABLE_OWNER_MODULE_ALL: the TCP table with each socket's creation time, which psutil's
+# table (TCP_TABLE_OWNER_PID_ALL) leaves out.
+TCP_TABLE_OWNER_MODULE_ALL = 8
+WINDOWS_FAMILIES = {4: 2, 6: 23}  # AF_INET and AF_INET6 as Windows numbers them
+ERROR_NOT_SUPPORTED, ERROR_INSUFFICIENT_BUFFER = 50, 122
+TCP_LISTEN, TCP_SYN_RCVD, TCP_ESTABLISHED = 2, 4, 5  # MIB_TCP_STATE
+FILETIME_UNIX_EPOCH = 116444736000000000  # 1970-01-01 as a FILETIME (100 ns units since 1601, UTC)
 
 
-def windows_owners(local: Address, remote: Address) -> list[str]:
-    """The accounts (DOMAIN\\user) of the processes at the other end of the connection `local` -> `remote`, from the
-    TCP table. A process whose account cannot be read (another user's) counts as `UNREADABLE`."""
+class _Row4(ctypes.Structure):
+    """MIB_TCPROW_OWNER_MODULE. Addresses and ports are in network byte order, a port in its DWORD's first two
+    bytes."""
+
+    _fields_ = [("state", ctypes.c_uint32), ("local_addr", ctypes.c_ubyte * 4), ("local_port", ctypes.c_ubyte * 4),
+                ("remote_addr", ctypes.c_ubyte * 4), ("remote_port", ctypes.c_ubyte * 4), ("pid", ctypes.c_uint32),
+                ("created", ctypes.c_int64), ("module", ctypes.c_uint64 * 16)]
+
+
+class _Row6(ctypes.Structure):
+    """MIB_TCP6ROW_OWNER_MODULE."""
+
+    _fields_ = [("local_addr", ctypes.c_ubyte * 16), ("local_scope", ctypes.c_uint32),
+                ("local_port", ctypes.c_ubyte * 4), ("remote_addr", ctypes.c_ubyte * 16),
+                ("remote_scope", ctypes.c_uint32), ("remote_port", ctypes.c_ubyte * 4), ("state", ctypes.c_uint32),
+                ("pid", ctypes.c_uint32), ("created", ctypes.c_int64), ("module", ctypes.c_uint64 * 16)]
+
+
+@dataclass(frozen=True)
+class TcpRow:
+    """A socket in Windows' TCP table: its state, its own and its peer's address, the PID that owns it, and when it
+    was created (a FILETIME; 0 where Windows gives none)."""
+
+    state: int
+    local: tuple[str, int]
+    remote: tuple[str, int]
+    pid: int
+    created: int
+
+
+def parse_tcp_table(data: bytes, version: int) -> list[TcpRow]:
+    """The rows of a TCP_TABLE_OWNER_MODULE_ALL table as GetExtendedTcpTable writes it: a 32-bit row count, then the
+    rows, aligned as a row is. A table cut short raises ValueError."""
+    row_type, ip = (_Row4, ipaddress.IPv4Address) if version == 4 else (_Row6, ipaddress.IPv6Address)
+    (count,) = struct.unpack_from("=I", data)
+    if not count:
+        return []
+    align = ctypes.alignment(row_type)
+    rows = (row_type * count).from_buffer_copy(data, -(-4 // align) * align)
+
+    def end(address, port) -> tuple[str, int]:
+        return str(ip(bytes(address))), int.from_bytes(bytes(port)[:2], "big")
+
+    return [TcpRow(row.state, end(row.local_addr, row.local_port), end(row.remote_addr, row.remote_port), row.pid,
+                   row.created) for row in rows]
+
+
+def windows_tcp_table(version: int) -> bytes:
+    """Windows' TCP table for one IP version (TCP_TABLE_OWNER_MODULE_ALL), as GetExtendedTcpTable writes it. A
+    machine without IPv6 has an empty IPv6 table."""
+    get = ctypes.WinDLL("iphlpapi").GetExtendedTcpTable
+    get.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_int, ctypes.c_uint32, ctypes.c_int,
+                    ctypes.c_uint32]
+    get.restype = ctypes.c_uint32
+    size = ctypes.c_uint32(0)
+    for _ in range(8):  # the table can grow between the call that sizes it and the one that fills it
+        buffer = ctypes.create_string_buffer(size.value) if size.value else None
+        error = get(buffer, ctypes.byref(size), False, WINDOWS_FAMILIES[version], TCP_TABLE_OWNER_MODULE_ALL, 0)
+        if error == 0 and buffer is not None:
+            return buffer.raw
+        if error == ERROR_NOT_SUPPORTED and version == 6:
+            return bytes(4)  # no IPv6 here: an empty table
+        if error not in (0, ERROR_INSUFFICIENT_BUFFER):
+            raise OSError(error, f"GetExtendedTcpTable failed with error {error}")
+    raise OSError(ERROR_INSUFFICIENT_BUFFER, "the TCP table kept growing while the Hub read it")
+
+
+def windows_rows() -> list[TcpRow]:
+    return [row for version in (4, 6) for row in parse_tcp_table(windows_tcp_table(version), version)]
+
+
+class Unattributed(Exception):
+    """The socket at the other end cannot be tied to the process Windows' table names for it, so that process's
+    account proves nothing about who holds the socket."""
+
+
+def _listens_for(listener: tuple[str, int], end: tuple[str, int]) -> bool:
+    """Whether a listening socket at `listener` takes connections to `end`: the same port, on that address or on
+    every address."""
+    ip = _ip(listener[0])
+    return int(listener[1]) == int(end[1]) and (ip.is_unspecified or ip == _ip(end[0]))
+
+
+def filetime_seconds(filetime: int) -> float:
+    """A FILETIME in seconds since the epoch, as psutil gives a process's start."""
+    return (filetime - FILETIME_UNIX_EPOCH) / 10_000_000
+
+
+def windows_owners(local: Address, remote: Address, rows: Callable[[], list[TcpRow]] = windows_rows) -> list[str]:
+    """The accounts (DOMAIN\\user) of the processes at the other end of the connection `local` -> `remote`, from
+    Windows' TCP table. The table names a socket's process by PID, and Windows reuses PIDs, so a socket counts as its
+    process's only when that process also holds the listening socket on its port and started before that socket was
+    created. Otherwise, or when the table gives the listener no creation time, this raises `Unattributed`. A process
+    whose account cannot be read (another user's) counts as `UNREADABLE`."""
     import psutil  # Windows-only dependency, as in tailnet.py
 
+    table = rows()
     accounts = []
-    for conn in psutil.net_connections(kind="tcp"):
-        if (conn.laddr and conn.raddr and _same(conn.laddr, remote) and _same(conn.raddr, local)
-                and conn.status in (psutil.CONN_ESTABLISHED, psutil.CONN_SYN_RECV)):
-            try:
-                accounts.append(psutil.Process(conn.pid).username() if conn.pid else UNREADABLE)
-            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
-                accounts.append(UNREADABLE)
+    for end in table:
+        if end.state not in (TCP_ESTABLISHED, TCP_SYN_RCVD) or not (_same(end.local, remote)
+                                                                    and _same(end.remote, local)):
+            continue
+        port = end.local[1]
+        listeners = [row for row in table
+                     if row.state == TCP_LISTEN and row.pid == end.pid and _listens_for(row.local, end.local)]
+        if not end.pid or not listeners:
+            raise Unattributed(f"the socket at the other end belongs to process {end.pid}, which holds no listening "
+                               f"socket on port {port}")
+        if not all(row.created > 0 for row in listeners):
+            raise Unattributed(f"Windows gives no creation time for the listening socket on port {port}, so the Hub "
+                               f"cannot tell whether process {end.pid} created it")
+        try:
+            process = psutil.Process(end.pid)
+            started = process.create_time()
+        except (psutil.Error, OSError) as exc:
+            raise Unattributed(f"the Hub cannot read when process {end.pid} started ({type(exc).__name__})") from exc
+        if started >= filetime_seconds(min(row.created for row in listeners)):
+            raise Unattributed(f"process {end.pid} started after the listening socket on port {port} was created, so "
+                               "it is not the process that created that socket")
+        try:
+            account = process.username()
+        except (psutil.Error, OSError):
+            account = UNREADABLE
+        if not process.is_running():
+            raise Unattributed(f"process {end.pid} exited or changed while the Hub read it")
+        accounts.append(account)
     return accounts
 
 
@@ -288,7 +411,11 @@ class ListenerCheck:
             matches = bool(found) and all(uid == self.owner.uid for uid in found)
             names = sorted({uid_name(uid) for uid in found})
         elif self.platform == "win32":
-            accounts = self.windows(local, remote)
+            try:
+                accounts = self.windows(local, remote)
+            except Unattributed as exc:
+                return (f"the daemon URL {self.url} is not verified: {exc}, so the Hub sent it nothing. "
+                        + FIX.format(owner=expected))
             matches = bool(accounts) and all(a.casefold() == self.owner.account.casefold() for a in accounts)
             names = sorted(set(accounts))
         else:

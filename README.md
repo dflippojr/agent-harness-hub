@@ -115,9 +115,11 @@ that socket belongs to the daemon's account. Otherwise it closes the connection 
   error at startup. `--daemon-owner` refuses `nobody` and the overflow uid. A normal install, and a rootless container
   that maps the Hub's uid, aren't affected.
 - **Where it is implemented**: Linux (`/proc/net/tcp` and `/proc/net/tcp6` give each socket's owner) and Windows
-  (the TCP table gives the process at the other end, and its token the account; another user's process cannot be
-  read, and that refuses too). On other platforms, such as macOS, the Hub refuses a loopback `http://` daemon and
-  logs why at startup.
+  (the TCP table names the process at the other end and says when each socket was created, and the process's token
+  gives the account). Windows reuses process ids, so there the process must also hold the port's listening socket and
+  have started before that socket was created. A table without creation times refuses, and so does another user's
+  process, whose account can't be read. On other platforms, such as macOS, the Hub refuses a loopback `http://`
+  daemon and logs why at startup.
 - **What it does not cover**: root (Administrator) and the daemon's own account can still answer on the port, as
   they can read the Hub's owner-only state directory anyway. An HTTPS proxy in front of the daemon (such as
   `tailscale serve`) proves the proxy's identity, not the daemon's: the proxy forwards to the daemon's loopback port,

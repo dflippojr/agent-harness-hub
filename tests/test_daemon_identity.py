@@ -323,12 +323,30 @@ def test_a_kernel_without_ipv6_is_read_and_one_without_the_table_raises(tmp_path
 
 
 def lookup(local, remote) -> list:
-    """What this platform's own lookup finds at the other end of a connection: uids on Linux, accounts on Windows."""
+    """What this platform's own lookup finds at the other end of a connection: uids on Linux, accounts on Windows.
+    A Windows socket it cannot tie to its process fails with the table's rows on that port, to show why."""
     if sys.platform == "linux":
         return proc_owners(local, remote)
     if sys.platform == "win32":
-        return endpoint.windows_owners(local, remote)
+        try:
+            return endpoint.windows_owners(local, remote)
+        except endpoint.Unattributed as exc:
+            raise AssertionError(f"{exc}; {windows_rows_on(int(remote[1]))}") from exc
     return []
+
+
+def windows_rows_on(port: int) -> str:
+    """Windows' TCP table on `port`, and when each of its processes started, for a failure message."""
+    import psutil
+
+    rows = [row for row in endpoint.windows_rows() if port in (row.local[1], row.remote[1])]
+    started = {}
+    for pid in {row.pid for row in rows}:
+        try:
+            started[pid] = psutil.Process(pid).create_time()
+        except psutil.Error as exc:
+            started[pid] = repr(exc)
+    return f"rows on port {port}: {rows}; process starts: {started}"
 
 
 def me() -> object:
@@ -733,27 +751,6 @@ class FakeProcess:
         return self.pid not in self.replaced
 
 
-def test_the_windows_lookup_reads_the_far_ends_process_account(monkeypatch):
-    import psutil  # a dev dependency on every platform (requirements-dev.lock)
-
-    daemon, hub = ("127.0.0.1", 8100), ("127.0.0.1", 40000)
-    table = [
-        FakeConn(daemon, (), psutil.CONN_LISTEN, 10),  # the listener: not this connection
-        FakeConn(daemon, hub, psutil.CONN_ESTABLISHED, 10),  # the daemon's end
-        FakeConn(hub, daemon, psutil.CONN_ESTABLISHED, 20),  # the Hub's own end
-        FakeConn(daemon, hub, psutil.CONN_TIME_WAIT, 0),
-        FakeConn(("::ffff:127.0.0.1", 8100), ("::ffff:127.0.0.1", 40000), psutil.CONN_SYN_RECV, 30),  # dual stack
-        FakeConn(daemon, hub, psutil.CONN_ESTABLISHED, 0),  # no process to read
-        FakeConn(daemon, hub, psutil.CONN_ESTABLISHED, 40),  # another user's: AccessDenied
-    ]
-    monkeypatch.setattr(psutil, "net_connections", lambda kind: table)
-    monkeypatch.setattr(psutil, "Process", FakeProcess)
-    monkeypatch.setattr(FakeProcess, "accounts", {10: "TOWER\\owner", 20: "TOWER\\hub", 30: "TOWER\\dual"})
-    assert endpoint.windows_owners(hub, daemon) == ["TOWER\\owner", "TOWER\\dual", UNREADABLE, UNREADABLE]
-    assert endpoint.windows_account() == "TOWER\\owner"
-    assert resolve_owner("", "win32") == Owner(account="TOWER\\owner")
-
-
 # Windows' own TCP table (GetExtendedTcpTable, TCP_TABLE_OWNER_MODULE_ALL), faked with rows written as Windows writes
 # them. psutil's table (TCP_TABLE_OWNER_PID_ALL, which has no creation times) is faked with the same rows, so a lookup
 # that read it instead would fail these tests too.
@@ -809,6 +806,8 @@ class FakeGetExtendedTcpTable:
     def __call__(self, buffer, size, order, family, table_class, reserved) -> int:
         self.calls.append((family, table_class))
         table = self.tables[family]
+        if isinstance(table, list):  # a table that changes between calls: the next one each time, then the last
+            table = table.pop(0) if len(table) > 1 else table[0]
         if isinstance(table, int):
             return table
         if buffer is None or size._obj.value < len(table):
@@ -850,6 +849,58 @@ def daemon_rows(*, listener_pid: int = 10, end_pid: int = 10, listener_created: 
 def test_the_windows_check_passes_a_listener_its_own_process_created(monkeypatch):
     windows_scenario(monkeypatch, daemon_rows(), accounts=OWNERS, started={10: 900.0, 20: 950.0})
     ListenerCheck(URL, Owner(account="TOWER\\owner"), platform="win32")(*CONNECTION)
+
+
+def test_the_windows_lookup_reads_the_far_ends_process_account(monkeypatch):
+    """Rows as Windows writes them: the far end of the Hub's connection, accepted or not yet, over IPv4 or a
+    dual-stack IPv6 socket, names its process's account, and another user's process is `UNREADABLE`. The listeners,
+    the Hub's own end and a closed connection are not that far end. Both tables read are the ones with creation
+    times."""
+    dual_end, dual_hub = ("::ffff:127.0.0.1", 8100), ("::ffff:127.0.0.1", 40000)
+    rows = [WinRow("LISTEN", DAEMON_END, NO_PEER, 10, 1000.0),
+            WinRow("LISTEN", ("::", 8100), ("::", 0), 30, 1000.0),
+            WinRow("LISTEN", ("0.0.0.0", 8100), NO_PEER, 40, 1000.0),  # noqa: S104 - a row, not a bind
+            WinRow("ESTABLISHED", DAEMON_END, HUB_END, 10, 2000.0),  # the daemon's end
+            WinRow("ESTABLISHED", HUB_END, DAEMON_END, 20, 2000.0),  # the Hub's own end
+            WinRow("TIME_WAIT", DAEMON_END, HUB_END, 0, None),
+            WinRow("SYN_RECV", dual_end, dual_hub, 30, 2000.0),  # not accepted yet, on a dual-stack listener
+            WinRow("ESTABLISHED", DAEMON_END, HUB_END, 40, 2000.0)]  # another user's: AccessDenied
+    get = windows_scenario(monkeypatch, rows, accounts={10: "TOWER\\owner", 20: "TOWER\\hub", 30: "TOWER\\dual"},
+                           started={10: 900.0, 30: 900.0, 40: 900.0})
+    assert endpoint.windows_owners(HUB_END, DAEMON_END) == ["TOWER\\owner", UNREADABLE, "TOWER\\dual"]
+    assert get.calls == [(2, 8), (2, 8), (23, 8), (23, 8)]  # each family sized, then filled: TCP_TABLE_OWNER_MODULE_ALL
+    assert endpoint.windows_account() == "TOWER\\owner"
+    assert resolve_owner("", "win32") == Owner(account="TOWER\\owner")
+
+
+def test_the_windows_table_is_read_as_windows_writes_it(monkeypatch):
+    """A table that grows between the call that sizes it and the one that fills it is read again. A machine without
+    IPv6 has an empty IPv6 table. Any other failure, or a table cut short, raises, and the check refuses."""
+    listener = daemon_rows()[0]
+    table = windows_table(daemon_rows(), 4)
+    assert len(table) == 8 + 3 * 160
+    assert len(windows_table([WinRow("LISTEN", ("::1", 8100), ("::", 0), 1, 1.0)], 6)) == 8 + 192
+    assert endpoint.parse_tcp_table(table, 4)[0] == endpoint.TcpRow(
+        2, DAEMON_END, NO_PEER, 10, FILETIME_UNIX_EPOCH + 1000 * 10_000_000)
+    assert endpoint.parse_tcp_table(bytes(4), 6) == []
+    with pytest.raises(ValueError):
+        endpoint.parse_tcp_table(table[:-1], 4)
+
+    windows_scenario(monkeypatch, [], accounts={}, started={})
+    get = FakeGetExtendedTcpTable({2: [windows_table([listener], 4), table], 23: 50})  # 50: ERROR_NOT_SUPPORTED
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **kw: SimpleNamespace(GetExtendedTcpTable=get), raising=False)
+    assert [row.pid for row in endpoint.windows_rows()] == [10, 10, 20]
+    assert get.calls == [(2, 8), (2, 8), (2, 8), (23, 8)]  # sized, too small once it grew, filled; no IPv6
+
+    get.tables = {2: [windows_table([listener] * count, 4) for count in range(1, 12)], 23: 50}
+    with pytest.raises(OSError, match="kept growing"):
+        endpoint.windows_tcp_table(4)
+    get.tables = {2: 50, 23: 50}  # an IPv4 table Windows does not give
+    with pytest.raises(OSError, match="error 50"):
+        endpoint.windows_tcp_table(4)
+    get.tables = {2: 5, 23: 5}  # ERROR_ACCESS_DENIED
+    assert "could not read the connection table" in refusal(ListenerCheck(URL, Owner(account="TOWER\\owner"),
+                                                                          platform="win32"))
 
 
 # Each way the far end of the Hub's connection fails to be tied to the process the table names: the rows, the
