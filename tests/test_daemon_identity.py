@@ -8,9 +8,13 @@ daemon's account (harness_hub/endpoint.py). These tests cover:
 - the check's verdict for each lookup result, and the error it reports;
 - `--daemon-owner` and `--allow-insecure-http`, and the startup notice each gives;
 - real sockets on this machine: an endpoint whose listener is not the expected account's is sent nothing, by every
-  kind of call and by calls sent in parallel, while the right one works and the opt-in keeps the old behaviour;
-- a listener that really belongs to another account (`nobody`, through `sudo -n`): those tests need Linux and
-  passwordless sudo (a GitHub-hosted runner has it) and are skipped elsewhere.
+  kind of call and by calls sent in parallel, while the right one works and the opt-in keeps the old behaviour.
+
+Nothing here is skipped. A platform without a lookup (macOS, the BSDs) must refuse every loopback listener, so the
+real-socket tests expect exactly that there. The two cross-account tests run their listener as a real other account
+(`nobody`, through `sudo -n`) where this machine allows it, as on CI's Linux runners, and their test id says so
+(`another-account`). Elsewhere (`another-expected-account`) the listener is this account's and the Hub is told the
+daemon runs as another; a real socket and the platform's real lookup decide either way.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import asyncio
 import base64
 import contextlib
 import functools
+import ipaddress
 import json
 import logging
 import os
@@ -28,7 +33,9 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -121,8 +128,15 @@ def other_account() -> str:
     return OTHER_ACCOUNT if done.returncode == 0 else ""
 
 
-needs_other_account = pytest.mark.skipif(not other_account(), reason="needs Linux and passwordless sudo to run a "
-                                         f"listener as another account ({OTHER_ACCOUNT})")
+def other_owner() -> str:
+    """An account that is not the one running the tests, in the form --daemon-owner takes on this platform."""
+    return "NOWHERE\\hub-test-other" if sys.platform == "win32" else str(os.geteuid() + 4242)
+
+
+# Whether this platform has a listener lookup (Linux, Windows). Without one, every loopback listener is refused.
+LOOKUP = endpoint.supported()
+# How the cross-account tests make the listener foreign here (see the module docstring); shown in their test ids.
+FOREIGN = "another-account" if other_account() else "another-expected-account"
 
 
 class Squatter:
@@ -163,6 +177,34 @@ class Squatter:
         self._reader.join(5)
 
 
+@dataclass
+class Foreign:
+    """A loopback listener the Hub must not trust: where it is, what each connection sent it, the Hub settings that
+    make it foreign, and the account a refusal names as its own ('' when that is not this test's to say)."""
+
+    url: str
+    received: list[bytes]
+    settings: dict
+    account: str
+
+
+@contextlib.contextmanager
+def foreign_listener(mode: str):
+    if mode == "another-account":
+        with Squatter() as squatter:
+            yield Foreign(squatter.url, squatter.received, {}, OTHER_ACCOUNT)
+    else:
+        with Listener() as listener:
+            yield Foreign(listener.url, listener.heads, {"daemon_owner": other_owner()}, "")
+
+
+@contextlib.contextmanager
+def hub_on(tmp_path: Path, url: str, **settings):
+    config = Settings(daemon_url=url, state_dir=tmp_path / "state", poll_seconds=0.02, **settings)
+    with TestClient(create_app(config), base_url=f"http://{HUB_HOST}") as client:
+        yield HubClient(client, config.state_dir)
+
+
 def store_key(state_dir: Path, url: str) -> None:
     StateStore(state_dir).update(key={"token": KEY, "key_id": KEY_ID, "daemon_url": url, "claimed_at": time.time()})
 
@@ -180,46 +222,45 @@ def wait_until(predicate, timeout: float = 10.0) -> None:
         time.sleep(0.02)
 
 
-@needs_other_account
-def test_a_listener_of_another_account_gets_no_key_from_the_parallel_overview_reads(tmp_path):
+@pytest.mark.parametrize("mode", [FOREIGN])
+def test_a_listener_of_another_account_gets_no_key_from_the_parallel_overview_reads(tmp_path, mode):
     """The default plain-HTTP loopback URL, no opt-in, and a listener of another account on it: Overview's reads
     (the public health read and the owner API reads with the key, sent together) reach it with nothing, and Overview
     reports why."""
-    with Squatter() as squatter:
-        store_key(tmp_path / "state", squatter.url)
-        with real_hub(tmp_path, squatter.url) as hub:
+    with foreign_listener(mode) as listener:
+        store_key(tmp_path / "state", listener.url)
+        with hub_on(tmp_path, listener.url, **listener.settings) as hub:
             hub.sign_in()
             overview = hub.get("/api/overview")
             assert overview.status_code == 200, overview.text
             body = overview.json()
-            wait_until(lambda: squatter.connections() >= 1)
+            wait_until(lambda: len(listener.received) >= 1)
             time.sleep(0.2)  # any read still on its way
-        sent = b"".join(squatter.received)
+        sent = b"".join(listener.received)
         assert KEY.encode() not in sent and b"authorization" not in sent.lower()
-        assert squatter.received and all(data == b"" for data in squatter.received), squatter.received
-        assert "not verified" in body["error"] and OTHER_ACCOUNT in body["error"], body["error"]
+        assert listener.received and all(data == b"" for data in listener.received), listener.received
+        assert "not verified" in body["error"] and listener.account in body["error"], body["error"]
         assert body["answered"] is False
     assert StateStore(tmp_path / "state").get("key")["token"] == KEY  # an unverified endpoint never costs the key
     assert_no_secrets(hub.bodies, KEY)
 
 
-@needs_other_account
-def test_a_listener_of_another_account_gets_no_claim_verifier(tmp_path):
+@pytest.mark.parametrize("mode", [FOREIGN])
+def test_a_listener_of_another_account_gets_no_claim_verifier(tmp_path, mode):
     """A pending claim's redeem carries the PKCE verifier, which would let its holder take the Hub key: a listener of
     another account never receives it."""
-    with Squatter() as squatter:
-        store_pending_claim(tmp_path / "state", squatter.url)
-        with real_hub(tmp_path, squatter.url):
-            wait_until(lambda: squatter.connections() >= 1)
+    with foreign_listener(mode) as listener:
+        store_pending_claim(tmp_path / "state", listener.url)
+        with hub_on(tmp_path, listener.url, **listener.settings):
+            wait_until(lambda: len(listener.received) >= 1)
             time.sleep(0.3)  # the poller retries an unanswered redeem every poll_seconds
-        sent = b"".join(squatter.received)
+        sent = b"".join(listener.received)
         assert VERIFIER.encode() not in sent and b"code_verifier" not in sent
-        assert all(data == b"" for data in squatter.received), squatter.received
+        assert all(data == b"" for data in listener.received), listener.received
 
 
 # --- the connection table (Linux) -------------------------------------------------------------------------------------
 
-LITTLE_ENDIAN = sys.byteorder == "little"
 HEADER = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
 TAIL = "00000000:00000000 00:00000000 00000000"
 
@@ -235,29 +276,38 @@ def tables(tmp_path: Path, tcp: list[str], tcp6: list[str] | None) -> list[str]:
     return [str(tmp_path / "tcp"), str(tmp_path / "tcp6")]
 
 
-# How Linux prints 127.0.0.1, ::1 and ::ffff:127.0.0.1 on a little-endian machine, and ports 8100 and 40000.
-V4_LOOPBACK, V6_LOOPBACK = "0100007F", "00000000000000000000000001000000"
-MAPPED_LOOPBACK = "0000000000000000FFFF00000100007F"
-DAEMON, CLIENT = "1FA4", "9C40"
+def kernel(host: str, port: int) -> str:
+    """An address and port as Linux prints them in /proc/net/tcp and tcp6: each 32-bit word of the address read as this
+    machine's native integer, in upper-case hex, then the port."""
+    packed = ipaddress.ip_address(host).packed
+    words = (int.from_bytes(packed[i:i + 4], sys.byteorder) for i in range(0, len(packed), 4))
+    return "".join(f"{word:08X}" for word in words) + f":{port:04X}"
+
+
 CONNECTION = (("127.0.0.1", 40000), ("127.0.0.1", 8100))  # the Hub's address, the daemon's
+DAEMON, HUB = kernel("127.0.0.1", 8100), kernel("127.0.0.1", 40000)
 
 
-@pytest.mark.skipif(not LITTLE_ENDIAN, reason="the table rows below are written as a little-endian kernel prints them")
+def test_rows_are_written_as_the_kernel_prints_them():
+    expected = {"little": ("0100007F:1FA4", "0000000000000000FFFF00000100007F:1FA4"),
+                "big": ("7F000001:1FA4", "00000000000000000000FFFF7F000001:1FA4")}[sys.byteorder]
+    assert (DAEMON, kernel("::ffff:127.0.0.1", 8100)) == expected
+
+
 def test_the_far_end_is_read_from_the_table_as_the_kernel_prints_it(tmp_path):
     paths = tables(tmp_path, [
-        row(0, f"{V4_LOOPBACK}:{DAEMON}", "00000000:0000", "0A", 1000),  # the listener: not this connection
-        row(1, f"{V4_LOOPBACK}:{DAEMON}", f"{V4_LOOPBACK}:{CLIENT}", "01", 1000),  # the daemon's end
-        row(2, f"{V4_LOOPBACK}:{CLIENT}", f"{V4_LOOPBACK}:{DAEMON}", "01", 2000),  # the Hub's own end
-        row(3, f"{V4_LOOPBACK}:{DAEMON}", f"{V4_LOOPBACK}:{CLIENT}", "06", 0),  # TIME_WAIT lists uid 0
+        row(0, DAEMON, "00000000:0000", "0A", 1000),  # the listener: not this connection
+        row(1, DAEMON, HUB, "01", 1000),  # the daemon's end
+        row(2, HUB, DAEMON, "01", 2000),  # the Hub's own end
+        row(3, DAEMON, HUB, "06", 0),  # TIME_WAIT lists uid 0
     ], [])
     assert proc_owners(*CONNECTION, tables=paths) == [1000]
 
 
-@pytest.mark.skipif(not LITTLE_ENDIAN, reason="the table rows below are written as a little-endian kernel prints them")
 def test_a_not_yet_accepted_or_dual_stack_far_end_is_found(tmp_path):
-    paths = tables(tmp_path, [row(0, f"{V4_LOOPBACK}:{DAEMON}", f"{V4_LOOPBACK}:{CLIENT}", "03", 1001)],
-                   [row(0, f"{MAPPED_LOOPBACK}:{DAEMON}", f"{MAPPED_LOOPBACK}:{CLIENT}", "01", 1002),
-                    row(1, f"{V6_LOOPBACK}:{DAEMON}", f"{V6_LOOPBACK}:{CLIENT}", "01", 1003)])
+    paths = tables(tmp_path, [row(0, DAEMON, HUB, "03", 1001)],
+                   [row(0, kernel("::ffff:127.0.0.1", 8100), kernel("::ffff:127.0.0.1", 40000), "01", 1002),
+                    row(1, kernel("::1", 8100), kernel("::1", 40000), "01", 1003)])
     assert proc_owners(*CONNECTION, tables=paths) == [1001, 1002]
     assert proc_owners(("::1", 40000), ("::1", 8100), tables=paths) == [1003]
     assert proc_owners(("::ffff:127.0.0.1", 40000), ("127.0.0.1", 8100), tables=paths) == [1001, 1002]
@@ -270,35 +320,37 @@ def test_a_kernel_without_ipv6_is_read_and_one_without_the_table_raises(tmp_path
         proc_owners(*CONNECTION, tables=[str(tmp_path / "missing")])
 
 
-def connect(family: socket.AddressFamily, server_host: str, client_host: str):
-    server = socket.socket(family, socket.SOCK_STREAM)
-    if family == socket.AF_INET6:
-        server.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-    server.bind((server_host, 0))
-    server.listen()
-    client = socket.create_connection((client_host, server.getsockname()[1]))
-    return server, client
+def lookup(local, remote) -> list:
+    """What this platform's own lookup finds at the other end of a connection: uids on Linux, accounts on Windows."""
+    if sys.platform == "linux":
+        return proc_owners(local, remote)
+    if sys.platform == "win32":
+        return endpoint.windows_owners(local, remote)
+    return []
 
 
-def ipv6_loopback() -> bool:
-    with contextlib.suppress(OSError), socket.create_server(("::1", 0), family=socket.AF_INET6):
-        return True
-    return False
+def me() -> object:
+    """This account as this platform's lookup names it."""
+    return os.geteuid() if sys.platform == "linux" else endpoint.windows_account() if sys.platform == "win32" else None
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="reads Linux's /proc connection table")
-@pytest.mark.parametrize(("family", "server_host", "client_host"), [
-    (socket.AF_INET, "127.0.0.1", "127.0.0.1"),
-    pytest.param(socket.AF_INET6, "::1", "::1", marks=pytest.mark.skipif(not ipv6_loopback(), reason="no ::1")),
-    pytest.param(socket.AF_INET6, "::", "127.0.0.1", marks=pytest.mark.skipif(not ipv6_loopback(), reason="no ::1")),
-])
-def test_the_far_end_of_a_real_connection_is_found_before_and_after_accept(family, server_host, client_host):
-    server, client = connect(family, server_host, client_host)
+def test_the_far_end_of_a_real_connection_is_found_before_and_after_accept():
+    """A real loopback connection, before and after the server accepts it: this platform's lookup names this account
+    (a connection not accepted yet is listed with its listener's owner), and the check passes it. Without a lookup,
+    the check refuses it."""
+    server = socket.create_server(("127.0.0.1", 0))
+    client = socket.create_connection(server.getsockname())
+    check = listener_check(f"http://127.0.0.1:{server.getsockname()[1]}")
     accepted = None
     try:
-        assert proc_owners(client.getsockname(), client.getpeername()) == [os.geteuid()]
-        accepted, _ = server.accept()
-        assert proc_owners(client.getsockname(), client.getpeername()) == [os.geteuid()]
+        for _ in ("before accept", "after accept"):
+            if LOOKUP:
+                assert lookup(client.getsockname(), client.getpeername()) == [me()]
+                check(client.getsockname(), client.getpeername())
+            else:
+                with pytest.raises(EndpointUnverified, match="on this platform"):
+                    check(client.getsockname(), client.getpeername())
+            accepted = accepted or server.accept()[0]
     finally:
         for sock in (accepted, client, server):
             if sock is not None:
@@ -380,20 +432,30 @@ def test_which_urls_are_checked():
 
 # --- --daemon-owner and --allow-insecure-http -------------------------------------------------------------------------
 
-def other_owner() -> str:
-    """An account that is not the one running the tests, in the form --daemon-owner takes on this platform."""
-    return "NOWHERE\\hub-test-other" if sys.platform == "win32" else str(os.geteuid() + 4242)
+class FakePwd:
+    """The `pwd` module of a Linux machine with one account, `owner` (uid 1000)."""
+
+    @staticmethod
+    def getpwnam(name: str):
+        if name != "owner":
+            raise KeyError(name)
+        return SimpleNamespace(pw_uid=1000)
+
+    @staticmethod
+    def getpwuid(uid: int):
+        if uid != 1000:
+            raise KeyError(uid)
+        return SimpleNamespace(pw_name="owner")
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="Linux account names")
-def test_a_linux_owner_is_a_user_name_or_a_uid():
-    import pwd
-
-    me = pwd.getpwuid(os.geteuid()).pw_name
-    assert resolve_owner(me, "linux") == Owner(uid=os.geteuid()) == resolve_owner("", "linux")
+def test_a_linux_owner_is_a_user_name_or_a_uid(monkeypatch):
+    monkeypatch.setitem(sys.modules, "pwd", FakePwd)
+    monkeypatch.setattr(os, "geteuid", lambda: 1000, raising=False)
+    assert resolve_owner("owner", "linux") == Owner(uid=1000) == resolve_owner("", "linux")
     assert resolve_owner("4242", "linux") == Owner(uid=4242)
     with pytest.raises(ValueError, match="no account named"):
         resolve_owner("no-such-account-hub264", "linux")
+    assert endpoint.uid_name(1000) == "owner (uid 1000)" and endpoint.uid_name(4242) == "uid 4242"
 
 
 def test_a_windows_owner_names_its_domain():
@@ -426,10 +488,9 @@ def test_the_arguments_reach_the_settings(tmp_path, monkeypatch):
     assert cli.main(["--allow-insecure-http", "--state-dir", str(tmp_path / "a")]) == 0
     assert seen["app"].fastapi.state.hub.settings.allow_insecure_http is True
     assert seen["app"].fastapi.state.hub.daemon.check is None
-    if endpoint.supported():
-        assert cli.main(["--daemon-owner", other_owner(), "--state-dir", str(tmp_path / "b")]) == 0
-        check = seen["app"].fastapi.state.hub.daemon.check
-        assert check is not None and check.owner == resolve_owner(other_owner())
+    assert cli.main(["--daemon-owner", other_owner(), "--state-dir", str(tmp_path / "b")]) == 0
+    check = seen["app"].fastapi.state.hub.daemon.check
+    assert check is not None and check.owner == resolve_owner(other_owner())
 
 
 def test_the_startup_notice_says_how_the_daemon_is_verified():
@@ -443,9 +504,6 @@ def test_the_startup_notice_says_how_the_daemon_is_verified():
 
 
 # --- real sockets on this machine -------------------------------------------------------------------------------------
-
-needs_check = pytest.mark.skipif(not endpoint.supported(), reason="this platform has no listener check")
-
 
 def run(coro):
     return asyncio.run(coro)
@@ -471,7 +529,6 @@ def wait_for_heads(listener: Listener, count: int) -> None:
     wait_until(lambda: len(listener.heads) >= count)
 
 
-@needs_check
 @pytest.mark.parametrize("parallel", [False, True])
 def test_an_unverified_listener_gets_no_call_of_any_kind(parallel):
     """Every kind of call (public, with the Hub key, the claim's challenge and verifier), one after another or all
@@ -486,18 +543,23 @@ def test_an_unverified_listener_gets_no_call_of_any_kind(parallel):
         assert listener.authorizations() == []
 
 
-@needs_check
 @pytest.mark.parametrize("parallel", [False, True])
 def test_the_daemons_listener_is_verified_on_each_connection(parallel):
     """The same calls to a listener of the expected account (this one): each connection is checked, and each call
-    reaches the listener (a stub that answers 502 and closes, so every call opens a new connection)."""
+    reaches the listener (a stub that answers 502 and closes, so every call opens a new connection). Without a
+    lookup, each one is refused instead and the listener gets empty connections."""
     with Listener() as listener:
         client = DaemonClient(listener.url)
         replies = run(calls(client, parallel=parallel))
-        assert all(getattr(reply, "status", None) == 502 for reply in replies), replies
         wait_for_heads(listener, len(replies))
         assert client.check.checks == len(listener.heads) == len(replies)
-        assert all(head.startswith((b"GET ", b"POST ", b"PUT ", b"PATCH ", b"DELETE ")) for head in listener.heads)
+        if LOOKUP:
+            assert all(getattr(reply, "status", None) == 502 for reply in replies), replies
+            assert all(head.startswith((b"GET ", b"POST ", b"PUT ", b"PATCH ", b"DELETE "))
+                       for head in listener.heads)
+        else:
+            assert all(isinstance(reply, DaemonUnverified) for reply in replies), replies
+            assert listener.heads == [b""] * len(replies)
 
 
 def test_the_opt_in_sends_without_a_check():
@@ -510,14 +572,6 @@ def test_the_opt_in_sends_without_a_check():
         assert len(listener.authorizations()) == 6  # every call with the Hub key went out, as before this change
 
 
-@contextlib.contextmanager
-def hub_on(tmp_path: Path, url: str, **settings):
-    config = Settings(daemon_url=url, state_dir=tmp_path / "state", poll_seconds=0.02, **settings)
-    with TestClient(create_app(config), base_url=f"http://{HUB_HOST}") as client:
-        yield HubClient(client, config.state_dir)
-
-
-@needs_check
 def test_overview_reports_an_unverified_listener_and_sends_it_nothing(tmp_path):
     """Overview with a stored key, against a listener that is not the expected account's: its reads go out
     together, and none of them is written on a connection; Overview says why and the key is kept."""
@@ -527,7 +581,7 @@ def test_overview_reports_an_unverified_listener_and_sends_it_nothing(tmp_path):
             hub.sign_in()
             body = hub.get("/api/overview").json()
             started = hub.post("/api/claim")
-        assert "not verified" in body["error"] and "--daemon-owner" in body["error"], body["error"]
+        assert "not verified" in body["error"] and "--allow-insecure-http" in body["error"], body["error"]
         assert body["answered"] is False and body["claim"]["state"] == "claimed"
         assert started.status_code == 409  # already claimed: no claim request either
         assert listener.heads and all(head == b"" for head in listener.heads), listener.heads
@@ -535,7 +589,6 @@ def test_overview_reports_an_unverified_listener_and_sends_it_nothing(tmp_path):
     assert_no_secrets(hub.bodies, KEY)
 
 
-@needs_check
 def test_a_claim_is_not_started_on_an_unverified_listener(tmp_path):
     with Listener() as listener, hub_on(tmp_path, listener.url, daemon_owner=other_owner()) as hub:
         hub.sign_in()
@@ -574,20 +627,26 @@ def test_the_opt_in_keeps_the_old_behaviour_and_warns_at_startup(tmp_path, caplo
     assert any("--allow-insecure-http" in text and url in text for text in warnings), warnings
 
 
-@needs_check
 def test_the_default_verifies_and_works_end_to_end_with_a_daemon_of_this_account(tmp_path, caplog):
+    """The default settings against a daemon of this account on a real socket: claim and Overview work through the
+    check. Without a lookup, the claim is refused with the platform's reason and the daemon gets no request."""
     daemon = FakeDaemon()
     with serving(daemon.app) as url:
         with caplog.at_level(logging.INFO), real_hub(tmp_path, url) as hub:
             hub.sign_in()
-            started = hub.post("/api/claim").json()
-            daemon.approve(started["request_id"])
-            hub.wait_for("claimed")
-            body = hub.get("/api/overview").json()
+            started = hub.post("/api/claim")
             check = hub.client.app.fastapi.state.hub.daemon.check
-        assert body["error"] == "" and body["ownership"] is not None
+            if LOOKUP:
+                daemon.approve(started.json()["request_id"])
+                hub.wait_for("claimed")
+                body = hub.get("/api/overview").json()
+                assert body["error"] == "" and body["ownership"] is not None
+            else:
+                assert started.status_code == 502 and "on this platform" in started.json()["detail"]
+                assert daemon.requests == {}
         assert check is not None and check.checks >= 1 and check.owner == resolve_owner("")
-    assert any("nothing until the listener there is verified" in r.getMessage() for r in caplog.records)
+    notice = "nothing until the listener there is verified" if LOOKUP else "cannot be verified on this platform"
+    assert any(notice in r.getMessage() for r in caplog.records)
     assert_no_secrets(hub.bodies, daemon.hub_token)
 
 
@@ -607,11 +666,9 @@ def check_name(url: str, **kw) -> str:
 def test_status_json_names_how_the_daemon_is_verified():
     assert check_name("https://daemon.example.ts.net") == TLS
     assert check_name(URL, allow_insecure_http=True) == UNVERIFIED
-    if endpoint.supported():
-        assert check_name(URL) == LISTENER_OWNER
+    assert check_name(URL) == LISTENER_OWNER
 
 
-@needs_check
 def test_status_json_records_the_refusal_of_an_unverified_daemon(tmp_path):
     async def beat(url: str) -> dict:
         client = DaemonClient(url, owner=other_owner())
@@ -653,7 +710,8 @@ class FakeProcess:
 
 
 def test_the_windows_lookup_reads_the_far_ends_process_account(monkeypatch):
-    psutil = pytest.importorskip("psutil")
+    import psutil  # a dev dependency on every platform (requirements-dev.lock)
+
     daemon, hub = ("127.0.0.1", 8100), ("127.0.0.1", 40000)
     table = [
         FakeConn(daemon, (), psutil.CONN_LISTEN, 10),  # the listener: not this connection
