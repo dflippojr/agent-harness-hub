@@ -113,6 +113,10 @@ that socket belongs to the daemon's account. Otherwise it closes the connection 
   expected owner is the kernel's overflow uid. In each case the Hub refuses every connection and logs the reason as an
   error at startup. `--daemon-owner` refuses `nobody` and the overflow uid. A normal install, and a rootless container
   that maps the Hub's uid, aren't affected.
+- **Every input it reads fails closed**, on Linux and Windows. A connection table, `/proc` file, socket creation time
+  or process lookup that can't be read or parsed refuses the connection, as does a connection address that can't be
+  parsed. A missing IPv6 table counts as empty only on a machine without IPv6. On Windows, a Hub that can't read its
+  own account doesn't start until `--daemon-owner` names the daemon's account.
 - **Where it is implemented**: Linux (`/proc/net/tcp` and `/proc/net/tcp6` give each socket's owner) and Windows
   (the TCP table names the process at the other end and says when each socket was created, and the process's token
   gives the account). Windows reuses process ids, so there the process must also hold the port's listening socket, and

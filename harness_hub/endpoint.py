@@ -28,6 +28,9 @@ when it opened and is not checked again.
 - Elsewhere (macOS, the BSDs) there is no check, so a loopback `http://` daemon is refused unless the Hub runs with
   `--allow-insecure-http`.
 
+Every input the check reads fails closed: a connection table, `/proc` file, socket creation time or process lookup
+that cannot be read or parsed refuses the connection, on Linux and on Windows.
+
 The check proves which account holds the socket at the other end, not which program that is or where it sends what
 it gets. Root and the daemon's own account are outside it, and so is a same-account forwarder: a program of the
 daemon's account that listens on the port and forwards (`ssh -L`, `socat`) passes the check.
@@ -39,9 +42,13 @@ the Hub starts.
 from __future__ import annotations
 
 import ctypes
+import errno
 import ipaddress
 import logging
+import math
 import os
+import socket
+import string
 import struct
 import sys
 import threading
@@ -61,6 +68,9 @@ log = logging.getLogger("harness_hub.endpoint")
 PLATFORM = sys.platform  # the platform whose connection table the check reads; tests replace it
 
 PROC_TABLES = ("/proc/net/tcp", "/proc/net/tcp6")
+# The first columns of each table's header, by whether it is tcp6 (which names its third column remote_address).
+PROC_HEADERS = {False: ["sl", "local_address", "rem_address", "st"],
+                True: ["sl", "local_address", "remote_address", "st"]}
 # The far end of a connection the Hub has just opened: established, or still a request socket (SYN_RECV, listed with
 # its listener's uid) until the daemon's side has processed the handshake's last ACK.
 PROC_LIVE_STATES = frozenset({"01", "03"})
@@ -94,6 +104,33 @@ def _same(a: Address, b: tuple[object, int]) -> bool:
         return False
 
 
+def _address(address: Address) -> bool:
+    """Whether a socket address has an IP address and a port the check can read."""
+    try:
+        _ip(address[0])
+        return 0 <= int(address[1]) <= 65535
+    except (ValueError, TypeError, IndexError):
+        return False
+
+
+# An address family the system does not support: EAFNOSUPPORT, and WSAEAFNOSUPPORT as Windows reports it.
+NO_FAMILY = frozenset({errno.EAFNOSUPPORT, 10047})
+
+
+def ipv6_available() -> bool:
+    """Whether this machine has IPv6 at all, so that IPv6 and dual-stack sockets can exist: an AF_INET6 socket can be
+    created. Only an unsupported address family counts as no IPv6; anything else that stops the probe counts as IPv6
+    being there, so that a missing IPv6 table refuses."""
+    family = getattr(socket, "AF_INET6", None)
+    if family is None:
+        return True
+    try:
+        socket.socket(family, socket.SOCK_STREAM).close()
+    except OSError as exc:
+        return exc.errno not in NO_FAMILY
+    return True
+
+
 # --- Linux ------------------------------------------------------------------------------------------------------------
 
 def _proc_hex(ip: ipaddress.IPv4Address | ipaddress.IPv6Address, port: int, table: str) -> str | None:
@@ -109,58 +146,82 @@ def _proc_hex(ip: ipaddress.IPv4Address | ipaddress.IPv6Address, port: int, tabl
     return "".join(f"{word:08X}" for word in words) + f":{port:04X}"
 
 
+def _hex(text: str) -> bool:
+    return bool(text) and all(char in string.hexdigits for char in text)
+
+
+def _proc_row(fields: list[str], width: int) -> bool:
+    """Whether a row of /proc/net/tcp (`width` 8) or tcp6 (32) has the fields the check reads, in the format the
+    kernel writes: its slot, both addresses (hex digits, a colon, a four-digit hex port), its state and its uid."""
+    def address(field: str) -> bool:
+        host, colon, port = field.partition(":")
+        return bool(colon) and len(host) == width and len(port) == 4 and _hex(host) and _hex(port)
+
+    return (len(fields) > 7 and fields[0].endswith(":") and fields[0][:-1].isdigit() and address(fields[1])
+            and address(fields[2]) and len(fields[3]) == 2 and _hex(fields[3]) and fields[7].isdigit())
+
+
 def proc_owners(local: Address, remote: Address, tables: Iterable[str] = PROC_TABLES) -> list[int]:
     """The uids of the live sockets at the other end of the connection `local` -> `remote`: those whose own address
-    is `remote` and whose peer is `local`."""
+    is `remote` and whose peer is `local`. A table that cannot be read, or whose header or any row is not in the
+    kernel's format, raises, and the check refuses. A missing tcp6 reads as empty only on a machine without IPv6."""
     near, far = (_ip(local[0]), int(local[1])), (_ip(remote[0]), int(remote[1]))
     uids = []
     for table in tables:
         own, peer = _proc_hex(*far, table), _proc_hex(*near, table)
         if own is None or peer is None:
-            continue
+            continue  # an IPv6 connection has no row in the IPv4 table
+        six = table.endswith("6")
         try:
-            with open(table, encoding="ascii") as rows:
-                next(rows, None)  # the header
-                for row in rows:
-                    fields = row.split()
-                    if (len(fields) > 7 and fields[1].upper() == own and fields[2].upper() == peer
-                            and fields[3] in PROC_LIVE_STATES):
-                        uids.append(int(fields[7]))
+            lines = Path(table).read_text(encoding="ascii").splitlines()
         except FileNotFoundError:
-            if table.endswith("6"):
-                continue  # a kernel without IPv6
+            if six and not ipv6_available():
+                continue  # no IPv6 here, so no IPv6 or dual-stack socket to list
             raise
+        if not lines or lines[0].split()[:4] != PROC_HEADERS[six]:
+            raise ValueError(f"{table} does not start with the header the kernel writes")
+        for line in lines[1:]:
+            fields = line.split()
+            if not _proc_row(fields, 32 if six else 8):
+                raise ValueError(f"{table} has a row the Hub cannot parse")
+            if fields[1].upper() == own and fields[2].upper() == peer and fields[3] in PROC_LIVE_STATES:
+                uids.append(int(fields[7]))
     return uids
 
 
 OVERFLOW_UID_FILE = "/proc/sys/kernel/overflowuid"
 UID_MAP_FILE = "/proc/self/uid_map"
-DEFAULT_OVERFLOW_UID = 65534  # the kernel's default overflowuid
 
 
-def overflow_uid() -> int:
-    """The kernel's overflow uid, which it shows for an account it cannot map (its default where the setting cannot be
-    read)."""
+def _is_uid(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 2 ** 32
+
+
+def overflow_uid() -> int | None:
+    """The kernel's overflow uid, which it shows for an account it cannot map, or None when the setting cannot be read
+    or parsed (the check then refuses)."""
     try:
-        return int(Path(OVERFLOW_UID_FILE).read_text(encoding="ascii").strip())
+        text = Path(OVERFLOW_UID_FILE).read_text(encoding="ascii").strip()
     except (OSError, ValueError):
-        return DEFAULT_OVERFLOW_UID
+        return None
+    return int(text) if text.isdigit() and _is_uid(int(text)) else None
 
 
-def uid_mapped(uid: int) -> bool:
-    """Whether `uid` has a mapping in this process's user namespace (/proc/self/uid_map). A map that cannot be read
-    counts as no mapping."""
+def uid_mapped(uid: int) -> bool | None:
+    """Whether `uid` has a mapping in this process's user namespace (/proc/self/uid_map), or None when the map cannot
+    be read or has a row other than the kernel's three numbers (the check then refuses)."""
     try:
         rows = Path(UID_MAP_FILE).read_text(encoding="ascii").splitlines()
-    except OSError:
-        return False
+    except (OSError, ValueError):
+        return None
+    mapped = False
     for row in rows:
         fields = row.split()
-        if len(fields) == 3 and all(field.isdigit() for field in fields):
-            first, _, count = (int(field) for field in fields)
-            if first <= uid < first + count:
-                return True
-    return False
+        if len(fields) != 3 or not all(field.isdigit() for field in fields):
+            return None
+        first, _, count = (int(field) for field in fields)
+        mapped = mapped or first <= uid < first + count
+    return mapped
 
 
 def own_uid() -> int:
@@ -200,6 +261,7 @@ TCP_TABLE_OWNER_MODULE_ALL = 8
 WINDOWS_FAMILIES = {4: 2, 6: 23}  # AF_INET and AF_INET6 as Windows numbers them
 ERROR_NOT_SUPPORTED, ERROR_INSUFFICIENT_BUFFER = 50, 122
 TCP_LISTEN, TCP_SYN_RCVD, TCP_ESTABLISHED = 2, 4, 5  # MIB_TCP_STATE
+TCP_STATES = range(1, 13)  # every MIB_TCP_STATE: CLOSED (1) to DELETE_TCB (12)
 FILETIME_UNIX_EPOCH = 116444736000000000  # 1970-01-01 as a FILETIME (100 ns units since 1601, UTC)
 
 
@@ -235,7 +297,7 @@ class TcpRow:
 
 def parse_tcp_table(data: bytes, version: int) -> list[TcpRow]:
     """The rows of a TCP_TABLE_OWNER_MODULE_ALL table as GetExtendedTcpTable writes it: a 32-bit row count, then the
-    rows, aligned as a row is. A table cut short raises ValueError."""
+    rows, aligned as a row is. A table cut short, or a row in a state Windows does not define, raises ValueError."""
     row_type, ip = (_Row4, ipaddress.IPv4Address) if version == 4 else (_Row6, ipaddress.IPv6Address)
     (count,) = struct.unpack_from("=I", data)
     if not count:
@@ -246,13 +308,16 @@ def parse_tcp_table(data: bytes, version: int) -> list[TcpRow]:
     def end(address, port) -> tuple[str, int]:
         return str(ip(bytes(address))), int.from_bytes(bytes(port)[:2], "big")
 
-    return [TcpRow(row.state, end(row.local_addr, row.local_port), end(row.remote_addr, row.remote_port), row.pid,
-                   row.created) for row in rows]
+    parsed = [TcpRow(row.state, end(row.local_addr, row.local_port), end(row.remote_addr, row.remote_port), row.pid,
+                     row.created) for row in rows]
+    if any(row.state not in TCP_STATES for row in parsed):
+        raise ValueError("the TCP table has a row in a state Windows does not define")
+    return parsed
 
 
 def windows_tcp_table(version: int) -> bytes:
-    """Windows' TCP table for one IP version (TCP_TABLE_OWNER_MODULE_ALL), as GetExtendedTcpTable writes it. A
-    machine without IPv6 has an empty IPv6 table."""
+    """Windows' TCP table for one IP version (TCP_TABLE_OWNER_MODULE_ALL), as GetExtendedTcpTable writes it. Only a
+    machine without IPv6 (no AF_INET6 sockets) reads an IPv6 table Windows does not support as empty."""
     get = ctypes.WinDLL("iphlpapi").GetExtendedTcpTable
     get.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_int, ctypes.c_uint32, ctypes.c_int,
                     ctypes.c_uint32]
@@ -263,7 +328,7 @@ def windows_tcp_table(version: int) -> bytes:
         error = get(buffer, ctypes.byref(size), False, WINDOWS_FAMILIES[version], TCP_TABLE_OWNER_MODULE_ALL, 0)
         if error == 0 and buffer is not None:
             return buffer.raw
-        if error == ERROR_NOT_SUPPORTED and version == 6:
+        if error == ERROR_NOT_SUPPORTED and version == 6 and not ipv6_available():
             return bytes(4)  # no IPv6 here: an empty table
         if error not in (0, ERROR_INSUFFICIENT_BUFFER):
             raise OSError(error, f"GetExtendedTcpTable failed with error {error}")
@@ -286,6 +351,18 @@ def _listens_for(listener: tuple[str, int], end: tuple[str, int]) -> bool:
     return int(listener[1]) == int(end[1]) and (ip.is_unspecified or ip == _ip(end[0]))
 
 
+def _is_time(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0
+
+
+def is_account(value: object) -> bool:
+    """Whether `value` is a Windows account as DOMAIN\\user: a domain and a user around one backslash."""
+    if not isinstance(value, str):
+        return False
+    domain, backslash, user = value.partition("\\")
+    return bool(backslash) and bool(domain.strip()) and bool(user.strip()) and "\\" not in user
+
+
 def filetime_seconds(filetime: int) -> float:
     """A FILETIME in seconds since the epoch, as psutil gives a process's start."""
     return (filetime - FILETIME_UNIX_EPOCH) / 10_000_000
@@ -296,8 +373,9 @@ def windows_owners(local: Address, remote: Address, rows: Callable[[], list[TcpR
     Windows' TCP table. The table names a socket's process by PID, and Windows reuses PIDs, so a socket counts as its
     process's only when that process also holds the listening socket on its port and started before every socket the
     check relies on was created: the socket itself and each such listener. Otherwise, or when the table gives any of
-    them no creation time, this raises `Unattributed`. A process whose account cannot be read (another user's) counts
-    as `UNREADABLE`."""
+    them no creation time, this raises `Unattributed`. A process whose account cannot be read (another user's) or
+    parsed counts as `UNREADABLE`. A start time that cannot be read or parsed, or an identity re-check that fails,
+    raises `Unattributed`."""
     import psutil  # Windows-only dependency, as in tailnet.py
 
     table = rows()
@@ -324,6 +402,8 @@ def windows_owners(local: Address, remote: Address, rows: Callable[[], list[TcpR
             started = process.create_time()
         except (psutil.Error, OSError) as exc:
             raise Unattributed(f"the Hub cannot read when process {end.pid} started ({type(exc).__name__})") from exc
+        if not _is_time(started):
+            raise Unattributed(f"the Hub cannot read when process {end.pid} started (it reads as {started!r})")
         for name, row in sockets:
             if started >= filetime_seconds(row.created):
                 raise Unattributed(f"process {end.pid} started after {name} was created, so it is not the process "
@@ -332,16 +412,36 @@ def windows_owners(local: Address, remote: Address, rows: Callable[[], list[TcpR
             account = process.username()
         except (psutil.Error, OSError):
             account = UNREADABLE
-        if not process.is_running():
+        if not is_account(account):
+            account = UNREADABLE
+        try:
+            alive = process.is_running()
+        except (psutil.Error, OSError) as exc:
+            raise Unattributed(f"the Hub cannot tell whether process {end.pid} is still the process it read "
+                               f"({type(exc).__name__})") from exc
+        if alive is not True:
             raise Unattributed(f"process {end.pid} exited or changed while the Hub read it")
         accounts.append(account)
     return accounts
 
 
-def windows_account() -> str:
-    import psutil
+OWN_ACCOUNT_FIX = "so it cannot verify the daemon's listener. Set --daemon-owner to the daemon's account (DOMAIN\\user)"
 
-    return psutil.Process().username()
+
+def windows_account() -> str:
+    """This Hub's own account, as DOMAIN\\user. Raises ValueError when it cannot be read or parsed: the check could
+    not tell the daemon's account without it."""
+    try:
+        import psutil  # Windows-only dependency, as in tailnet.py
+    except ImportError as exc:
+        raise ValueError(f"this Hub cannot read its own account (no psutil), {OWN_ACCOUNT_FIX}") from exc
+    try:
+        account = psutil.Process().username()
+    except (psutil.Error, OSError) as exc:
+        raise ValueError(f"this Hub cannot read its own account ({type(exc).__name__}), {OWN_ACCOUNT_FIX}") from exc
+    if not is_account(account):
+        raise ValueError(f"this Hub's own account reads as {account!r}, not DOMAIN\\user, {OWN_ACCOUNT_FIX}")
+    return account
 
 
 # --- the check --------------------------------------------------------------------------------------------------------
@@ -365,17 +465,18 @@ def resolve_owner(owner: str = "", platform: str | None = None) -> Owner:
     """The expected owner: `owner` (a user name or uid on Linux, DOMAIN\\user on Windows), or when empty the account
     this Hub runs as. Raises ValueError for one that cannot be the daemon's. Elsewhere the check is not supported,
     and the owner is only kept for the error message."""
-    owner, platform = owner.strip(), platform or PLATFORM
-    if owner == "nobody" or (owner.isdigit() and int(owner) == overflow_uid()):
-        raise ValueError(f"--daemon-owner cannot be nobody or the kernel's overflow uid ({overflow_uid()}): the "
-                         "connection table cannot single out that account. Name the account that runs the daemon")
+    owner, platform, overflow = owner.strip(), platform or PLATFORM, overflow_uid()
+    if owner == "nobody" or (overflow is not None and owner.isdigit() and int(owner) == overflow):
+        shown = "unreadable here" if overflow is None else overflow
+        raise ValueError(f"--daemon-owner cannot be nobody or the kernel's overflow uid ({shown}): the connection "
+                         "table cannot single out that account. Name the account that runs the daemon")
     if platform == "linux":
-        if owner and resolve_uid(owner) == overflow_uid():
-            raise ValueError(f"--daemon-owner {owner!r} is the kernel's overflow uid ({overflow_uid()}), which the "
+        if owner and resolve_uid(owner) == overflow:
+            raise ValueError(f"--daemon-owner {owner!r} is the kernel's overflow uid ({overflow}), which the "
                              "connection table cannot single out. Name the account that runs the daemon")
         return Owner(uid=resolve_uid(owner) if owner else os.geteuid())
     if platform == "win32":
-        if owner and "\\" not in owner:
+        if owner and not is_account(owner):
             raise ValueError("--daemon-owner on Windows is DOMAIN\\user (or COMPUTER\\user), as Task Manager's "
                              "Details tab shows it")
         return Owner(account=owner or windows_account())
@@ -413,6 +514,9 @@ class ListenerCheck:
         expected = self.owner.describe()
         if not local or not remote:
             return f"the daemon URL {self.url} is not verified: the connection has no address to look up."
+        if not (_address(local) and _address(remote)):
+            return (f"the daemon URL {self.url} is not verified: the connection's addresses cannot be parsed, so the "
+                    "Hub sent it nothing.")
         if self.platform == "linux":
             blocked = self.unidentifiable()
             if blocked:
@@ -443,15 +547,27 @@ class ListenerCheck:
     def unidentifiable(self) -> str:
         """Why the connection table cannot single out the expected owner here, or ''. The owner check fails closed on
         an unmapped or overflow uid: the Hub's own uid or the expected one without a mapping in the Hub's user
-        namespace, or an expected owner that is the kernel's overflow uid. Only Linux has uids to check."""
+        namespace, or an expected owner that is the kernel's overflow uid. It fails closed, too, on each of those
+        inputs it cannot read or parse: the overflow uid, the Hub's own uid and its uid map. Only Linux has uids."""
         if self.platform != "linux":
             return ""
         overflow, me, expected = self.overflow(), self.me(), self.owner.uid
-        if not self.mapped(me):
+        own = self.mapped(me) if _is_uid(me) else None
+        theirs = self.mapped(expected) if _is_uid(expected) else False
+        if not _is_uid(overflow):
+            reason = (f"the kernel's overflow uid cannot be read from {OVERFLOW_UID_FILE}, so the connection table "
+                      "cannot tell an unmapped account from a real one. Make that file readable to the Hub")
+        elif not _is_uid(me):
+            reason = (f"this Hub cannot read its own uid (it reads as {me!r}), so it cannot tell which accounts the "
+                      "connection table can show")
+        elif own is None or theirs is None:
+            reason = (f"this Hub's uid map ({UID_MAP_FILE}) cannot be read or parsed, so it cannot tell which "
+                      "accounts the connection table can show. Make that file readable to the Hub")
+        elif not own:
             reason = (f"this Hub's own uid is unmapped in its user namespace (it reads as {me}; the kernel's "
                       f"overflow uid is {overflow}), so the connection table cannot single out an account. Run the "
                       "Hub with its uid mapped, or outside the user namespace")
-        elif expected is None or not self.mapped(expected):
+        elif not theirs:
             reason = (f"the expected owner, uid {expected}, is unmapped in this Hub's user namespace, so the "
                       "connection table cannot show it. Set --daemon-owner to a mapped account that runs the daemon")
         elif expected == overflow:

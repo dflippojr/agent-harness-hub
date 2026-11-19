@@ -26,6 +26,7 @@ import asyncio
 import base64
 import contextlib
 import ctypes
+import errno
 import functools
 import ipaddress
 import json
@@ -943,6 +944,7 @@ def test_the_windows_table_is_read_as_windows_writes_it(monkeypatch):
         endpoint.parse_tcp_table(table[:-1], 4)
 
     windows_scenario(monkeypatch, [], accounts={}, started={})
+    monkeypatch.setattr(endpoint, "ipv6_available", lambda: False)  # a machine without IPv6: no AF_INET6 sockets
     get = FakeGetExtendedTcpTable({2: [windows_table([listener], 4), table], 23: 50})  # 50: ERROR_NOT_SUPPORTED
     monkeypatch.setattr(ctypes, "WinDLL", lambda name, **kw: SimpleNamespace(GetExtendedTcpTable=get), raising=False)
     assert [row.pid for row in endpoint.windows_rows()] == [10, 10, 20]
@@ -1154,13 +1156,13 @@ def test_the_namespace_readers_parse_the_kernels_files(tmp_path, monkeypatch):
     uid_map.write_text("0 1000 1\n1 100000 65536\n", encoding="ascii")  # a rootless container
     assert endpoint.uid_mapped(0) and endpoint.uid_mapped(65536) and not endpoint.uid_mapped(65537)
     uid_map.write_text("", encoding="ascii")  # a namespace whose map was never written
-    assert not endpoint.uid_mapped(65534)
+    assert endpoint.uid_mapped(65534) is False
     uid_map.unlink()
-    assert not endpoint.uid_mapped(0)  # an unreadable map counts as no mapping
+    assert endpoint.uid_mapped(0) is None  # a map that cannot be read: the check refuses
     overflow.write_text("70000\n", encoding="ascii")
     assert endpoint.overflow_uid() == 70000
     overflow.write_text("not a number", encoding="ascii")
-    assert endpoint.overflow_uid() == endpoint.DEFAULT_OVERFLOW_UID
+    assert endpoint.overflow_uid() is None  # unknown, not the default: the check refuses
     monkeypatch.delattr(os, "geteuid", raising=False)
     assert endpoint.own_uid() == -1
 
@@ -1344,3 +1346,49 @@ def test_every_input_of_the_owner_check_fails_closed(tmp_path, monkeypatch, cell
     with pytest.raises(refused) as caught:
         attempt()
     assert phrase in str(caught.value), str(caught.value)
+
+
+def test_a_missing_ipv6_table_is_empty_only_where_the_machine_has_no_ipv6(monkeypatch):
+    """Only an address family the system does not support means no IPv6 (so no IPv6 or dual-stack socket to list).
+    Any other failure of the probe, or a Python that cannot tell, counts as IPv6 being there."""
+    class Opened:  # an AF_INET6 socket the system creates
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(socket, "socket", Opened)
+    assert endpoint.ipv6_available() is True
+
+    def refused(code: int):
+        def make(*args, **kwargs):
+            raise OSError(code, os.strerror(code))
+        return make
+
+    monkeypatch.setattr(socket, "socket", refused(errno.EAFNOSUPPORT))
+    assert endpoint.ipv6_available() is False
+    monkeypatch.setattr(socket, "socket", refused(10047))  # WSAEAFNOSUPPORT, as Windows reports it
+    assert endpoint.ipv6_available() is False
+    monkeypatch.setattr(socket, "socket", refused(errno.EMFILE))  # out of file descriptors: cannot tell
+    assert endpoint.ipv6_available() is True
+    monkeypatch.delattr(socket, "AF_INET6")
+    assert endpoint.ipv6_available() is True
+
+
+def test_a_table_without_the_kernels_header_is_refused(tmp_path):
+    for text in ("", "not the header\n", HEADER6):  # tcp with nothing, another header, or tcp6's header
+        (tmp_path / "tcp").write_text(text, encoding="ascii")
+        with pytest.raises(ValueError, match="header"):
+            proc_owners(*CONNECTION, tables=[str(tmp_path / "tcp")])
+
+
+def test_the_hubs_own_account_and_overflow_uid_are_refused_at_startup_when_they_cannot_be_read(monkeypatch):
+    windows_inputs(monkeypatch)
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    with pytest.raises(ValueError, match="cannot read its own account"):
+        endpoint.windows_account()
+    monkeypatch.setattr(endpoint, "overflow_uid", lambda: None)
+    with pytest.raises(ValueError, match="overflow uid \\(unreadable here\\)"):
+        resolve_owner("nobody", "linux")
+    assert not endpoint.is_account("TOWER\\owner\\extra") and not endpoint.is_account(None)
