@@ -25,13 +25,17 @@ The Hub runs on the tower, next to the agent-harness daemon, as the `agent-harne
 ```json
 {"version": "0.1.0", "build": "0123456789abcdef0123456789abcdef01234567", "started_at": "2026-10-19T20:00:00Z",
  "written_at": "2026-10-19T20:05:00Z", "claim": "claimed", "daemon_ok": true,
- "daemon_last_ok_at": "2026-10-19T20:05:00Z"}
+ "daemon_last_ok_at": "2026-10-19T20:05:00Z", "daemon_check": "listener-owner", "daemon_unverified": null}
 ```
 
 - `build` is the commit in `deployed.json` when the Hub started, or `unknown`.
 - `claim` is the Hub's claim state: `unclaimed`, `pending`, `claimed`, or an outcome such as `refused` or `lost`.
 - `daemon_last_ok_at` is the last time the daemon's public `/health` answered `ok` to the Hub; `null` if it never has
   since the Hub started. `daemon_ok` is the latest poll's result.
+- `daemon_check` is how the Hub verifies its daemon (README, "Daemon connection"): `listener-owner` (the loopback
+  listener's account, the default), `tls` (an https daemon URL) or `none` (`--allow-insecure-http`).
+  `daemon_unverified` is the latest poll's refusal when the daemon's endpoint was not verified (the Hub sent it
+  nothing), else `null`; it names accounts and the daemon URL, never a credential.
 
 ## Signals
 

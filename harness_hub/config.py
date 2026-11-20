@@ -67,9 +67,15 @@ class Settings:
     trust_unverified_identity_headers: bool = False  # off Windows only: any local process may then send a login
     status_seconds: float = 0.0  # seconds between status.json heartbeats (status.py); 0 writes none
     build: str = "unknown"  # the deployed commit, for status.json
+    # The account that must own a loopback http:// daemon's listener (endpoint.py); '' is the account the Hub runs as.
+    daemon_owner: str = ""
+    # Unsafe compatibility setting: send to a loopback http:// daemon without checking who listens there.
+    allow_insecure_http: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "daemon_url", normalize_daemon_url(self.daemon_url))
+        object.__setattr__(self, "daemon_owner", self.daemon_owner.strip())
+        self._check_daemon_identity()
         if self.public_url:
             object.__setattr__(self, "public_url", normalize_public_url(self.public_url))
         if not is_loopback(self.host) and not self.secure_cookies:
@@ -83,6 +89,22 @@ class Settings:
                 raise ValueError("allowed host must use the same scheme as the Hub public URL")
             normalized.append(parts.netloc.lower())
         object.__setattr__(self, "extra_hosts", tuple(normalized))
+
+    def _check_daemon_identity(self) -> None:
+        """`--daemon-owner` and `--allow-insecure-http` choose how a loopback http:// daemon is verified, so they must
+        not both be set, and neither applies to an https daemon, which its certificate verifies."""
+        if urlsplit(self.daemon_url).scheme == "https":
+            if self.daemon_owner or self.allow_insecure_http:
+                raise ValueError("--daemon-owner and --allow-insecure-http apply only to a loopback http:// daemon "
+                                 "URL; an https daemon is verified by its certificate")
+            return
+        if self.daemon_owner and self.allow_insecure_http:
+            raise ValueError("--daemon-owner names the account the Hub checks for, and --allow-insecure-http turns "
+                             "the check off: use one of them")
+        if self.daemon_owner:
+            from .endpoint import resolve_owner
+
+            resolve_owner(self.daemon_owner)  # an account this machine does not have is refused at startup
 
     def allowed_origins(self) -> frozenset[str]:
         scheme = "https" if self.secure_cookies else "http"

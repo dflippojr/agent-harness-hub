@@ -2,7 +2,9 @@
 #   docker run -d --network host --user <uid>:<gid> --mount type=bind,src=<hub dir>,dst=/hub-state <image> \
 #     --daemon-url http://127.0.0.1:<port> --claim-file /hub-state/claim.json --state-dir /hub-state
 # Host networking keeps the Hub on the host's loopback next to the daemon; the state directory is a bind mount
-# owned by the daemon owner's account, so the Hub key never lives in the image or a volume.
+# owned by the daemon owner's account, so the Hub key never lives in the image or a volume. --user is that account
+# too: the Hub sends the daemon nothing until its loopback listener is verified as the account the Hub runs as
+# (README, "Daemon connection"; --daemon-owner <uid> names another).
 FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
 LABEL org.opencontainers.image.source="https://github.com/dflippojr/agent-harness-hub" \

@@ -58,7 +58,10 @@ Remote access is supported only through an HTTPS proxy, such as `tailscale serve
 `--public-url https://hub.example.ts.net`. Keep the upstream bound to loopback, or a private container network
 that only the proxy can reach. Non-loopback listeners require an HTTPS public URL; this setting does not add TLS
 to the upstream listener. Never expose that HTTP port directly to the LAN or internet.
-A remote `--daemon-url` must use HTTPS; HTTP is accepted only for loopback daemon addresses.
+A remote `--daemon-url` must use HTTPS; HTTP is accepted only for loopback daemon addresses, and the Hub sends a
+loopback daemon nothing until it has verified that the daemon's account owns the listener there
+([Daemon connection](#daemon-connection)). Run the Hub as the account that runs the daemon, as the installer and
+[docs/deployment.md](docs/deployment.md) do.
 
 To run the Hub as a service on the daemon's host (a systemd user unit on Linux, a logon task on Windows), with an
 upgrade, rollback and health check, see
@@ -76,6 +79,8 @@ docker run -d --network host --mount type=bind,src="$HOME/.agent-harness-hub",ds
 | Option | Default | What |
 | --- | --- | --- |
 | `--daemon-url` | `http://127.0.0.1:8100` | the daemon this Hub administers |
+| `--daemon-owner` | the Hub's own account | the account that runs a loopback daemon: the Hub uses a connection only when its listener belongs to it (a user name or uid on Linux, `DOMAIN\user` on Windows; never `nobody` or the kernel's overflow uid) |
+| `--allow-insecure-http` | off | **unsafe** compatibility setting: send the Hub key to a loopback `http://` daemon without checking which account listens there; the Hub warns at startup ([Daemon connection](#daemon-connection)) |
 | `--state-dir` | `~/.agent-harness-hub` | owner-only directory holding the Hub key and claim state |
 | `--host`, `--port` | `127.0.0.1`, `8120` | where the Hub listens |
 | `--claim-file` | none | start a claim at once and write `{"id", "match_code"}` there (the daemon installer reads it) |
@@ -84,6 +89,66 @@ docker run -d --network host --mount type=bind,src="$HOME/.agent-harness-hub",ds
 | `--name` | `Hub` | the name the daemon records for this Hub |
 | `--status-interval` | `0` (off) | every N seconds, poll the daemon's `/health` and rewrite `status.json` in the state directory (version, build, claim state, last daemon answer) for the [production-signals](docs/production-signals.md) sweep; reads `HUB_BUILD_COMMIT` for the build |
 | `--trust-unverified-identity-headers` | off | **unsafe**; outside Windows, trust `Tailscale-*` headers from any local process (see [Sign in](#sign-in)) |
+
+## Daemon connection
+
+The Hub's daemon key and a claim's verifier must reach only the daemon. An `https://` daemon URL is verified by TLS:
+its certificate must be valid for the URL's host (system CAs, or `SSL_CERT_FILE` / `SSL_CERT_DIR` for a private CA).
+A loopback `http://` URL, the default, is verified by the Hub itself: a loopback address limits who can reach the
+port, not who listens on it, and any account on the machine can listen on a free port. Agent Harness has no TLS or
+owner-protected local-socket listener of its own, so on each new connection, after it connects and before it writes a
+byte, the Hub looks up the socket at the other end in the operating system's connection table and goes on only when
+that socket belongs to the daemon's account. Otherwise it closes the connection unused.
+
+- **The daemon's account** is the one the Hub runs as, which is how the daemon installer, the Docker image's
+  `--user` and the [deployment scripts](docs/deployment.md) run it. If the daemon runs as another account, name it
+  with `--daemon-owner` (a user name or uid on Linux, `DOMAIN\user` on Windows, as Task Manager shows it).
+- **Every call is checked the same way**: the public `/health`, the claim and every owner API call, including the
+  reads Overview sends in parallel. A connection that stays open was checked when it opened and isn't checked again.
+- **When the check fails**, the Hub sends nothing, keeps its key, and Overview, a claim attempt, the log and
+  `status.json` (`daemon_unverified`) say which account answered and what to do: start the daemon as its account,
+  set `--daemon-owner`, or use an https daemon URL.
+- **It fails closed on an unmapped or overflow uid** (Linux). The connection table can't single out an account in
+  three cases: the Hub's own uid has no mapping in its user namespace, the expected owner has no mapping, or the
+  expected owner is the kernel's overflow uid. In each case the Hub refuses every connection and logs the reason as an
+  error at startup. `--daemon-owner` refuses `nobody` and the overflow uid. A normal install, and a rootless container
+  that maps the Hub's uid, aren't affected.
+- **Every input it reads fails closed**, on Linux and Windows. A connection table, `/proc` file, socket creation time
+  or process lookup that can't be read or parsed refuses the connection, as does a connection address that can't be
+  parsed. A missing IPv6 table counts as empty only on a machine without IPv6. On Windows, a Hub that can't read its
+  own account doesn't start until `--daemon-owner` names the daemon's account. Each record is validated in full: a
+  `/proc/net/tcp` row must be in one of the two shapes the kernel prints, with a state that shape prints and every
+  field in its printed format and within the kernel type it's printed from (or the constant the kernel prints there);
+  `/proc/self/uid_map` must be a map the kernel would write; and a Windows TCP row must have a state Windows defines
+  and a creation time that is a FILETIME.
+- **Where it is implemented**: Linux (`/proc/net/tcp` and `/proc/net/tcp6` give each socket's owner) and Windows
+  (the TCP table names the process at the other end and says when each socket was created, and the process's token
+  gives the account, compared as Windows compares account names: ordinally, ignoring case with its own uppercase
+  table). Windows reuses process ids, so there the process must also hold the port's listening socket, and
+  must have started before both that socket and the socket at the other end were created. A socket without a creation
+  time refuses, and so does another user's process, whose account can't be read. On other platforms, such as macOS,
+  the Hub refuses a loopback `http://` daemon and logs why at startup.
+- **What it does not cover**: the check proves which account holds the socket at the other end, not which program
+  that is or where it sends what it gets.
+  - Root (Administrator) and the daemon's own account can answer on the port, or hand a checked connection to another
+    program. Both can read the Hub's owner-only state directory anyway.
+  - Same-account forwarders: a program of the daemon's account that listens on the port and forwards what it gets,
+    such as an `ssh -L` tunnel, `socat`, or an editor's or container tool's port forward, passes the check. The key
+    goes wherever it forwards.
+  - An HTTPS proxy in front of the daemon (such as `tailscale serve`) proves the proxy's identity, not the daemon's:
+    the proxy forwards to the daemon's loopback port, where the same squatting is possible. A Hub on the daemon's host
+    should use the daemon's loopback URL.
+
+`--allow-insecure-http` is the explicit compatibility setting that turns the check off: the Hub sends its key to
+whatever listens on the loopback URL, as Hub releases before this change did, and logs a warning when it starts.
+Use it only where no other account can run code on the machine, or on a platform without the check.
+
+**Upgrading an existing install.** Nothing changes for a Hub that runs as the daemon's account, which is how the
+installer and the deployment scripts run it: after the upgrade it verifies the daemon before every connection, and
+`check-hub.sh` (Linux) says so. A Hub that runs as another account, such as a manual `docker run` without `--user`,
+reports the daemon as not verified on Overview and in its log; add `--daemon-owner <daemon account>` (or
+`HUB_DAEMON_OWNER` in `hub.env`, [docs/deployment.md](docs/deployment.md#daemon-connection)), or run it as the
+daemon's account. On a platform without the check, use an https daemon URL or `--allow-insecure-http`.
 
 ## Sign in
 
@@ -271,9 +336,16 @@ module fields are sent to the browser.
 - Windows state gets a protected DACL granting access only to the current user and SYSTEM, including existing
   state files. Failure to set those permissions prevents startup or sign-in code creation.
 - A 401 must be confirmed with another owner API call before the Hub forgets its persistent key. This prevents
-  a transient rejection from destroying it. Local HTTP does not authenticate the daemon: a process squatting on
-  its port can still receive credentials. Daemon identity pinning or protected local IPC requires upstream
-  Agent Harness support; use an authenticated HTTPS daemon endpoint when this threat matters.
+  a transient rejection from destroying it.
+- The Hub sends its daemon nothing on a connection it has not verified: TLS verifies an https daemon, and for a
+  loopback `http://` daemon the Hub checks, on each new connection and before writing a byte, that the socket at the
+  other end belongs to the daemon's account ([Daemon connection](#daemon-connection)). A connection to a process of
+  another account on the daemon's port is closed with nothing written on it; that section lists what the check does
+  not cover, such as root and same-account forwarders. Plain HTTP without that check needs the explicit
+  `--allow-insecure-http`, which warns at startup. `tests/test_daemon_identity.py` checks this over real sockets
+  (with its listener run as a real other account when `HUB_TEST_OTHER_ACCOUNT` names one, through `sudo -n`), and
+  `tests/e2e` against the real daemon. An owner-protected local socket (a private Unix socket or a restricted named
+  pipe) would also need no lookup, but it needs Agent Harness to listen on one.
 
 ## Develop
 

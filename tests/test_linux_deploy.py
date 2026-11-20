@@ -106,15 +106,16 @@ case "$*" in
     "-u -m harness_hub "*)
         printf '%s\n' "$*" >>"$FAKE_SYSTEMD/hub-args"
         [[ -e $venv/broken ]] && { echo "the Hub failed to start" >&2; exit 1; }
+        check=listener-owner
         while (($#)); do
-            case $1 in --state-dir) state_dir=$2 ;; --port) port=$2 ;; esac
+            case $1 in --state-dir) state_dir=$2 ;; --port) port=$2 ;; --allow-insecure-http) check=none ;; esac
             shift
         done
         written=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         [[ -e $venv/stale ]] && written=2000-01-01T00:00:00Z
         mkdir -p "$state_dir"
-        printf '{"version": "%s", "build": "%s", "written_at": "%s"}\n' \
-            "$(cat "$venv/version")" "$HUB_BUILD_COMMIT" "$written" >"$state_dir/status.json"
+        printf '{"version": "%s", "build": "%s", "written_at": "%s", "daemon_check": "%s"}\n' \
+            "$(cat "$venv/version")" "$HUB_BUILD_COMMIT" "$written" "$check" >"$state_dir/status.json"
         printf '{"ok":true,"version":"%s"}' "$(cat "$venv/version")" >"$FAKE_SYSTEMD/healthz.$port"
         exit 0 ;;
 esac
@@ -1083,6 +1084,63 @@ def test_the_check_reports_a_disabled_unit_and_a_wrong_build(deployed):
     assert result.returncode == 1
     assert f"FAIL  {UNIT} is disabled, so it does not start at boot" in result.stdout
     assert f"names build {'f' * 40}, not the deployed" in result.stdout
+
+
+def hub_args(host: Host) -> str:
+    """The arguments of the Hub the unit started last."""
+    return (host.systemd / "hub-args").read_text(encoding="utf-8").splitlines()[-1]
+
+
+def test_the_hub_verifies_its_daemon_by_default_and_hub_env_can_name_its_account_or_opt_out(deployed):
+    """#264: a deployment passes neither --daemon-owner nor --allow-insecure-http, so the Hub verifies that the daemon's
+    listener belongs to this account, the one both run as. hub.env can name another account or opt in to the
+    unchecked connection, install-unit.sh keeps those lines, and the check says which is in force."""
+    assert "--daemon-owner" not in hub_args(deployed) and "--allow-insecure-http" not in hub_args(deployed)
+    result = deployed.check()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ok    the Hub sends the daemon nothing until its listener is verified" in result.stdout
+    env_file = deployed.deploy / "hub.env"
+    written = env_file.read_text(encoding="utf-8")
+    assert "HUB_DAEMON_OWNER=<user or uid>" in written and "HUB_ALLOW_INSECURE_HTTP=1 to send" in written  # comments
+    assert not re.search(r"^HUB_(DAEMON_OWNER|ALLOW_INSECURE_HTTP)=", written, re.M)
+
+    env_file.write_text(written + "HUB_DAEMON_OWNER=4242\n", encoding="utf-8")
+    deployed.run_fake_systemctl("restart", UNIT)
+    assert "--daemon-owner 4242" in hub_args(deployed) and "--allow-insecure-http" not in hub_args(deployed)
+
+    env_file.write_text(written + "HUB_ALLOW_INSECURE_HTTP=1\n", encoding="utf-8")
+    deployed.run_fake_systemctl("restart", UNIT)
+    assert "--allow-insecure-http" in hub_args(deployed)
+    result = deployed.check()
+    # A warning, never a failure: a failed check would roll a deployment back to an older Hub.
+    assert result.returncode == 0 and "FAIL" not in result.stdout, result.stdout
+    assert "--allow-insecure-http" in result.stderr and "without checking which account" in result.stderr
+
+    deployed.run("install-unit.sh", "--deploy-dir", str(deployed.deploy), "--port", "8120")
+    assert "HUB_ALLOW_INSECURE_HTTP=1" in env_file.read_text(encoding="utf-8").splitlines()
+
+
+def test_the_check_warns_when_the_hub_refused_an_unverified_daemon(deployed):
+    status_file = deployed.deploy / "state" / "status.json"
+    status = json.loads(status_file.read_text(encoding="utf-8"))
+    status["daemon_unverified"] = "the daemon URL http://127.0.0.1:8100 is not verified: synthetic"
+    status_file.write_text(json.dumps(status), encoding="utf-8")
+    result = deployed.check()
+    assert result.returncode == 0 and "FAIL" not in result.stdout, result.stdout
+    assert "the Hub's last daemon poll was refused: the daemon URL http://127.0.0.1:8100 is not verified" in (
+        result.stderr)
+
+
+@pytest.mark.parametrize(("line", "message"), [
+    ("HUB_ALLOW_INSECURE_HTTP=yes", "HUB_ALLOW_INSECURE_HTTP must be 0 or 1"),
+    ("HUB_DAEMON_OWNER=two words", "HUB_DAEMON_OWNER must be a user name or uid"),
+    ("HUB_DAEMON_OWNER=-rf", "HUB_DAEMON_OWNER must be a user name or uid"),
+])
+def test_bad_daemon_identity_values_in_hub_env_are_refused(deployed, line, message):
+    env_file = deployed.deploy / "hub.env"
+    env_file.write_text(env_file.read_text(encoding="utf-8") + line + "\n", encoding="utf-8")
+    result = deployed.check()
+    assert result.returncode == 1 and message in result.stderr, result.stdout + result.stderr
 
 
 def test_the_deployed_check_finds_its_own_deployment_without_arguments(host):

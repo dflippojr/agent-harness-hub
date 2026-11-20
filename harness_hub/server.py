@@ -23,6 +23,7 @@ from .auth import Sessions
 from .claim import CLAIMED, ClaimError, ClaimManager
 from .config import Settings
 from .daemon import DaemonClient
+from .endpoint import identity_notice
 from .guard import ResponseGuard
 from .inventory import InventoryCache
 from .owners import signed_in
@@ -35,7 +36,7 @@ from .routes.common import HubContext
 from .routes.common import error as _error
 from .routes.session import SIGNIN_COMMAND
 from .state import SERVER_FILE, StateStore, write_private
-from .status import StatusReporter
+from .status import StatusReporter, daemon_check
 from .tailnet import PeerCheck, TailnetIdentity
 from .tuning import DEFAULT_TUNING, Tuning
 
@@ -91,17 +92,23 @@ class HostCheck:
 def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None,
                peer_check: PeerCheck | None = None, tuning: Tuning = DEFAULT_TUNING) -> HostCheck:
     store = StateStore(settings.state_dir)
-    daemon = DaemonClient(settings.daemon_url, transport=transport)
+    daemon = DaemonClient(settings.daemon_url, transport=transport, owner=settings.daemon_owner,
+                          allow_insecure_http=settings.allow_insecure_http)
     claims = ClaimManager(store, daemon, name=settings.claim_name, claim_file=settings.claim_file,
                           poll_seconds=settings.poll_seconds)
     sessions = Sessions(settings.state_dir)
     inventory = InventoryCache(store.dir, settings.daemon_url)
     peer_check = peer_check or PeerCheck()
-    status = StatusReporter(store.dir, daemon, claims.state, interval=settings.status_seconds, build=settings.build)
+    status = StatusReporter(store.dir, daemon, claims.state, interval=settings.status_seconds, build=settings.build,
+                            check=daemon_check(daemon, allow_insecure_http=settings.allow_insecure_http))
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
         write_private(store.dir / SERVER_FILE, json.dumps({"url": settings.url, "version": __version__}) + "\n")
+        # Before any call: how the daemon is verified, or the warning that it is not (--allow-insecure-http).
+        level, notice = identity_notice(settings.daemon_url, daemon.check,
+                                        allow_insecure_http=settings.allow_insecure_http)
+        log.log(level, "%s", notice)
         if claims.pending():
             claims.ensure_polling()
         elif settings.claim_file is not None and claims.state() != CLAIMED:

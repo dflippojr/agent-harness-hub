@@ -85,12 +85,14 @@ hub_env_value() {
 
 # hub_load_env again from hub.env alone, after it changed (install-unit.sh rewrites it) or to drop earlier arguments.
 hub_reload_env() {
-    PORT='' DAEMON_URL='' PUBLIC_URL='' STATUS_SECONDS=''
+    PORT='' DAEMON_URL='' PUBLIC_URL='' STATUS_SECONDS='' DAEMON_OWNER='' ALLOW_INSECURE_HTTP=''
     hub_load_env
 }
 
 # PORT, DAEMON_URL, PUBLIC_URL and STATUS_SECONDS: a value the caller already set (a command-line argument) wins, then
-# hub.env, then the default.
+# hub.env, then the default. DAEMON_OWNER and ALLOW_INSECURE_HTTP come only from hub.env (HUB_DAEMON_OWNER,
+# HUB_ALLOW_INSECURE_HTTP) and are empty by default: the Hub then verifies that its daemon's listener belongs to the
+# account it runs as, this one (#264).
 hub_load_env() {
     PORT=${PORT:-$(hub_env_value HUB_PORT)}
     PORT=${PORT:-$HUB_DEFAULT_PORT}
@@ -103,6 +105,12 @@ hub_load_env() {
     STATUS_SECONDS=$(hub_integer "$STATUS_SECONDS" 0 86400) ||
         hub_die "invalid status interval (whole seconds, 0 to 86400): $STATUS_SECONDS"
     [[ $DAEMON_URL =~ ^https?://[^[:space:]]+$ ]] || hub_die "invalid daemon URL: $DAEMON_URL"
+    DAEMON_OWNER=${DAEMON_OWNER:-$(hub_env_value HUB_DAEMON_OWNER)}
+    ALLOW_INSECURE_HTTP=${ALLOW_INSECURE_HTTP:-$(hub_env_value HUB_ALLOW_INSECURE_HTTP)}
+    [[ -z $DAEMON_OWNER || $DAEMON_OWNER =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$ ]] ||
+        hub_die "HUB_DAEMON_OWNER must be a user name or uid: $DAEMON_OWNER"
+    [[ -z $ALLOW_INSECURE_HTTP || $ALLOW_INSECURE_HTTP =~ ^[01]$ ]] ||
+        hub_die "HUB_ALLOW_INSECURE_HTTP must be 0 or 1: $ALLOW_INSECURE_HTTP"
     [[ -z $PUBLIC_URL || $PUBLIC_URL =~ ^https://[^[:space:]]+$ ]] || hub_die "the public URL must be https: $PUBLIC_URL"
 }
 
@@ -233,6 +241,23 @@ check_fail() {
     CHECK_FAILED=1
 }
 
+# How the running Hub verifies its daemon, from status.json (`daemon_check`, #264). It never fails the check: a
+# deployment whose check fails is rolled back to the Hub before it, which may verify less, and an unverified daemon
+# (another account on its port, or the Hub under the wrong account) is the owner's to fix, as the warning says.
+hub_check_daemon_connection() {
+    local check refusal
+    check=$(hub_json_field "$STATE/status.json" daemon_check)
+    refusal=$(hub_json_field "$STATE/status.json" daemon_unverified)
+    case $check in
+        listener-owner) check_ok "the Hub sends the daemon nothing until its listener is verified as the daemon's" ;;
+        tls) check_ok "the daemon URL is https, verified by its certificate" ;;
+        none) hub_warn "the Hub runs with --allow-insecure-http (HUB_ALLOW_INSECURE_HTTP=1 in $ENV_FILE): it sends" \
+            "its daemon key to whatever listens on $DAEMON_URL without checking which account that is" ;;
+        *) hub_warn "status.json does not say how the Hub verifies its daemon (daemon_check); it is older than #264" ;;
+    esac
+    if [[ -n $refusal ]]; then hub_warn "the Hub's last daemon poll was refused: $refusal"; fi
+}
+
 # The deployment check: the unit is enabled, running and ordered on no other service; /healthz answers ok with the
 # deployed version; status.json is fresh and names the deployed commit. Prints one line per check and fails if any does.
 # Deploy and rollback end with it.
@@ -325,6 +350,7 @@ hub_check() {
         if [[ -n $commit ]] && ! hub_status_names "$commit"; then
             check_fail "status.json names build $(hub_json_field "$STATE/status.json" build), not the deployed $commit"
         fi
+        hub_check_daemon_connection
     fi
     if ((CHECK_FAILED)); then hub_say 'check: FAILED'; else hub_say 'check: all passed'; fi
     return "$CHECK_FAILED"

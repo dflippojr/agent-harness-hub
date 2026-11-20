@@ -49,7 +49,9 @@ fi
 umask 077
 mkdir -p -- "$DEPLOY" "$(dirname -- "$UNIT_FILE")"
 env_text="# Host-specific values for $HUB_UNIT (EnvironmentFile=). Not in the repository, which is public.
-# install-unit.sh rewrites the HUB_ lines; restart the unit after changing them.
+# install-unit.sh rewrites the four HUB_ lines below and keeps any other line; restart the unit after a change.
+# Optional (docs/deployment.md, \"Daemon connection\"): HUB_DAEMON_OWNER=<user or uid> when the daemon runs as another
+# account, or HUB_ALLOW_INSECURE_HTTP=1 to send the daemon key without checking who listens (unsafe).
 HUB_PORT=$PORT
 HUB_DAEMON_URL=$DAEMON_URL
 HUB_PUBLIC_URL=$PUBLIC_URL

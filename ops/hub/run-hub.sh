@@ -3,7 +3,9 @@
 # <deploy-dir>/ops. systemd restarts it when it exits (Restart=always), so there is no supervisor loop as in run-hub.ps1.
 # The Python comes from the deployment's .venv-path pointer (deploy-hub.sh); HUB_BUILD_COMMIT comes from deployed.json,
 # so the Hub's status.json (docs/production-signals.md) names the commit it runs. The port, daemon URL and public URL
-# come from hub.env through the unit's EnvironmentFile=. The Hub listens on loopback only.
+# come from hub.env through the unit's EnvironmentFile=, and so do HUB_DAEMON_OWNER and HUB_ALLOW_INSECURE_HTTP when
+# the owner sets them; unset, the Hub verifies that the daemon's listener belongs to this account (#264). The Hub
+# listens on loopback only.
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=hub-common.sh
@@ -11,6 +13,7 @@ source "$here/hub-common.sh"
 
 hub_set_paths "${HUB_DEPLOY_DIR:-$(dirname -- "$here")}"
 PORT=${HUB_PORT:-} DAEMON_URL=${HUB_DAEMON_URL:-} PUBLIC_URL=${HUB_PUBLIC_URL:-} STATUS_SECONDS=${HUB_STATUS_SECONDS:-}
+DAEMON_OWNER=${HUB_DAEMON_OWNER:-} ALLOW_INSECURE_HTTP=${HUB_ALLOW_INSECURE_HTTP:-}
 hub_load_env
 
 [[ -f $POINTER ]] || hub_die "no deployment yet: $POINTER is missing; run deploy-hub.sh"
@@ -30,5 +33,7 @@ printf '%s starting Hub %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$commit" >>"$LOG
 
 args=(--daemon-url "$DAEMON_URL" --state-dir "$STATE" --host "$HUB_HOST" --port "$PORT" --status-interval "$STATUS_SECONDS")
 [[ -n $PUBLIC_URL ]] && args+=(--public-url "$PUBLIC_URL")
+[[ -n $DAEMON_OWNER ]] && args+=(--daemon-owner "$DAEMON_OWNER")
+[[ $ALLOW_INSECURE_HTTP == 1 ]] && args+=(--allow-insecure-http)
 cd -- "$DEPLOY"
 HUB_BUILD_COMMIT=$commit exec "$python" -u -m harness_hub "${args[@]}" >>"$log" 2>&1
