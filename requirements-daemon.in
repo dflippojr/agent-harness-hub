@@ -1,4 +1,4 @@
-# Daemon requirements at 44fcc7630e0c3352606fcf2023d38b0b93b6ad61 (CI fixture only).
+# Daemon requirements at 7cef37d5e82bfa8315fe4bec4460468d32a78222 (CI fixture only).
 httpx>=0.28.1
 pyyaml>=6.0.3
 fastapi>=0.162.5
