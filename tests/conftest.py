@@ -235,7 +235,7 @@ class HubClient:
 
     def retune(self, **changes):
         """Replace the timing constants of this running Hub, for the rest of the test (a `Tuning` field per change)."""
-        ctx = self.client.app.fastapi.state.hub
+        ctx = self.client.app.starlette.state.hub
         ctx.tuning = dataclasses.replace(ctx.tuning, **changes)
 
     def get(self, path, **kw):

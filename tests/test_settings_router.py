@@ -12,7 +12,7 @@ from harness_hub.server import create_app
 
 
 def test_the_manage_and_claim_routes_are_the_routers_handlers(tmp_path):
-    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).fastapi
+    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).starlette
     handlers = {(route.path, method): route.endpoint for route in app.routes
                 if getattr(route, "path", "").startswith(("/api/manage/", "/api/claim")) for method in route.methods}
     manage = {handler for (path, _), handler in handlers.items() if path.startswith("/api/manage/")}
@@ -22,7 +22,7 @@ def test_the_manage_and_claim_routes_are_the_routers_handlers(tmp_path):
 
 
 def test_the_settings_routes_are_the_routers_handlers_with_the_restart_state_on_the_hub(tmp_path):
-    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).fastapi
+    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).starlette
     handlers = {route.path: route.endpoint for route in app.routes
                 if getattr(route, "path", "").startswith("/api/settings/")}
     assert handlers == {"/api/settings/health": settings_routes.settings_health,

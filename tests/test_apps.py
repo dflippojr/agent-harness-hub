@@ -170,7 +170,7 @@ def test_app_display_redaction_preserves_both_inventory_views_and_revoke(claimed
 @pytest.mark.parametrize("credential", ["key", "verifier"])
 def test_app_display_exact_secrets_are_withheld_even_beyond_display_limit(claimed, fake_daemon, credential):
     verifier = "synthetic-verifier-sentinel"
-    store = claimed.client.app.fastapi.state.store
+    store = claimed.client.app.starlette.state.store
     store.update(claim={"verifier": verifier})
     secret = fake_daemon.hub_token if credential == "key" else verifier
     fake_daemon.apps_rows[0]["name"] = "x" * 220 + secret

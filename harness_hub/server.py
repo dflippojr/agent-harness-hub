@@ -13,9 +13,14 @@ import logging
 from importlib import resources
 
 import httpx
-from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from starlette.applications import Starlette
+from starlette.exceptions import HTTPException
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import FileResponse
+from starlette.routing import Mount
+from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__
@@ -32,7 +37,7 @@ from .routes import marketplace as marketplace_routes
 from .routes import overview as overview_routes
 from .routes import session as session_routes
 from .routes import settings as settings_routes
-from .routes.common import HubContext
+from .routes.common import HubContext, HubRoute, http_exception
 from .routes.common import error as _error
 from .routes.session import SIGNIN_COMMAND
 from .state import SERVER_FILE, StateStore, write_private
@@ -62,7 +67,7 @@ class HostCheck:
     def __init__(self, app: ASGIApp, allowed: frozenset[str]):
         self.app = app
         self.allowed = allowed
-        self.fastapi: FastAPI | None = None
+        self.starlette: Starlette | None = None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -103,7 +108,7 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
                             check=daemon_check(daemon, allow_insecure_http=settings.allow_insecure_http))
 
     @contextlib.asynccontextmanager
-    async def lifespan(_: FastAPI):
+    async def lifespan(_: Starlette):
         write_private(store.dir / SERVER_FILE, json.dumps({"url": settings.url, "version": __version__}) + "\n")
         # Before any call: how the daemon is verified, or the warning that it is not (--allow-insecure-http).
         level, notice = identity_notice(settings.daemon_url, daemon.check,
@@ -125,17 +130,9 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             await status.stop()
             await claims.stop()
 
-    app = FastAPI(title="Hub", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None,
-                  openapi_url=None)
-    app.state.claims = claims
-    app.state.store = store
-    app.state.sessions = sessions
-    app.state.inventory = inventory
-    app.state.hub = hub = HubContext(settings=settings, store=store, daemon=daemon, claims=claims, sessions=sessions,
-                                     inventory=inventory, peer_check=peer_check,
-                                     tuning=tuning)
+    hub = HubContext(settings=settings, store=store, daemon=daemon, claims=claims, sessions=sessions,
+                     inventory=inventory, peer_check=peer_check, tuning=tuning)
 
-    @app.middleware("http")
     async def require_owner(request: Request, call_next):
         path = request.url.path
         if not path.startswith("/api/"):
@@ -155,30 +152,36 @@ def create_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None
             return _error(401, "sign in first", signin_command=SIGNIN_COMMAND)
         return await call_next(request)
 
-    @app.get("/healthz", include_in_schema=False)
     async def healthz():
         return {"ok": True, "version": __version__}
 
-    session_routes.add_routes(app)
-
-    overview_routes.add_routes(app)
-
-    marketplace_routes.add_routes(app, hub)
-
-    apps_routes.add_routes(app)
-
-    settings_routes.add_routes(app)
-
-    session_routes.add_claim_routes(app)
-
-    @app.get("/", include_in_schema=False)
     async def index():
         return FileResponse(str(STATIC / "index.html"), headers={"cache-control": "no-cache"})
 
-    app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+    app = Starlette(
+        routes=[
+            HubRoute("/healthz", healthz, ["GET"]),
+            *session_routes.routes(),
+            *overview_routes.routes(),
+            *marketplace_routes.routes(hub),
+            *apps_routes.routes(),
+            *settings_routes.routes(),
+            *session_routes.claim_routes(),
+            HubRoute("/", index, ["GET"]),
+            Mount("/static", StaticFiles(directory=str(STATIC)), name="static"),
+        ],
+        middleware=[Middleware(BaseHTTPMiddleware, dispatch=require_owner)],
+        exception_handlers={HTTPException: http_exception},
+        lifespan=lifespan,
+    )
+    app.state.claims = claims
+    app.state.store = store
+    app.state.sessions = sessions
+    app.state.inventory = inventory
+    app.state.hub = hub
 
     identity = TailnetIdentity(ResponseGuard(app, claims.secrets), check=peer_check,
                                trust_unverified=settings.trust_unverified_identity_headers)
     served = HostCheck(identity, settings.allowed_hosts())
-    served.fastapi = app
+    served.starlette = app
     return served

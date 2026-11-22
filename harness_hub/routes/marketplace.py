@@ -8,8 +8,9 @@ import contextlib
 import time
 from typing import Any
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 from ..daemon import DaemonUnreachable
 from ..inventory import valid_inventory
@@ -27,6 +28,7 @@ from ..views import (
 )
 from .common import (
     HubContext,
+    HubRoute,
     concurrently,
     error,
     error_status,
@@ -205,14 +207,17 @@ async def checked_arm_slot(request: Request):
                         status_code=201)
 
 
-def add_routes(app: FastAPI, ctx: HubContext) -> None:
-    """Add the Marketplace routes to the app itself, in this order, as `session.add_routes` does (#190). `arm_slot`
-    closes over this Hub's consent lock, as it did in `create_app`, so the lock stays readable from the route."""
+def routes(ctx: HubContext) -> list[Route]:
+    """The Marketplace routes, in this order, for the app's own route table, as `session.routes` gives them (#190).
+    `arm_slot` closes over this Hub's consent lock, as it did in `create_app`, so the lock stays readable from the
+    route."""
     pairing_consent_lock = ctx.pairing_consent_lock
 
     async def arm_slot(request: Request):
         async with pairing_consent_lock:
             return await checked_arm_slot(request)
 
-    app.add_api_route("/api/marketplace", get_marketplace, methods=["GET"])
-    app.add_api_route("/api/marketplace/arm", arm_slot, methods=["POST"])
+    return [
+        HubRoute("/api/marketplace", get_marketplace, ["GET"]),
+        HubRoute("/api/marketplace/arm", arm_slot, ["POST"]),
+    ]

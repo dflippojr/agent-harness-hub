@@ -7,8 +7,9 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
 
 from .. import __version__
 from ..auth import SESSION_TTL_SECONDS
@@ -17,7 +18,7 @@ from ..guard import TOKEN_SHAPE
 from ..owners import SESSION_HEADER, UNREACHABLE, read_logins, signed_in
 from ..tailnet import login
 from ..views import REDACTED, claim_view
-from .common import HubContext, error, hub, json_body, unreachable
+from .common import HubContext, HubRoute, error, hub, json_body, unreachable
 
 log = logging.getLogger("harness_hub")
 
@@ -172,17 +173,20 @@ async def forget_claim(request: Request):
     return claim_view(ctx.claims)
 
 
+def routes() -> list[Route]:
+    """The `/api/session` routes, in this order, for the app's own route table: flat entries, not a nested router or
+    `Mount`, which would change the route table (#190)."""
+    return [
+        HubRoute("/api/session", get_session, ["GET"]),
+        HubRoute("/api/session", sign_in, ["POST"]),
+        HubRoute("/api/session", sign_out, ["DELETE"]),
+    ]
 
-def add_routes(app: FastAPI) -> None:
-    """Add the `/api/session` routes to the app itself, in this order. Not `include_router`: FastAPI 0.162 puts one
-    nested entry in `app.routes` for an included router, which would change the route table (#190)."""
-    app.add_api_route("/api/session", get_session, methods=["GET"])
-    app.add_api_route("/api/session", sign_in, methods=["POST"])
-    app.add_api_route("/api/session", sign_out, methods=["DELETE"])
 
-
-def add_claim_routes(app: FastAPI) -> None:
-    """Add the `/api/claim` routes, in this order, where they were in the route table: after Settings (#190)."""
-    app.add_api_route("/api/claim", get_claim, methods=["GET"])
-    app.add_api_route("/api/claim", start_claim, methods=["POST"])
-    app.add_api_route("/api/claim", forget_claim, methods=["DELETE"])
+def claim_routes() -> list[Route]:
+    """The `/api/claim` routes, in this order, where they were in the route table: after Settings (#190)."""
+    return [
+        HubRoute("/api/claim", get_claim, ["GET"]),
+        HubRoute("/api/claim", start_claim, ["POST"]),
+        HubRoute("/api/claim", forget_claim, ["DELETE"]),
+    ]

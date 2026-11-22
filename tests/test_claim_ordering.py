@@ -61,7 +61,7 @@ async def scenario(tmp_path, monkeypatch, reply, exercise):
     app = create_app(Settings(state_dir=tmp_path, daemon_url="https://daemon.test", poll_seconds=3600,
                               claim_file=tmp_path / "claim.json"),
                      transport=httpx.MockTransport(lambda _: httpx.Response(503, json={"detail": "offline"})))
-    claims = app.fastapi.state.claims
+    claims = app.starlette.state.claims
     claims.clock = lambda: 1000
     claims._lock = ObservedLock()
     daemon = ControlledDaemon(reply)
@@ -639,7 +639,7 @@ def test_lifespan_starts_and_drains_claim_poller(tmp_path, monkeypatch, stored_p
     async def exercise(claims, daemon, browser):
         if not stored_pending:
             claims.store.update(claim=None)
-        app = browser._transport.app.fastapi
+        app = browser._transport.app.starlette
         async with app.router.lifespan_context(app):
             await daemon.entered.wait()
             assert daemon.starts == (0 if stored_pending else 1)

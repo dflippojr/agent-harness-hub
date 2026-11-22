@@ -10,7 +10,7 @@ from harness_hub.server import create_app
 
 
 def hub_state(path):
-    return create_app(Settings(daemon_url="https://daemon.test", state_dir=path)).fastapi.state.hub
+    return create_app(Settings(daemon_url="https://daemon.test", state_dir=path)).starlette.state.hub
 
 
 def test_each_hub_keeps_its_own_marketplace_state(tmp_path):
@@ -24,13 +24,13 @@ def test_each_hub_keeps_its_own_marketplace_state(tmp_path):
 
 
 def test_the_marketplace_listing_is_the_routers_handler(tmp_path):
-    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).fastapi
+    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).starlette
     [route] = [route for route in app.routes if getattr(route, "path", "") == "/api/marketplace"]
     assert route.endpoint is marketplace_routes.get_marketplace and route.methods == {"GET"}
 
 
 def test_arming_is_the_routers_handler_under_the_hubs_lock(tmp_path):
-    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).fastapi
+    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).starlette
     [route] = [route for route in app.routes if getattr(route, "path", "") == "/api/marketplace/arm"]
     arm = route.endpoint
     assert arm.__module__ == marketplace_routes.__name__ and arm.__name__ == "arm_slot" and route.methods == {"POST"}

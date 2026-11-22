@@ -568,10 +568,10 @@ def test_the_arguments_reach_the_settings(tmp_path, monkeypatch):
     seen = {}
     monkeypatch.setattr("uvicorn.run", lambda app, **kw: seen.update(app=app))
     assert cli.main(["--allow-insecure-http", "--state-dir", str(tmp_path / "a")]) == 0
-    assert seen["app"].fastapi.state.hub.settings.allow_insecure_http is True
-    assert seen["app"].fastapi.state.hub.daemon.check is None
+    assert seen["app"].starlette.state.hub.settings.allow_insecure_http is True
+    assert seen["app"].starlette.state.hub.daemon.check is None
     assert cli.main(["--daemon-owner", other_owner(), "--state-dir", str(tmp_path / "b")]) == 0
-    check = seen["app"].fastapi.state.hub.daemon.check
+    check = seen["app"].starlette.state.hub.daemon.check
     assert check is not None and check.owner == resolve_owner(other_owner())
 
 
@@ -703,7 +703,7 @@ def test_the_opt_in_keeps_the_old_behaviour_and_warns_at_startup(tmp_path, caplo
             daemon.approve(started["request_id"])
             hub.wait_for("claimed")
             body = hub.get("/api/overview").json()
-            assert hub.client.app.fastapi.state.hub.daemon.check is None
+            assert hub.client.app.starlette.state.hub.daemon.check is None
         assert body["error"] == "" and body["ownership"] is not None
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert any("--allow-insecure-http" in text and url in text for text in warnings), warnings
@@ -717,7 +717,7 @@ def test_the_default_verifies_and_works_end_to_end_with_a_daemon_of_this_account
         with caplog.at_level(logging.INFO), real_hub(tmp_path, url) as hub:
             hub.sign_in()
             started = hub.post("/api/claim")
-            check = hub.client.app.fastapi.state.hub.daemon.check
+            check = hub.client.app.starlette.state.hub.daemon.check
             if LOOKUP:
                 daemon.approve(started.json()["request_id"])
                 hub.wait_for("claimed")

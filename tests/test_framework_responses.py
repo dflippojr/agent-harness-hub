@@ -74,3 +74,12 @@ def test_head_on_a_get_only_route_is_405(claimed, path):
     reply = claimed.client.head(path)
     assert (reply.status_code, reply.headers["content-type"], reply.headers["allow"]) == (405, JSON, "GET")
     assert reply.headers["content-length"] == str(len(NOT_ALLOWED))
+
+
+def test_the_query_string_binds_no_handler_argument(claimed, fake_daemon):
+    # FastAPI bound pairing_action's `rid` and `action` from the query string on GET /api/pairing; only a path binds
+    # them now, so a query string cannot turn the listing into a decision.
+    before = len(fake_daemon.sent)
+    reply = claimed.client.get("/api/pairing?rid=pr-synthetic&action=deny")
+    assert reply.status_code == 200 and "requests" in reply.json(), reply.text
+    assert [url for url in fake_daemon.sent[before:] if "deny" in url] == []

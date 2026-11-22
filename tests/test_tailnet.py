@@ -551,7 +551,7 @@ def discovery_reads(fake_daemon) -> int:
 
 def removal(hub, fake_daemon, how: str):
     """Take a signed-in login's ownership away in one of the ways the daemon can say no; returns an undo."""
-    claims = hub.client.app.fastapi.state.claims
+    claims = hub.client.app.starlette.state.claims
     tokens = set(fake_daemon.live_tokens)
     if how == "unlisted":
         fake_daemon.allowed_logins = ["partner@example.test"]
@@ -621,7 +621,7 @@ def test_a_tailnet_tab_that_joined_a_link_session_ends_alone(tailnet_hub, fake_d
     tailnet_hub.retune(allowed_logins_seconds=0.0)
     link = tailnet_hub.sign_in().headers["x-hub-session"]
     cookie = tailnet_hub.client.cookies["hub_session"]
-    sessions = tailnet_hub.client.app.fastapi.state.sessions
+    sessions = tailnet_hub.client.app.starlette.state.sessions
     expiry = sessions._sessions[auth._digest(cookie)][0]
     joined = tailnet_sign_in(tailnet_hub)
     assert joined.status_code == 204 and "set-cookie" not in joined.headers  # the same session, a new tab
@@ -683,7 +683,7 @@ def grace_clock(hub) -> list[float]:
     """Drive the Hub's monotonic session clock, which times the grace, by hand; returns the list whose one value is
     now."""
     now = [time.monotonic()]
-    hub.client.app.fastapi.state.sessions.monotonic = lambda: now[0]
+    hub.client.app.starlette.state.sessions.monotonic = lambda: now[0]
     return now
 
 
@@ -781,7 +781,7 @@ def test_a_wall_clock_step_back_does_not_lengthen_the_grace(tailnet_hub, fake_da
     tailnet_hub.retune(allowed_logins_seconds=0.0)
     now = grace_clock(tailnet_hub)
     wall = [time.time()]
-    tailnet_hub.client.app.fastapi.state.sessions.clock = lambda: wall[0]
+    tailnet_hub.client.app.starlette.state.sessions.clock = lambda: wall[0]
     owner_tab(tailnet_hub)
     fake_daemon.down = True
     now[0] += DEFAULT_TUNING.outage_grace_seconds + 1
@@ -830,7 +830,7 @@ def end_during_discovery_read(monkeypatch, end) -> list[int]:
 def test_a_binding_that_ends_during_the_login_check_authorizes_nothing(tailnet_hub, fake_daemon, monkeypatch, how,
                                                                        route):
     tailnet_hub.retune(allowed_logins_seconds=0.0)
-    sessions = tailnet_hub.client.app.fastapi.state.sessions
+    sessions = tailnet_hub.client.app.starlette.state.sessions
     wall = [time.time()]
     sessions.clock = lambda: wall[0]
     tab = owner_tab(tailnet_hub)
@@ -859,7 +859,7 @@ def test_a_binding_that_ends_during_the_login_check_authorizes_nothing(tailnet_h
 def test_a_tailnet_sign_in_never_joins_a_session_that_ends_during_its_check(tailnet_hub, fake_daemon, monkeypatch,
                                                                               how):
     """Tailnet sign-in awaits the same read; a session that ends meanwhile is not joined, and a new one starts."""
-    sessions = tailnet_hub.client.app.fastapi.state.sessions
+    sessions = tailnet_hub.client.app.starlette.state.sessions
     wall = [time.time()]
     sessions.clock = lambda: wall[0]
     link = tailnet_hub.sign_in().headers["x-hub-session"]
