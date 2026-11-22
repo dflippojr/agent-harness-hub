@@ -60,7 +60,7 @@ def check(doc: dict[str, Any], key: str, endpoint: Endpoint) -> Result:
     if op is None:
         return Result(missing=[f"{key}: not in the daemon's OpenAPI document"])
     result = Result()
-    walker = _Walker(doc, result)
+    walker = _Walker(doc.get("components", {}).get("schemas", {}), result)
     if endpoint.request is not None:
         body = op.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema")
         if body is None:
@@ -114,9 +114,8 @@ def _names_fields(shape: Shape | None) -> bool:
 
 
 class _Walker:
-    def __init__(self, doc: dict[str, Any], result: Result):
-        self.schemas = doc.get("components", {}).get("schemas", {})
-        self.result = result
+    def __init__(self, schemas: dict[str, Any], result: Result):
+        self.schemas, self.result = schemas, result
 
     def resolve(self, schema: Any) -> dict[str, Any]:
         seen = set()
@@ -167,7 +166,7 @@ class _Walker:
             else:
                 self.result.missing.append(f"{where.rstrip('.*[]')}: not an {kind} in the document")
             return
-        self._best([lambda r, s=s: _Walker(self.schemas_doc(), r).compare(inner, s, where) for s in schemas])
+        self._best([lambda r, s=s: _Walker(self.schemas, r).compare(inner, s, where) for s in schemas])
 
     def _obj(self, shape: Obj, alts: list[dict[str, Any]], where: str) -> None:
         objects = [alt for alt in alts if alt.get("properties") or _map_value(alt)]
@@ -183,7 +182,7 @@ class _Walker:
             props, rest = alt.get("properties", {}), _map_value(alt)
 
             def run(result: Result) -> None:
-                walker = _Walker(self.schemas_doc(), result)
+                walker = _Walker(self.schemas, result)
                 for name in sorted(shape.fields()):
                     schema = props.get(name, rest)
                     if schema is None:
@@ -203,9 +202,6 @@ class _Walker:
         best = min(results, key=lambda r: (len(r.missing), len(r.unchecked)))
         self.result.missing += best.missing
         self.result.unchecked += best.unchecked
-
-    def schemas_doc(self) -> dict[str, Any]:
-        return {"components": {"schemas": self.schemas}}
 
 
 def _map_value(schema: dict[str, Any]) -> dict[str, Any] | None:
