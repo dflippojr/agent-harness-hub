@@ -388,7 +388,7 @@ def test_boolean_schemas_at_every_position(key, endpoint, missing, unchecked):
 
 
 def test_the_scan_counts_boolean_schemas_and_every_non_schema():
-    assert openapi.boolean_schemas(BOOLS) == 9
+    assert openapi.boolean_schemas(BOOLS) == 12
     assert openapi.unmodeled_forms(BOOLS) == {"a string where a schema belongs": 1}
     assert openapi.boolean_schemas(DOC) == 0
 

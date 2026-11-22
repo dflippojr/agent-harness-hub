@@ -67,16 +67,19 @@ When it shows the case first did (#269 found GitHub member sign-in's preflight a
 correct the contract from the daemon's code; when the document is what is wrong, report it on agent-harness. Never
 drop the check.
 
-Two things are listed, not failed: a path whose replies are still undocumented (an empty schema), and a place inside a
-documented reply that the document leaves open (an object with no properties) while the contract names fields beneath
-it. Each shows as an `UncheckedContractField` warning in the run's summary. Error replies are not compared: the
+Each success status the contract lists is classified on its own: one the document lacks fails; one it documents with
+no body (a `204`) fails where the contract reads a body; one whose schema is `{}` is unchecked; any other is compared.
+The request's and query's misses always count. Two things are listed, not failed: a reply whose schema is still
+undocumented (`{}`), and a place inside a documented reply that the document leaves open (an object with no
+properties, or `true`) while the contract names fields beneath it. Each shows as an `UncheckedContractField` warning in the run's summary. Error replies are not compared: the
 document has only FastAPI's 422 there.
 
 The walk compares only the schema forms it models (`FORMS` in `openapi.py`): a lone `$ref`, a lone `anyOf` or `oneOf`
 (it branches on either), an object, an array, a scalar or an untyped schema, each with annotations and value-only
-constraints beside it. Any other form anywhere it reaches (`allOf`, a union beside structural keywords, a type list, an
-unknown keyword) fails the endpoint, so the check never guesses. The daemon's document uses no other form, and an e2e
-case pins that; when it gains one, teach `openapi.py` to compare it. Unit cases in the same file pin the walk on
+constraints beside it, or a boolean schema (`true` is open; `false` admits no value, so every contract name beneath it
+fails). Any other form anywhere it reaches (`allOf`, a union beside structural keywords, a type list, an
+unknown keyword) fails the endpoint, so the check never guesses. The daemon's document uses no other form, and e2e
+cases pin that, its boolean schemas (none) and its bodyless success replies (eighteen `204`s); when it gains one, teach `openapi.py` to compare it. Unit cases in the same file pin the walk on
 synthetic documents, and one `[daemon]` case takes fields out of the real document to show each kind of miss fails.
 
 ## Host commands

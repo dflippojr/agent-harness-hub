@@ -47,7 +47,7 @@ UNIONS = ("anyOf", "oneOf")
 
 @dataclass
 class Result:
-    documented: bool = True  # False: the path's success replies have no schema yet
+    documented: bool = True  # False: a success reply the contract reads has no schema yet
     missing: list[str] = field(default_factory=list)  # contract fields the document lacks: each one fails
     unchecked: list[str] = field(default_factory=list)  # contract fields beneath a place the document leaves open
     # Places the walk met a schema form it does not model (allOf, a union beside structural keywords, ...): each fails
@@ -89,26 +89,31 @@ def check(doc: dict[str, Any], key: str, endpoint: Endpoint) -> Result:
     if isinstance(endpoint.params, Obj):
         query = {p["name"] for p in op.get("parameters", []) if p.get("in") == "query"}
         result.missing += [f"query {name}" for name in sorted(endpoint.params.fields() - query)]
-    replies = {status: _reply_schema(reply) for status, reply in op.get("responses", {}).items()}
-    success = {status: shape for status, shape in endpoint.responses.items() if status < 400}
-    bodies = {status: shape for status, shape in success.items() if shape is not None}
-    if bodies and not any(schema for status, schema in replies.items() if status.startswith("2")):
-        # Still undocumented (agent-harness#1017): the operation describes no success reply, whatever the contract
-        # expects, so there is nothing to hold the reply to, and no reply status either.
-        result.documented = False
-        result.unchecked += [f"{status} $: undocumented reply" for status in bodies]
-        return result
-    for status, shape in success.items():
-        if str(status) not in replies:
+    # Each contract success status on its own, with no early return (review round 4, #271): the request's, the
+    # query's and every uncompared entry always count, whatever the replies are.
+    replies = op.get("responses", {})
+    for status, shape in endpoint.responses.items():
+        if status >= 400:
+            continue
+        reply = replies.get(str(status))
+        if reply is None:
             result.missing.append(f"{status}: not a documented reply status")
-        elif shape is not None:
-            walker.compare(shape, replies[str(status)], f"{status} $")
+            continue
+        if shape is None:
+            continue  # the contract reads no body here
+        content = reply.get("content") or {}
+        if not content:
+            result.missing.append(f"{status} $: documented with no body")
+        elif "application/json" not in content:
+            result.missing.append(f"{status} $: documented without a JSON body")
+        elif (schema := content["application/json"].get("schema", {})) == {}:
+            # Still undocumented (agent-harness#1017): nothing to hold this reply to.
+            result.documented = False
+            result.unchecked.append(f"{status} $: undocumented reply")
+        else:
+            walker.compare(shape, schema, f"{status} $")
     result.missing += [entry for entry in dict.fromkeys(result.uncompared) if entry not in result.missing]
     return result
-
-
-def _reply_schema(reply: dict[str, Any]) -> dict[str, Any]:
-    return reply.get("content", {}).get("application/json", {}).get("schema") or {}
 
 
 def _names(shape: Shape | None) -> set[str]:
@@ -145,11 +150,14 @@ class _Walker:
         anyOf or oneOf: a hand interpretation of anything else lost a constraint in each of three review rounds
         (#271), and the daemon's document uses nothing else (test_the_daemon_document_uses_only_modeled_forms). Any
         other form, at any hop of a $ref chain or in any branch, is recorded as uncompared, which fails the endpoint,
-        and offers no alternative to compare against."""
+        and offers no alternative to compare against. A boolean schema is modeled: `true` is open (it is `{}`), and
+        `false` admits no value, so it offers no alternative either (compare() then misses every name beneath it)."""
         seen = set()
         while True:
-            if not isinstance(schema, dict):
+            if schema is True:
                 return [{}]
+            if schema is False:
+                return []
             form = unmodeled(schema)
             if form:
                 self.result.uncompared.append(f"{where}: {form} {UNCOMPARED}")
@@ -178,14 +186,18 @@ class _Walker:
         # A branch here was unmodeled: the value may well be that branch, so the others' kind is no mismatch.
         self.dropped = len(self.result.uncompared) > before
         if not alts:
-            return  # an unmodeled form, already recorded as uncompared
+            if not self.dropped:  # every alternative is `false`: no value can be here
+                self.result.missing += _beneath(shape, where)
+            return  # otherwise an unmodeled form, already recorded as uncompared
         if isinstance(shape, Obj):
             self._obj(shape, alts, where)
         elif isinstance(shape, ListOf):
             items = [alt["items"] for alt in alts if alt.get("type") == "array" and "items" in alt]
             self._branch(shape.item, items, alts, "array", f"{where}[]")
         elif isinstance(shape, MapOf):
-            values = [_map_value(alt) for alt in alts if _map_value(alt)]
+            # a closed object with no properties is a map that admits no value
+            values = [_map_value(alt) or False for alt in alts
+                      if _map_value(alt) or (_closed(alt) and not alt.get("properties"))]
             self._branch(shape.value, values, alts, "object", f"{where}.*")
 
     def _branch(self, inner: Shape, schemas: list[Any], alts: list[dict[str, Any]], kind: str, where: str) -> None:
@@ -215,13 +227,21 @@ class _Walker:
                 walker = _Walker(self.schemas, result)
                 for name in sorted(shape.fields()):
                     schema = props.get(name, rest)
-                    if schema is None:
+                    if schema is None or walker.never(schema):
                         result.missing.append(f"{where}.{name}")
                     else:
                         walker.compare((shape.required | shape.optional)[name], schema, f"{where}.{name}")
             return run
 
         self._best([against(alt) for alt in objects])
+
+    def never(self, schema: Any) -> bool:
+        """Whether a schema, through its $ref chain, is `false`: a field under it cannot be sent."""
+        seen = set()
+        while isinstance(schema, dict) and set(schema) - ANNOTATIONS == {"$ref"} and schema["$ref"] not in seen:
+            seen.add(schema["$ref"])
+            schema = self.schemas.get(schema["$ref"].rsplit("/", 1)[-1])
+        return schema is False
 
     def _best(self, runs) -> None:
         results = []
@@ -235,8 +255,13 @@ class _Walker:
         self.result.uncompared += [entry for r in results for entry in r.uncompared]  # every branch's, not the best's
 
 
-def unmodeled(schema: dict[str, Any]) -> str | None:
+def unmodeled(schema: Any) -> str | None:
     """The form of one schema node, when the walk does not model it: None for a modeled form."""
+    if isinstance(schema, bool):
+        return None
+    if not isinstance(schema, dict):
+        kind = {str: "a string", list: "a list", type(None): "null"}.get(type(schema), "a number")
+        return f"{kind} where a schema belongs"
     keys = set(schema) - ANNOTATIONS
     if "allOf" in keys:
         return "allOf"
@@ -257,47 +282,73 @@ def unmodeled(schema: dict[str, Any]) -> str | None:
     if kind == "object" and "additionalProperties" in keys and not isinstance(schema["additionalProperties"],
                                                                                 bool | dict):
         extra.add("additionalProperties")
-    if kind == "array" and "items" in keys and not isinstance(schema["items"], dict):
-        extra.add("items")
     if not extra:
         return None
     name = kind or "untyped"
     return f"{', '.join(sorted(extra))} in {'an' if name[0] in 'aeiou' else 'a'} {name} schema"
 
 
-def unmodeled_forms(doc: dict[str, Any]) -> Counter:
-    """Every schema form in a document the walk does not model, counted: its components, and each operation's
-    parameters, request bodies and replies, at every depth a schema keyword nests one."""
-    found: Counter = Counter()
-
-    def visit(node: Any) -> None:
+def schema_nodes(doc: dict[str, Any]):
+    """Every schema node in a document: its components, and each operation's parameters, request bodies and replies,
+    at every depth a schema keyword nests one. An object's boolean `additionalProperties` is part of the object's form,
+    not a node of its own."""
+    def walk(node: Any):
+        yield node
         if not isinstance(node, dict):
             return
-        if form := unmodeled(node):
-            found[form] += 1
         for word in ("allOf", "anyOf", "oneOf", "prefixItems"):
             for part in node.get(word) or []:
-                visit(part)
+                yield from walk(part)
         for word in ("properties", "patternProperties", "$defs", "definitions"):
             for part in (node.get(word) or {}).values():
-                visit(part)
-        for word in ("additionalProperties", "items", "not", "if", "then", "else", "contains", "propertyNames"):
-            visit(node.get(word))
+                yield from walk(part)
+        if isinstance(node.get("additionalProperties"), dict):
+            yield from walk(node["additionalProperties"])
+        for word in ("items", "not", "if", "then", "else", "contains", "propertyNames"):
+            if word in node:
+                yield from walk(node[word])
 
     for schema in doc.get("components", {}).get("schemas", {}).values():
-        visit(schema)
+        yield from walk(schema)
     for item in doc.get("paths", {}).values():
         for op in item.values():
             if not isinstance(op, dict):
                 continue
-            for parameter in op.get("parameters", []):
-                visit(parameter.get("schema"))
-            for media in op.get("requestBody", {}).get("content", {}).values():
-                visit(media.get("schema"))
-            for reply in op.get("responses", {}).values():
-                for media in reply.get("content", {}).values():
-                    visit(media.get("schema"))
-    return found
+            media = [*op.get("requestBody", {}).get("content", {}).values(),
+                     *(m for reply in op.get("responses", {}).values() for m in (reply.get("content") or {}).values())]
+            for holder in [*op.get("parameters", []), *media]:
+                if "schema" in holder:
+                    yield from walk(holder["schema"])
+
+
+def unmodeled_forms(doc: dict[str, Any]) -> Counter:
+    """Every schema form in a document the walk does not model, counted."""
+    return Counter(form for node in schema_nodes(doc) if (form := unmodeled(node)))
+
+
+def boolean_schemas(doc: dict[str, Any]) -> int:
+    """How many schema nodes are `true` or `false`."""
+    return sum(isinstance(node, bool) for node in schema_nodes(doc))
+
+
+def bodyless_replies(doc: dict[str, Any]) -> Counter:
+    """The documented success replies with no content, counted by status."""
+    return Counter(status for item in doc.get("paths", {}).values() for op in item.values() if isinstance(op, dict)
+                   for status, reply in op.get("responses", {}).items()
+                   if status.startswith("2") and not reply.get("content"))
+
+
+def _beneath(shape: Shape | None, where: str) -> list[str]:
+    """Every contract name directly beneath a place that admits no value."""
+    if isinstance(shape, Obj):
+        return [f"{where}.{name}" for name in sorted(shape.fields())]
+    if isinstance(shape, Union):
+        return list(dict.fromkeys(path for option in shape.options for path in _beneath(option, where)))
+    if isinstance(shape, ListOf):
+        return _beneath(shape.item, f"{where}[]")
+    if isinstance(shape, MapOf):
+        return _beneath(shape.value, f"{where}.*")
+    return []
 
 
 def _map_value(schema: dict[str, Any]) -> dict[str, Any] | None:

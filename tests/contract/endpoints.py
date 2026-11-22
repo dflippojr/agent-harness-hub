@@ -310,7 +310,8 @@ ENDPOINTS: dict[str, Endpoint] = {
     f"POST {ADMIN}/remote-control/{{project}}/trust": _admin(
         {200: Obj({"message": STR}, optional={"pid": INT}), 400: ERROR, 409: ERROR, **ABSENT}, EMPTY),
     f"DELETE {ADMIN}/remote-control/folders/{{slug}}": _admin({200: Obj({"removed": BOOL}), **ABSENT}, EMPTY),
-    f"POST {ADMIN}/remote-control/discovery/scans": _admin({200: SCAN, 201: SCAN, 409: ERROR, **ABSENT}, EMPTY),
+    # discovery_api.py start() returns the scan view: FastAPI's 200, new scan or running one (#269: no 201).
+    f"POST {ADMIN}/remote-control/discovery/scans": _admin({200: SCAN, 409: ERROR, **ABSENT}, EMPTY),
     f"GET {ADMIN}/remote-control/discovery/scans/{{scan_id}}": _admin({200: SCAN, **ABSENT}),
     f"DELETE {ADMIN}/remote-control/discovery/scans/{{scan_id}}": _admin({200: SCAN, **ABSENT}, EMPTY),
     f"POST {ADMIN}/remote-control/discovery/scans/{{scan_id}}/candidates/{{candidate_id}}/promote": _admin(
