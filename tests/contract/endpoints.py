@@ -113,7 +113,10 @@ COMMIT = Obj(optional={"head": STR, "path": STR, "summary": STR, "at": NUM, "pus
 MEMORY = Obj({"enabled": BOOL, "profile": STR, "profile_max_chars": INT},
              optional={"last_commit": COMMIT | None, "refresh_error": STR | None})
 PREFLIGHT = Obj({"ok": BOOL | None, "problems": ListOf(STR), "checked_at": NUM | None})
-GITHUB = Obj({"configured": BOOL, "enabled": BOOL, "preflight": PREFLIGHT | None})
+# GitHub member sign-in's own preflight (harness/github_auth.py Preflight.public()): a code and its message, not
+# Google's problem list (#269: the OpenAPI document showed it; the [daemon] case sees only null, unconfigured).
+GITHUB_PREFLIGHT = Obj({"ok": BOOL, "error": STR, "message": STR})
+GITHUB = Obj({"configured": BOOL, "enabled": BOOL, "preflight": GITHUB_PREFLIGHT | None})
 GOOGLE_SIGNIN = Obj({"enabled": BOOL, "ready": BOOL, "preflight": PREFLIGHT | None})
 
 # Owner administration ------------------------------------------------------------------------------------------------
@@ -150,6 +153,14 @@ PROPOSAL = Obj({
     "examples": ListOf(Obj({"prompt": STR}, optional={"expected": STR, "expected_behavior": STR})),
     "source_session_id": STR, "diff": STR})
 SKILLS = Obj({"enabled": BOOL, "proposals": ListOf(PROPOSAL), "installed": ListOf(SKILL)})
+# The installed version as a bundle another daemon can import (harness_modules/skills/service.py export_bundle()): no
+# install state (#269). A version stored without a manifest exports `{}`.
+MANIFEST = Obj(optional={"slug": STR, "title": STR, "purpose": STR, "activation_suggestion": STR, "content_hash": STR,
+                         "validator_version": STR})
+EXPORT = Obj({"slug": STR, "title": STR, "purpose": STR, "version": INT, "content_hash": STR, "skill_md": STR,
+              "references": ListOf(Obj({"path": STR, "content": STR})),
+              "examples": ListOf(Obj({"prompt": STR}, optional={"expected": STR, "expected_behavior": STR})),
+              "manifest": MANIFEST})
 REVIEW_STARTED = Obj({"job_id": STR, "usage_notice": STR, "reviewer_model": STR})
 CLEANUP = Obj({"at": NUM}, optional={
     "containers_removed": INT, "workspaces_removed": INT, "orphans_removed": INT, "kept": INT, "apps_erased": INT,
@@ -282,7 +293,7 @@ ENDPOINTS: dict[str, Endpoint] = {
                                                     Obj({"projects": ListOf(STR)})),
     f"POST {ADMIN}/skills/{{slug}}/rollback": _admin({200: SKILL, 400: ERROR, 404: ERROR, 409: ERROR}, EMPTY),
     f"POST {ADMIN}/skills/{{slug}}/uninstall": _admin({200: Obj({"ok": BOOL}), 400: ERROR, 404: ERROR}, EMPTY),
-    f"GET {ADMIN}/skills/{{slug}}/export": _admin({200: SKILL, 400: ERROR, 404: ERROR}),
+    f"GET {ADMIN}/skills/{{slug}}/export": _admin({200: EXPORT, 400: ERROR, 404: ERROR}),
     f"GET {ADMIN}/maintenance": _admin({200: MAINTENANCE}),
     f"POST {ADMIN}/maintenance/cleanup": _admin({200: CLEANUP, 409: ERROR}, EMPTY),
     f"POST {ADMIN}/maintenance/backup": _admin({200: BACKUP, 409: ERROR, 500: ERROR, **ABSENT}, EMPTY),

@@ -50,6 +50,7 @@ def register_settings(app, fake, owner):
     fake.settings_calls = []
     fake.mode = "off"
     fake.github_enabled = False
+    fake.github_preflight = None  # null until GitHub member sign-in is configured, as on a fresh daemon
     fake.backend = {"name": "sample", "model": "sample-model", "effort": "medium", "available": True,
                     "popular_models": [{"id": "sample-model", "label": "Sample"}]}
     fake.profile = "Synthetic profile"
@@ -153,7 +154,7 @@ def register_settings(app, fake, owner):
         if path == "github-member-auth":
             if body is not None:
                 fake.github_enabled = body["enabled"]
-            return {"configured": True, "enabled": fake.github_enabled, "preflight": None,
+            return {"configured": True, "enabled": fake.github_enabled, "preflight": fake.github_preflight,
                     "members": [{"credential": "provider-secret-sentinel"}]}
         if path == "google-signin":
             return {"enabled": True, "ready": True, "client_secret": "provider-secret-sentinel",

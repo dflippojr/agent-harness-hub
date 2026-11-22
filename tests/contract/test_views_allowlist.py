@@ -27,13 +27,12 @@ from .shapes import ANY, NULL, ListOf, MapOf, Obj, Shape, Union
 #
 # Every entry below is a field the daemon sends, at the pin and at the README's minimum daemon (aa5a904), in a reply
 # no disposable daemon can produce: its `[daemon]` case is a `daemon_cannot` skip or reads the module switched off. A
-# contract field is one a `[daemon]` case proves, so these wait here. Move one into tests/contract/endpoints.py when a
-# case can reach its reply.
+# contract field is one a `[daemon]` case or the daemon's OpenAPI document (test_openapi_subset.py, #269) proves, so
+# these wait here. Move one into tests/contract/endpoints.py when a case can reach its reply or the document lists it.
 _REMOTE = ("harness_modules/remote_control/service.py RemoteControl.status() sends it in folder rows; Remote Control "
            "needs Claude Code on the daemon host, so the [daemon] case skips")
 _PROPOSAL = ("harness_modules/skills/service.py public_proposal() sends it in every proposal; a proposal comes from "
              "an agent session, so the [daemon] case skips")
-_MANIFEST = _PROPOSAL.replace("in every proposal", "in the proposal read (include_body)")
 ALLOWED_EXTRA: dict[str, str] = {
     "FOLDER.invalid": _REMOTE + " (a managed folder that is unusable, or 'slug_conflict').",
     "FOLDER.owner_only": _REMOTE + " (true for a folder discovery added).",
@@ -45,9 +44,6 @@ ALLOWED_EXTRA: dict[str, str] = {
     "SKILL.target_slug": _PROPOSAL + " (the installed skill a proposal updates, or '').",
     "SKILL.example_count": _PROPOSAL + ".",
     "SKILL.reference_count": _PROPOSAL + ".",
-    "SKILL.manifest": _MANIFEST + ".",
-    **{f"SKILL.manifest.{key}": _MANIFEST + f"; SkillStore._propose_locked() builds the manifest with `{key}`."
-       for key in ("slug", "title", "purpose", "activation_suggestion", "content_hash", "validator_version")},
     "MAINTENANCE.image_archive.bytes": "harness_modules/images/archive.py ImageArchive.health() sends it; the "
     "disposable daemon runs without the images module, so GET /maintenance answers only {\"enabled\": false} there.",
 }
@@ -178,7 +174,7 @@ def test_an_object_where_the_contract_has_a_scalar_is_caught(monkeypatch):
 
 
 def test_a_name_beneath_an_unlisted_one_needs_its_own_reason(monkeypatch):
-    """ALLOWED_EXTRA's SKILL.manifest does not cover a new key inside the manifest."""
+    """A manifest on a reply whose contract has none (the proposal list) is unlisted, and so is every key inside."""
     manifest = {**views.SKILL["manifest"], "typo": views.TEXT}
     monkeypatch.setattr(views, "SKILL", MappingProxyType({**views.SKILL, "manifest": manifest}))
     monkeypatch.setitem(views.SCHEMAS, "proposal", views.SKILL)

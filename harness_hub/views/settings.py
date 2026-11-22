@@ -84,9 +84,12 @@ def preflight_view(value: Any) -> dict | None:
     if not isinstance(value, dict):
         return None
     problems = _list(value.get("problems"))
-    return {"ok": _bool(value.get("ok")),
-            "problems": [display_text(v, 64, redact=WORD) for v in problems[:32] if isinstance(v, str)],
-            "checked_at": _num(value.get("checked_at"))}
+    shown = [display_text(v, 64, redact=WORD) for v in problems[:32] if isinstance(v, str)]
+    if not problems and value.get("ok") is False:
+        # GitHub member sign-in reports one code and its message, not Google's list (github_auth.py, #269).
+        detail = value.get("message") or value.get("error")
+        shown = [display_text(detail, 2000, redact=WORD)] if isinstance(detail, str) and detail else []
+    return {"ok": _bool(value.get("ok")), "problems": shown, "checked_at": _num(value.get("checked_at"))}
 
 
 def backend_view(value: Any) -> dict:

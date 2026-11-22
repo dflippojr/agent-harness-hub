@@ -246,10 +246,11 @@ def test_proposal_and_export_preserve_examples_and_all_hash_covered_fields(claim
         reply = call(claimed, operation)
         assert reply.status_code == 200
         shown = reply.json()
-        for key in ("slug", "title", "purpose", "activation_suggestion", "skill_md", "references", "examples"):
+        for key in ("slug", "title", "purpose", "skill_md", "references", "examples"):
             assert shown[key] == fake_daemon.proposal[key]
-        assert shown["source_session_id"] == "s-synthetic"
         if operation == "proposal":
+            assert shown["activation_suggestion"] == fake_daemon.proposal["activation_suggestion"]
+            assert shown["source_session_id"] == "s-synthetic"
             assert shown["review_complete"] is True
 
 

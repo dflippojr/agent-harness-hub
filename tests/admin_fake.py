@@ -233,9 +233,14 @@ def register_administration(app, fake, owner):
                 fake.skill["enabled"] = action == "enable"
             if action == "projects":
                 fake.skill["projects"] = body["projects"]
-            reply = (
-                {"ok": True} if action == "uninstall" else {**fake.skill, **(PROPOSAL if action == "export" else {})}
-            )
+            if action == "uninstall":
+                reply = {"ok": True}
+            elif action == "export":  # the daemon's bundle (export_bundle()): the installed version, no install state
+                reply = {key: fake.proposal[key] for key in ("slug", "title", "purpose", "content_hash", "skill_md",
+                                                             "references", "examples", "manifest")}
+                reply["version"] = fake.skill["version"]
+            else:
+                reply = fake.skill
         elif path == "maintenance":
             reply = {
                 "free_gb": 10.0,

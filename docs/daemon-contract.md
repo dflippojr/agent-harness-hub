@@ -55,6 +55,24 @@ the reason. Keep these to what truly cannot be produced.
   `ALLOWED_EXTRA` with a reason, so a view can no longer wait for a name the daemon never sends (#88). A reply
   described as `MapOf(ANY)` names no fields, and the view beneath it is not checked.
 
+## The daemon's OpenAPI document
+
+A `[daemon]` case proves only the states a disposable daemon reaches: a reply it cannot produce (`daemon_cannot`), or
+a field it sends only sometimes, is never compared. agent-harness publishes `tools/openapi/openapi.json` with a
+documented model per route (agent-harness#1017), so `tests/contract/test_openapi_subset.py` (marked `e2e`, #269)
+holds every field the contract lists to that document in the same checkout: request fields, query fields and the
+fields of each success reply, at any depth, by name (`tests/contract/openapi.py`). Types, nullability and
+required-ness stay with the `[daemon]` cases. A contract field the document lacks fails, named by endpoint and path.
+When it shows the case first did (#269 found GitHub member sign-in's preflight and the skill export bundle wrong),
+correct the contract from the daemon's code; when the document is what is wrong, report it on agent-harness. Never
+drop the check.
+
+Two things are listed, not failed: a path whose replies are still undocumented (an empty schema), and a place inside a
+documented reply that the document leaves open (an object with no properties) while the contract names fields beneath
+it. Each shows as an `UncheckedContractField` warning in the run's summary. Error replies are not compared: the
+document has only FastAPI's 422 there. Unit cases in the same file pin the walk on a synthetic document, and one
+`[daemon]` case takes fields out of the real document to show each kind of miss fails.
+
 ## Host commands
 
 Every Hub action has a `harness` command on the daemon host, and the pages print it (README, "CLI parity"). The daemon
