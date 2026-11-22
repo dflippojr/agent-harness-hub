@@ -19,7 +19,7 @@ import warnings
 import pytest
 
 from .endpoints import ENDPOINTS, Endpoint
-from .openapi import DOCUMENT, check, load
+from .openapi import DOCUMENT, UNCOMPARED, check, load
 from .shapes import INT, STR, ListOf, MapOf, Obj
 from .targets import daemon_source
 
@@ -201,7 +201,6 @@ def test_a_closed_object_fails_every_name_it_does_not_list():
 # The daemon's document has no allOf (test_the_daemon_document_has_no_allof pins that). A hand-merged allOf lost a
 # constraint three ways in review, so the walk fails closed instead: an allOf anywhere it reaches is a miss, even
 # inside one anyOf or oneOf branch while another branch would match.
-UNCOMPARED = "allOf is not compared; extend tests/contract/openapi.py"
 ROW_REF = {"$ref": "#/components/schemas/Row"}
 ALL_ROW = {"allOf": [ROW_REF]}
 

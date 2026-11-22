@@ -28,6 +28,7 @@ from .shapes import Enum, ListOf, MapOf, Obj, Shape, Union, _Scalar
 
 DOCUMENT = Path("tools") / "openapi" / "openapi.json"
 METHODS = ("get", "put", "post", "delete", "patch")
+UNCOMPARED = "allOf is not compared; extend tests/contract/openapi.py"
 
 
 @dataclass
@@ -35,6 +36,9 @@ class Result:
     documented: bool = True  # False: the path's success replies have no schema yet
     missing: list[str] = field(default_factory=list)  # contract fields the document lacks: each one fails
     unchecked: list[str] = field(default_factory=list)  # contract fields beneath a place the document leaves open
+    # Places the walk met an allOf: it does not compare one, so each fails (check() adds them to `missing`), whichever
+    # anyOf or oneOf branch the rest of the walk settles on.
+    uncompared: list[str] = field(default_factory=list)
 
 
 def load(src: Path) -> dict[str, Any]:
@@ -85,6 +89,7 @@ def check(doc: dict[str, Any], key: str, endpoint: Endpoint) -> Result:
             result.missing.append(f"{status}: not a documented reply status")
         elif shape is not None:
             walker.compare(shape, replies[str(status)], f"{status} $")
+    result.missing += [entry for entry in dict.fromkeys(result.uncompared) if entry not in result.missing]
     return result
 
 
@@ -117,6 +122,7 @@ def _names_fields(shape: Shape | None) -> bool:
 class _Walker:
     def __init__(self, schemas: dict[str, Any], result: Result):
         self.schemas, self.result = schemas, result
+        self.dropped = False
 
     def resolve(self, schema: Any) -> dict[str, Any]:
         seen = set()
@@ -128,31 +134,19 @@ class _Walker:
             schema = self.schemas[ref.rsplit("/", 1)[-1]]
         return schema if isinstance(schema, dict) else {}
 
-    def alternatives(self, schema: Any) -> list[dict[str, Any]]:
-        """Each schema a value may match: anyOf and oneOf branch, allOf merges its parts into one."""
+    def alternatives(self, schema: Any, where: str) -> list[dict[str, Any]]:
+        """Each schema a value may match: every anyOf or oneOf branch (for field names a oneOf is an anyOf).
+
+        The one place the walk meets an allOf. It does not compare one: a hand merge of allOf parts lost a constraint
+        three ways in review (#271), and the daemon's document has none (test_the_daemon_document_has_no_allof). It is
+        recorded as uncompared, which fails the endpoint, and offers no alternative to compare against."""
         schema = self.resolve(schema)
+        if "allOf" in schema:
+            self.result.uncompared.append(f"{where}: {UNCOMPARED}")
+            return []
         for word in ("anyOf", "oneOf"):
             if word in schema:
-                return [alt for part in schema[word] for alt in self.alternatives(part)]
-        if "allOf" in schema:
-            # Every part holds, so the value has every part's properties, and its list items or map values are held
-            # to every part's at once (an allOf of them). A part that closes the object keeps it closed.
-            merged: dict[str, Any] = {"properties": {}}
-            nested: dict[str, list[Any]] = {"items": [], "additionalProperties": []}
-            for part in schema["allOf"]:
-                for alt in self.alternatives(part):
-                    merged["properties"].update(alt.get("properties", {}))
-                    if alt.get("type"):
-                        merged["type"] = alt["type"]
-                    for word, found in nested.items():
-                        if isinstance(alt.get(word), dict) and alt[word]:
-                            found.append(alt[word])
-                    if alt.get("additionalProperties") is False:
-                        merged["additionalProperties"] = False
-            for word, found in nested.items():
-                if found:
-                    merged[word] = found[0] if len(found) == 1 else {"allOf": found}
-            return [merged]
+                return [alt for part in schema[word] for alt in self.alternatives(part, where)]
         return [schema]
 
     def compare(self, shape: Shape | None, schema: Any, where: str) -> None:
@@ -162,7 +156,12 @@ class _Walker:
             for option in shape.options:
                 self.compare(option, schema, where)
             return
-        alts = self.alternatives(schema)
+        before = len(self.result.uncompared)
+        alts = self.alternatives(schema, where)
+        # A branch here was an allOf: the value may well be that branch, so the others' kind is no mismatch.
+        self.dropped = len(self.result.uncompared) > before
+        if not alts:
+            return  # an allOf, already recorded as uncompared
         if isinstance(shape, Obj):
             self._obj(shape, alts, where)
         elif isinstance(shape, ListOf):
@@ -177,7 +176,7 @@ class _Walker:
         if not schemas:
             if any(_open(alt, kind) for alt in alts):
                 self.result.unchecked.append(f"{where}: the document leaves it open")
-            else:
+            elif not self.dropped:
                 self.result.missing.append(f"{where.rstrip('.*[]')}: not an {kind} in the document")
             return
         self._best([lambda r, s=s: _Walker(self.schemas, r).compare(inner, s, where) for s in schemas])
@@ -188,7 +187,7 @@ class _Walker:
             if any(_open(alt, "object") for alt in alts):
                 names = ", ".join(sorted(shape.fields()))
                 self.result.unchecked.append(f"{where}: the document leaves it open ({names})")
-            else:
+            elif not self.dropped:
                 self.result.missing.append(f"{where}: not an object in the document")
             return
 
@@ -216,6 +215,7 @@ class _Walker:
         best = min(results, key=lambda r: (len(r.missing), len(r.unchecked)))
         self.result.missing += best.missing
         self.result.unchecked += best.unchecked
+        self.result.uncompared += [entry for r in results for entry in r.uncompared]  # every branch's, not the best's
 
 
 def _map_value(schema: dict[str, Any]) -> dict[str, Any] | None:
