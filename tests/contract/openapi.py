@@ -74,8 +74,9 @@ def check(doc: dict[str, Any], key: str, endpoint: Endpoint) -> Result:
     replies = {status: _reply_schema(reply) for status, reply in op.get("responses", {}).items()}
     success = {status: shape for status, shape in endpoint.responses.items() if status < 400}
     bodies = {status: shape for status, shape in success.items() if shape is not None}
-    if bodies and not any(replies.get(str(status)) for status in bodies):
-        # Still undocumented (agent-harness#1017): nothing to hold the reply to, and no reply status either.
+    if bodies and not any(schema for status, schema in replies.items() if status.startswith("2")):
+        # Still undocumented (agent-harness#1017): the operation describes no success reply, whatever the contract
+        # expects, so there is nothing to hold the reply to, and no reply status either.
         result.documented = False
         result.unchecked += [f"{status} $: undocumented reply" for status in bodies]
         return result
@@ -134,10 +135,23 @@ class _Walker:
             if word in schema:
                 return [alt for part in schema[word] for alt in self.alternatives(part)]
         if "allOf" in schema:
-            merged: dict[str, Any] = {"type": "object", "properties": {}}
+            # Every part holds, so the value has every part's properties, and its list items or map values are held
+            # to every part's at once (an allOf of them). A part that closes the object keeps it closed.
+            merged: dict[str, Any] = {"properties": {}}
+            nested: dict[str, list[Any]] = {"items": [], "additionalProperties": []}
             for part in schema["allOf"]:
                 for alt in self.alternatives(part):
                     merged["properties"].update(alt.get("properties", {}))
+                    if alt.get("type"):
+                        merged["type"] = alt["type"]
+                    for word, found in nested.items():
+                        if isinstance(alt.get(word), dict) and alt[word]:
+                            found.append(alt[word])
+                    if alt.get("additionalProperties") is False:
+                        merged["additionalProperties"] = False
+            for word, found in nested.items():
+                if found:
+                    merged[word] = found[0] if len(found) == 1 else {"allOf": found}
             return [merged]
         return [schema]
 
@@ -169,7 +183,7 @@ class _Walker:
         self._best([lambda r, s=s: _Walker(self.schemas, r).compare(inner, s, where) for s in schemas])
 
     def _obj(self, shape: Obj, alts: list[dict[str, Any]], where: str) -> None:
-        objects = [alt for alt in alts if alt.get("properties") or _map_value(alt)]
+        objects = [alt for alt in alts if alt.get("properties") or _map_value(alt) or _closed(alt)]
         if not objects:
             if any(_open(alt, "object") for alt in alts):
                 names = ", ".join(sorted(shape.fields()))
@@ -210,6 +224,11 @@ def _map_value(schema: dict[str, Any]) -> dict[str, Any] | None:
     return value if isinstance(value, dict) and value else None
 
 
+def _closed(schema: dict[str, Any]) -> bool:
+    """An object the document closes: it names every field it may have, and may name none."""
+    return schema.get("additionalProperties") is False
+
+
 def _open(schema: dict[str, Any], kind: str) -> bool:
     """A place the document leaves open: no schema at all, or a value of the right kind with nothing inside."""
     if not schema:
@@ -218,5 +237,4 @@ def _open(schema: dict[str, Any], kind: str) -> bool:
         return False
     if kind == "array":
         return not schema.get("items")
-    return not schema.get("properties") and not (isinstance(schema.get("additionalProperties"), dict)
-                                                 and schema["additionalProperties"])
+    return not schema.get("properties") and not _map_value(schema) and not _closed(schema)

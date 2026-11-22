@@ -174,3 +174,37 @@ def test_maps_open_places_and_kind_mismatches():
         "200 $.named.*: not an object in the document", "200 $.open: not an array in the document"]
     loose = Obj({"open": MapOf(ROW)})
     assert run("GET /stats", Endpoint(None, {200: loose})).unchecked == ["200 $.open.*: the document leaves it open"]
+
+
+# Review round 1 (#271): each place the walk could pass a missing field --------------------------------------------
+REVIEWED = {
+    "paths": {
+        "/made": {"post": {"responses": {"200": {"content": {"application/json": {"schema": {
+            "$ref": "#/components/schemas/Row"}}}}}}},
+        "/wrapped": {"get": {"responses": {"200": {"content": {"application/json": {"schema": {"allOf": [
+            {"type": "object", "additionalProperties": {"$ref": "#/components/schemas/Row"}}]}}}}}}},
+        "/listed": {"get": {"responses": {"200": {"content": {"application/json": {"schema": {"allOf": [
+            {"type": "array", "items": {"$ref": "#/components/schemas/Row"}}]}}}}}}},
+        "/closed": {"get": {"responses": {"200": {"content": {"application/json": {"schema": {
+            "type": "object", "additionalProperties": False}}}}}}},
+    },
+    "components": DOC["components"],
+}
+
+
+def test_a_documented_operation_is_not_undocumented_because_the_contract_names_another_status():
+    result = check(REVIEWED, "POST /made", Endpoint(None, {201: ROW}))
+    assert (result.documented, result.missing, result.unchecked) == (True, ["201: not a documented reply status"], [])
+
+
+def test_allof_keeps_map_values_and_list_items():
+    assert check(REVIEWED, "GET /wrapped", Endpoint(None, {200: MapOf(Obj({"nope": STR}))})).missing == [
+        "200 $.*.nope"]
+    assert check(REVIEWED, "GET /wrapped", Endpoint(None, {200: MapOf(ROW)})).missing == []
+    assert check(REVIEWED, "GET /listed", Endpoint(None, {200: ListOf(Obj({"nope": STR}))})).missing == [
+        "200 $[].nope"]
+
+
+def test_a_closed_object_fails_every_name_it_does_not_list():
+    result = check(REVIEWED, "GET /closed", Endpoint(None, {200: Obj({"a": INT}, optional={"b": STR})}))
+    assert (result.missing, result.unchecked) == (["200 $.a", "200 $.b"], [])
