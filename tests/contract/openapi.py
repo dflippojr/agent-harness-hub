@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -30,14 +31,27 @@ DOCUMENT = Path("tools") / "openapi" / "openapi.json"
 METHODS = ("get", "put", "post", "delete", "patch")
 UNCOMPARED = "is not compared; extend tests/contract/openapi.py"
 
+# The schema forms the walk models (owner decision on #271, option A). Annotations and value-only constraints may sit
+# beside any of them: they never add or remove a field name.
+ANNOTATIONS = frozenset({
+    "title", "description", "default", "examples", "example", "deprecated", "readOnly", "writeOnly", "format",
+    "const", "enum", "pattern", "minLength", "maxLength", "minimum", "maximum", "exclusiveMinimum",
+    "exclusiveMaximum", "multipleOf", "minItems", "maxItems", "uniqueItems", "contentMediaType", "contentEncoding"})
+FORMS = {
+    "object": frozenset({"type", "properties", "additionalProperties", "required"}),
+    "array": frozenset({"type", "items"}),
+    **dict.fromkeys(("string", "integer", "number", "boolean", "null"), frozenset({"type"})),
+}
+UNIONS = ("anyOf", "oneOf")
+
 
 @dataclass
 class Result:
     documented: bool = True  # False: the path's success replies have no schema yet
     missing: list[str] = field(default_factory=list)  # contract fields the document lacks: each one fails
     unchecked: list[str] = field(default_factory=list)  # contract fields beneath a place the document leaves open
-    # Places the walk met an allOf: it does not compare one, so each fails (check() adds them to `missing`), whichever
-    # anyOf or oneOf branch the rest of the walk settles on.
+    # Places the walk met a schema form it does not model (allOf, a union beside structural keywords, ...): each fails
+    # (check() adds them to `missing`), whichever anyOf or oneOf branch the rest of the walk settles on.
     uncompared: list[str] = field(default_factory=list)
 
 
@@ -124,27 +138,30 @@ class _Walker:
         self.schemas, self.result = schemas, result
         self.dropped = False
 
-    def resolve(self, schema: Any) -> dict[str, Any]:
+    def alternatives(self, schema: Any, where: str) -> list[dict[str, Any]]:
+        """Each schema a value may match: every anyOf or oneOf branch (for field names a oneOf is an anyOf).
+
+        The one place the walk reads a schema's form. It compares only the forms in FORMS, a lone $ref, and a lone
+        anyOf or oneOf: a hand interpretation of anything else lost a constraint in each of three review rounds
+        (#271), and the daemon's document uses nothing else (test_the_daemon_document_uses_only_modeled_forms). Any
+        other form, at any hop of a $ref chain or in any branch, is recorded as uncompared, which fails the endpoint,
+        and offers no alternative to compare against."""
         seen = set()
-        while isinstance(schema, dict) and "$ref" in schema:
+        while True:
+            if not isinstance(schema, dict):
+                return [{}]
+            form = unmodeled(schema)
+            if form:
+                self.result.uncompared.append(f"{where}: {form} {UNCOMPARED}")
+                return []
+            if "$ref" not in schema:
+                break
             ref = schema["$ref"]
             if ref in seen:
                 raise ValueError(f"circular $ref {ref}")
             seen.add(ref)
             schema = self.schemas[ref.rsplit("/", 1)[-1]]
-        return schema if isinstance(schema, dict) else {}
-
-    def alternatives(self, schema: Any, where: str) -> list[dict[str, Any]]:
-        """Each schema a value may match: every anyOf or oneOf branch (for field names a oneOf is an anyOf).
-
-        The one place the walk meets an allOf. It does not compare one: a hand merge of allOf parts lost a constraint
-        three ways in review (#271), and the daemon's document has none (test_the_daemon_document_has_no_allof). It is
-        recorded as uncompared, which fails the endpoint, and offers no alternative to compare against."""
-        schema = self.resolve(schema)
-        if "allOf" in schema:
-            self.result.uncompared.append(f"{where}: allOf {UNCOMPARED}")
-            return []
-        for word in ("anyOf", "oneOf"):
+        for word in UNIONS:
             if word in schema:
                 return [alt for part in schema[word] for alt in self.alternatives(part, where)]
         return [schema]
@@ -158,10 +175,10 @@ class _Walker:
             return
         before = len(self.result.uncompared)
         alts = self.alternatives(schema, where)
-        # A branch here was an allOf: the value may well be that branch, so the others' kind is no mismatch.
+        # A branch here was unmodeled: the value may well be that branch, so the others' kind is no mismatch.
         self.dropped = len(self.result.uncompared) > before
         if not alts:
-            return  # an allOf, already recorded as uncompared
+            return  # an unmodeled form, already recorded as uncompared
         if isinstance(shape, Obj):
             self._obj(shape, alts, where)
         elif isinstance(shape, ListOf):
@@ -216,6 +233,71 @@ class _Walker:
         self.result.missing += best.missing
         self.result.unchecked += best.unchecked
         self.result.uncompared += [entry for r in results for entry in r.uncompared]  # every branch's, not the best's
+
+
+def unmodeled(schema: dict[str, Any]) -> str | None:
+    """The form of one schema node, when the walk does not model it: None for a modeled form."""
+    keys = set(schema) - ANNOTATIONS
+    if "allOf" in keys:
+        return "allOf"
+    if "$ref" in keys:
+        return f"$ref beside {', '.join(sorted(keys - {'$ref'}))}" if keys - {"$ref"} else None
+    unions = [word for word in UNIONS if word in keys]
+    if len(unions) > 1:
+        return "anyOf beside oneOf"
+    if unions:
+        rest = keys - {unions[0], "discriminator"}
+        return f"{unions[0]} beside {', '.join(sorted(rest))}" if rest else None
+    kind = schema.get("type")
+    if kind is None:
+        kind = "object" if keys & FORMS["object"] else None
+    elif not isinstance(kind, str) or kind not in FORMS:
+        return f"type {json.dumps(kind)}"
+    extra = keys - (FORMS[kind] if kind else frozenset())
+    if kind == "object" and "additionalProperties" in keys and not isinstance(schema["additionalProperties"],
+                                                                                bool | dict):
+        extra.add("additionalProperties")
+    if kind == "array" and "items" in keys and not isinstance(schema["items"], dict):
+        extra.add("items")
+    if not extra:
+        return None
+    name = kind or "untyped"
+    return f"{', '.join(sorted(extra))} in {'an' if name[0] in 'aeiou' else 'a'} {name} schema"
+
+
+def unmodeled_forms(doc: dict[str, Any]) -> Counter:
+    """Every schema form in a document the walk does not model, counted: its components, and each operation's
+    parameters, request bodies and replies, at every depth a schema keyword nests one."""
+    found: Counter = Counter()
+
+    def visit(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        if form := unmodeled(node):
+            found[form] += 1
+        for word in ("allOf", "anyOf", "oneOf", "prefixItems"):
+            for part in node.get(word) or []:
+                visit(part)
+        for word in ("properties", "patternProperties", "$defs", "definitions"):
+            for part in (node.get(word) or {}).values():
+                visit(part)
+        for word in ("additionalProperties", "items", "not", "if", "then", "else", "contains", "propertyNames"):
+            visit(node.get(word))
+
+    for schema in doc.get("components", {}).get("schemas", {}).values():
+        visit(schema)
+    for item in doc.get("paths", {}).values():
+        for op in item.values():
+            if not isinstance(op, dict):
+                continue
+            for parameter in op.get("parameters", []):
+                visit(parameter.get("schema"))
+            for media in op.get("requestBody", {}).get("content", {}).values():
+                visit(media.get("schema"))
+            for reply in op.get("responses", {}).values():
+                for media in reply.get("content", {}).values():
+                    visit(media.get("schema"))
+    return found
 
 
 def _map_value(schema: dict[str, Any]) -> dict[str, Any] | None:
