@@ -44,7 +44,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from harness_hub import __main__ as cli
 from harness_hub import endpoint

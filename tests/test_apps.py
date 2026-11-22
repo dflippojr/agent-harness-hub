@@ -2,7 +2,7 @@
 import json
 
 import pytest
-from fastapi.responses import Response
+from starlette.responses import Response
 from starlette.routing import Route
 
 from harness_hub.inventory import INVENTORY_FILE

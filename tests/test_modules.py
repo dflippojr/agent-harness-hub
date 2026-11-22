@@ -45,7 +45,7 @@ def test_error_keeps_complete_last_good_in_memory_and_on_disk(claimed, fake_daem
         assert path.stat().st_mode & 0o777 == 0o600
         assert claimed.state_dir.stat().st_mode & 0o777 == 0o700
     # A fresh server also reads the same private snapshot, before its first good fetch.
-    from fastapi.testclient import TestClient
+    from starlette.testclient import TestClient
 
     from harness_hub.config import Settings
     from harness_hub.server import create_app

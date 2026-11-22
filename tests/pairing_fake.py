@@ -4,8 +4,8 @@ import secrets
 import time
 
 import httpx
-from fastapi import Request
-from fastapi.responses import JSONResponse
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 ELEVATED = {"sessions:all", "approvals", "remote_control", "memory_library", "homelab"}
 ACTIVE = ("pending", "armed", "claimed", "approved")

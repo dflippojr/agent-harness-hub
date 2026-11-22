@@ -2,8 +2,8 @@
 import time
 from copy import deepcopy
 
-from fastapi import Request
-from fastapi.responses import JSONResponse, Response
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 
 from .marketplace_fake import manifest_entry
 

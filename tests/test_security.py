@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from harness_hub import auth
 from harness_hub.auth import Sessions, create_signin_code
 from harness_hub.guard import ResponseGuard, leaks
+
+from .fake_routes import FakeRoutes
 
 
 def test_session_endpoint_and_shell_are_public(hub):
@@ -169,21 +170,21 @@ def test_leak_detection(text, leaked):
 
 
 def test_guard_withholds_a_leaking_response():
-    app = FastAPI()
+    routes = FakeRoutes()
 
-    @app.get("/api/leak")
+    @routes.get("/api/leak")
     async def leak():
         return {"value": "plain-secret-value"}
 
-    @app.get("/api/token-shaped")
+    @routes.get("/api/token-shaped")
     async def token_shaped():
         return {"value": "ho-" + "abcdefgh" * 6}
 
-    @app.get("/api/fine")
+    @routes.get("/api/fine")
     async def fine():
         return {"value": "fine"}
 
-    client = TestClient(ResponseGuard(app, lambda: ["plain-secret-value"]))
+    client = TestClient(ResponseGuard(routes.app(), lambda: ["plain-secret-value"]))
     for path in ("/api/leak", "/api/token-shaped"):
         response = client.get(path)
         assert response.status_code == 500

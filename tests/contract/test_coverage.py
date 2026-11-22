@@ -7,9 +7,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from fastapi.routing import APIRoute
-
 from harness_hub import daemon
+from harness_hub.routes.common import HubRoute
 
 from ..conftest import FakeDaemon
 from .endpoints import ENDPOINTS, TRIPWIRES
@@ -24,7 +23,7 @@ def normal(key: str) -> str:
 
 
 def fake_routes() -> set[str]:
-    return {normal(f"{method} {route.path}") for route in FakeDaemon().app.routes if isinstance(route, APIRoute)
+    return {normal(f"{method} {route.path}") for route in FakeDaemon().app.routes if isinstance(route, HubRoute)
             for method in route.methods}
 
 
