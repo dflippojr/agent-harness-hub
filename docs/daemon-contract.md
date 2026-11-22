@@ -70,7 +70,9 @@ drop the check.
 Two things are listed, not failed: a path whose replies are still undocumented (an empty schema), and a place inside a
 documented reply that the document leaves open (an object with no properties) while the contract names fields beneath
 it. Each shows as an `UncheckedContractField` warning in the run's summary. Error replies are not compared: the
-document has only FastAPI's 422 there. Unit cases in the same file pin the walk on a synthetic document, and one
+document has only FastAPI's 422 there. The walk branches on `anyOf` and `oneOf` but does not compare `allOf`: one
+anywhere it reaches fails the endpoint, so the check never guesses. The daemon's document has none, and an e2e case
+pins that; when it gains one, teach `openapi.py` to compare it. Unit cases in the same file pin the walk on a synthetic document, and one
 `[daemon]` case takes fields out of the real document to show each kind of miss fails.
 
 ## Host commands
