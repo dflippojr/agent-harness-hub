@@ -140,10 +140,9 @@ def test_a_request_body_the_operation_does_not_take_fails():
         "request $.q: the operation takes no body"]
 
 
-def test_a_union_reply_matches_its_object_branch_and_allof_merges():
+def test_a_union_reply_matches_its_object_branch():
     assert run("POST /rows", Endpoint(Obj(), {201: ROW | None})).missing == []
-    assert run("GET /rows/{row_id}", Endpoint(None, {200: ROW.extend({"extra": Obj()})})).missing == []
-    assert run("GET /rows/{row_id}", Endpoint(None, {200: ROW.extend({"more": STR})})).missing == ["200 $.more"]
+    assert run("POST /rows", Endpoint(Obj(), {201: ROW.extend({"more": STR}) | None})).missing == ["201 $.more"]
 
 
 def test_an_undocumented_reply_is_unchecked_not_failed():
@@ -181,10 +180,6 @@ REVIEWED = {
     "paths": {
         "/made": {"post": {"responses": {"200": {"content": {"application/json": {"schema": {
             "$ref": "#/components/schemas/Row"}}}}}}},
-        "/wrapped": {"get": {"responses": {"200": {"content": {"application/json": {"schema": {"allOf": [
-            {"type": "object", "additionalProperties": {"$ref": "#/components/schemas/Row"}}]}}}}}}},
-        "/listed": {"get": {"responses": {"200": {"content": {"application/json": {"schema": {"allOf": [
-            {"type": "array", "items": {"$ref": "#/components/schemas/Row"}}]}}}}}}},
         "/closed": {"get": {"responses": {"200": {"content": {"application/json": {"schema": {
             "type": "object", "additionalProperties": False}}}}}}},
     },
@@ -197,14 +192,80 @@ def test_a_documented_operation_is_not_undocumented_because_the_contract_names_a
     assert (result.documented, result.missing, result.unchecked) == (True, ["201: not a documented reply status"], [])
 
 
-def test_allof_keeps_map_values_and_list_items():
-    assert check(REVIEWED, "GET /wrapped", Endpoint(None, {200: MapOf(Obj({"nope": STR}))})).missing == [
-        "200 $.*.nope"]
-    assert check(REVIEWED, "GET /wrapped", Endpoint(None, {200: MapOf(ROW)})).missing == []
-    assert check(REVIEWED, "GET /listed", Endpoint(None, {200: ListOf(Obj({"nope": STR}))})).missing == [
-        "200 $[].nope"]
-
-
 def test_a_closed_object_fails_every_name_it_does_not_list():
     result = check(REVIEWED, "GET /closed", Endpoint(None, {200: Obj({"a": INT}, optional={"b": STR})}))
     assert (result.missing, result.unchecked) == (["200 $.a", "200 $.b"], [])
+
+
+# allOf is not compared, wherever the walk meets it (review round 2, #271) ------------------------------------------
+# The daemon's document has no allOf (test_the_daemon_document_has_no_allof pins that). A hand-merged allOf lost a
+# constraint three ways in review, so the walk fails closed instead: an allOf anywhere it reaches is a miss, even
+# inside one anyOf or oneOf branch while another branch would match.
+UNCOMPARED = "allOf is not compared; extend tests/contract/openapi.py"
+ROW_REF = {"$ref": "#/components/schemas/Row"}
+ALL_ROW = {"allOf": [ROW_REF]}
+
+
+def _reply(schema):
+    return {"get": {"responses": {"200": {"content": {"application/json": {"schema": schema}}}}}}
+
+
+GRID = {
+    "paths": {
+        "/root": _reply(ALL_ROW),
+        "/property": _reply({"type": "object", "properties": {"row": ALL_ROW}}),
+        "/items": _reply({"type": "array", "items": ALL_ROW}),
+        "/values": _reply({"type": "object", "additionalProperties": ALL_ROW}),
+        "/any": _reply({"anyOf": [ALL_ROW, {"type": "null"}]}),
+        "/one": _reply({"oneOf": [ALL_ROW, ROW_REF]}),
+        "/deep-any": _reply({"anyOf": [{"type": "array", "items": ALL_ROW}, {"type": "array", "items": ROW_REF}]}),
+        "/ref": _reply({"$ref": "#/components/schemas/Wrapped"}),
+        "/request": {"post": {
+            "requestBody": {"content": {"application/json": {"schema": {"allOf": [
+                {"$ref": "#/components/schemas/New"}]}}}},
+            "responses": {"200": {"content": {"application/json": {"schema": ROW_REF}}}}}},
+        "/plain-one": _reply({"oneOf": [{"type": "null"}, ROW_REF]}),
+    },
+    "components": {"schemas": {**DOC["components"]["schemas"], "Wrapped": ALL_ROW}},
+}
+
+
+@pytest.mark.parametrize("key,endpoint,where", [
+    ("GET /root", Endpoint(None, {200: ROW}), "200 $"),
+    ("GET /property", Endpoint(None, {200: Obj({"row": ROW})}), "200 $.row"),
+    ("GET /items", Endpoint(None, {200: ListOf(ROW)}), "200 $[]"),
+    ("GET /values", Endpoint(None, {200: MapOf(ROW)}), "200 $.*"),
+    ("GET /any", Endpoint(None, {200: ROW | None}), "200 $"),
+    ("GET /one", Endpoint(None, {200: ROW}), "200 $"),
+    ("GET /deep-any", Endpoint(None, {200: ListOf(ROW)}), "200 $[]"),
+    ("GET /ref", Endpoint(None, {200: ROW}), "200 $"),
+    ("POST /request", Endpoint(Obj({"name": STR}), {200: ROW}), "request $"),
+], ids=["reply-root", "property", "list-items", "map-values", "anyOf-branch", "oneOf-branch",
+        "another-branch-matches", "behind-ref", "request-body"])
+def test_an_allof_anywhere_fails(key, endpoint, where):
+    result = check(GRID, key, endpoint)
+    assert (result.missing, result.unchecked) == ([f"{where}: {UNCOMPARED}"], [])
+
+
+def test_oneof_branches_like_anyof():
+    assert check(GRID, "GET /plain-one", Endpoint(None, {200: ROW})).missing == []
+    assert check(GRID, "GET /plain-one", Endpoint(None, {200: ROW.extend({"more": STR})})).missing == ["200 $.more"]
+
+
+def _count_allof(node) -> int:
+    if isinstance(node, dict):
+        return ("allOf" in node) + sum(_count_allof(value) for value in node.values())
+    if isinstance(node, list):
+        return sum(_count_allof(value) for value in node)
+    return 0
+
+
+@pytest.mark.e2e
+def test_the_daemon_document_has_no_allof(document):
+    """The walk does not compare allOf; this makes the assumption visible. When the daemon starts emitting allOf,
+    this fails beside every endpoint it reaches: teach tests/contract/openapi.py to compare it, with the grid above."""
+    assert _count_allof(document) == 0
+
+
+def test_count_allof_counts_every_nesting():
+    assert _count_allof(GRID) == 9 and _count_allof(DOC) == 1
