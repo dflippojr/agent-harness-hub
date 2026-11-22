@@ -147,9 +147,11 @@ def test_a_union_reply_matches_its_object_branch():
 
 
 def test_an_undocumented_reply_is_unchecked_not_failed():
+    result = run("PUT /rows/{row_id}", Endpoint(Obj(), {200: ROW}))
+    assert (result.documented, result.missing, result.unchecked) == (False, [], ["200 $: undocumented reply"])
+    # A status the document lacks is missing even beside an undocumented one (review round 4, #271).
     result = run("PUT /rows/{row_id}", Endpoint(Obj(), {200: ROW, 201: ROW}))
-    assert (result.documented, result.missing) == (False, [])
-    assert result.unchecked == ["200 $: undocumented reply", "201 $: undocumented reply"]
+    assert (result.missing, result.unchecked) == (["201: not a documented reply status"], ["200 $: undocumented reply"])
 
 
 def test_a_reply_status_the_document_lacks_fails():
@@ -332,3 +334,104 @@ def test_the_daemon_document_uses_only_modeled_forms(document):
     anyOf or oneOf with structural siblings, a type list, an unknown keyword, ...). When it fails, the daemon emits a
     new form: teach tests/contract/openapi.py to compare it, with a case in the grids above."""
     assert openapi.unmodeled_forms(document) == {}
+
+
+
+# Boolean schemas (review round 4, F1) -------------------------------------------------------------------------------
+# Every schema node goes through the allowlist: `true` is open (it is `{}`), `false` admits no value, so every contract
+# name beneath it is missing; any other value where a schema belongs is unmodeled.
+BOOLS = {
+    "paths": {
+        "/false-root": _reply(False),
+        "/false-property": _reply({"type": "object", "properties": {"row": False, "id": {"type": "string"}}}),
+        "/false-items": _reply({"type": "array", "items": False}),
+        "/false-values": _reply({"type": "object", "additionalProperties": False}),
+        "/false-branches": _reply({"anyOf": [False, False]}),
+        "/false-beside-row": _reply({"anyOf": [False, ROW_REF]}),
+        "/false-ref": _reply({"$ref": "#/components/schemas/Never"}),
+        "/false-request": {"post": {
+            "requestBody": {"content": {"application/json": {"schema": False}}},
+            "responses": {"200": {"content": {"application/json": {"schema": ROW_REF}}}}}},
+        "/true-root": _reply(True),
+        "/true-property": _reply({"type": "object", "properties": {"row": True}}),
+        "/true-items": _reply({"type": "array", "items": True}),
+        "/true-ref": _reply({"$ref": "#/components/schemas/Anything"}),
+        "/string-items": _reply({"type": "array", "items": "string"}),
+    },
+    "components": {"schemas": {**DOC["components"]["schemas"], "Never": False, "Anything": True}},
+}
+
+
+@pytest.mark.parametrize("key,endpoint,missing,unchecked", [
+    ("GET /false-root", Endpoint(None, {200: ROW}), ["200 $.id", "200 $.tags"], []),
+    ("GET /false-property", Endpoint(None, {200: Obj({"row": ROW, "id": STR})}), ["200 $.row"], []),
+    ("GET /false-property", Endpoint(None, {200: Obj({"row": STR})}), ["200 $.row"], []),
+    ("GET /false-items", Endpoint(None, {200: ListOf(ROW)}), ["200 $[].id", "200 $[].tags"], []),
+    ("GET /false-values", Endpoint(None, {200: MapOf(ROW)}), ["200 $.*.id", "200 $.*.tags"], []),
+    ("GET /false-branches", Endpoint(None, {200: ROW}), ["200 $.id", "200 $.tags"], []),
+    ("GET /false-beside-row", Endpoint(None, {200: ROW}), [], []),
+    ("GET /false-ref", Endpoint(None, {200: ListOf(ROW)}), ["200 $[].id", "200 $[].tags"], []),
+    ("POST /false-request", Endpoint(Obj({"name": STR}), {200: ROW}), ["request $.name"], []),
+    ("GET /true-root", Endpoint(None, {200: ROW}), [], ["200 $: the document leaves it open (id, tags)"]),
+    ("GET /true-property", Endpoint(None, {200: Obj({"row": ROW})}), [],
+     ["200 $.row: the document leaves it open (id, tags)"]),
+    ("GET /true-items", Endpoint(None, {200: ListOf(ROW)}), [], ["200 $[]: the document leaves it open (id, tags)"]),
+    ("GET /true-ref", Endpoint(None, {200: ROW}), [], ["200 $: the document leaves it open (id, tags)"]),
+    ("GET /string-items", Endpoint(None, {200: ListOf(ROW)}),
+     [f"200 $[]: a string where a schema belongs {UNCOMPARED}"], []),
+], ids=["false-root", "false-property", "false-property-scalar", "false-items", "false-map-values",
+        "false-every-branch", "false-beside-a-matching-branch", "false-behind-ref", "false-request-body", "true-root",
+        "true-property", "true-items", "true-behind-ref", "a-string-as-a-schema"])
+def test_boolean_schemas_at_every_position(key, endpoint, missing, unchecked):
+    result = check(BOOLS, key, endpoint)
+    assert (sorted(result.missing), result.unchecked) == (missing, unchecked)
+
+
+def test_the_scan_counts_boolean_schemas_and_every_non_schema():
+    assert openapi.boolean_schemas(BOOLS) == 9
+    assert openapi.unmodeled_forms(BOOLS) == {"a string where a schema belongs": 1}
+    assert openapi.boolean_schemas(DOC) == 0
+
+
+# Each contract success status classified on its own (review round 4, F2) --------------------------------------------
+# No early return: a status the document lacks is missing, a documented status with no body (a 204) is missing where
+# the contract reads a body, a `{}` schema is unchecked, and the request's and query's entries always count.
+KINDS = {
+    "absent": ({"200": {"content": {"application/json": {"schema": ROW_REF}}}}, 201,
+               ["201: not a documented reply status"], []),
+    "no-content": ({"204": {"description": "No Content"}}, 204, ["204 $: documented with no body"], []),
+    "empty-schema": ({"200": {"content": {"application/json": {"schema": {}}}}}, 200, [],
+                     ["200 $: undocumented reply"]),
+    "schema": ({"200": {"content": {"application/json": {"schema": ROW_REF}}}}, 200, [], []),
+}
+REQUESTS = {
+    "clean-request": ({"$ref": "#/components/schemas/New"}, []),
+    "unmodeled-request": ({"allOf": [{"$ref": "#/components/schemas/New"}]}, [f"request $: allOf {UNCOMPARED}"]),
+}
+
+
+@pytest.mark.parametrize("request_kind", list(REQUESTS))
+@pytest.mark.parametrize("reply_kind", list(KINDS))
+def test_each_reply_status_is_classified_and_the_request_always_counts(reply_kind, request_kind):
+    responses, status, missing, unchecked = KINDS[reply_kind]
+    body, request_missing = REQUESTS[request_kind]
+    doc = {"paths": {"/kind": {"post": {"requestBody": {"content": {"application/json": {"schema": body}}},
+                                        "responses": responses}}},
+           "components": DOC["components"]}
+    result = check(doc, "POST /kind", Endpoint(Obj({"name": STR}), {status: ROW}))
+    assert (sorted(result.missing), result.unchecked) == (sorted(request_missing + missing), unchecked)
+    assert result.documented is (reply_kind != "empty-schema")
+
+
+def test_a_reply_documented_without_a_json_body_fails():
+    text = {"get": {"responses": {"200": {"content": {"text/plain": {"schema": {"type": "string"}}}}}}}
+    doc = {"paths": {"/text": text}, "components": DOC["components"]}
+    assert check(doc, "GET /text", Endpoint(None, {200: ROW})).missing == ["200 $: documented without a JSON body"]
+
+
+@pytest.mark.e2e
+def test_the_daemon_document_reply_kinds_and_boolean_schemas_are_pinned(document):
+    """The kinds the walk meets today, made visible: no boolean schema, and 18 bodyless success replies, every one a
+    204. When a count moves, look at what the daemon added and whether the walk compares it."""
+    assert openapi.boolean_schemas(document) == 0
+    assert openapi.bodyless_replies(document) == {"204": 18}
