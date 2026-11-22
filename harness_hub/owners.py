@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from fastapi import Request
+from starlette.requests import Request
 
 from .daemon import DaemonUnreachable
 

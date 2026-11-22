@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import time
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from fastapi import HTTPException, Request
-from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route, request_response
 
 from ..auth import Sessions
 from ..claim import ClaimManager
@@ -58,6 +62,40 @@ class HubContext:
 def hub(request: Request) -> HubContext:
     """The `HubContext` of the app serving this request: how a router's handlers reach the Hub's state."""
     return request.app.state.hub
+
+
+class HubRoute(Route):
+    """A Starlette route that calls its handler as FastAPI did (#254), so handlers and the route table stay unchanged.
+
+    The handler gets `request` if it names that parameter and each path parameter it names, by name (no query string
+    parameter: only the path is bound). A returned dict or list is answered as JSON with status 200; a returned
+    `Response` is sent as it is. The route answers exactly `methods`: Starlette's `Route` would add HEAD to a GET route,
+    which FastAPI never did. `endpoint` and `name` stay the handler's own."""
+
+    def __init__(self, path: str, handler: Callable[..., Awaitable[Any]], methods: Iterable[str]):
+        methods = [method.upper() for method in methods]
+        super().__init__(path, handler, methods=methods)
+        self.methods = set(methods)
+        wanted = inspect.signature(handler).parameters
+        path_names = [name for name in self.param_convertors if name in wanted]
+        passes_request = "request" in wanted
+
+        async def call(request: Request) -> Response:
+            arguments = {name: request.path_params[name] for name in path_names}
+            if passes_request:
+                arguments["request"] = request
+            answer = await handler(**arguments)
+            return answer if isinstance(answer, Response) else JSONResponse(answer)
+
+        self.app = request_response(call)
+
+
+async def http_exception(_: Request, exc: HTTPException) -> Response:
+    """An `HTTPException` (a refusal from `read_json`, an unknown path, a wrong method) answered as {"detail": ...}
+    JSON, as FastAPI answered it: Starlette's own handler answers plain text. A status that has no body gets none."""
+    if exc.status_code < 200 or exc.status_code in (204, 205, 304):
+        return Response(status_code=exc.status_code, headers=exc.headers)
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
 
 
 def json_body(data: bytes | bytearray) -> Any:

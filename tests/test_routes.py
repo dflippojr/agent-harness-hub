@@ -111,8 +111,8 @@ def template(app, row) -> str | None:
 
 
 def test_the_table_names_every_api_route(hub):
-    routes = {route.path for route in hub.client.app.fastapi.routes if route.path.startswith("/api")}
-    named = {template(hub.client.app.fastapi, row) for row in ROUTES}
+    routes = {route.path for route in hub.client.app.starlette.routes if route.path.startswith("/api")}
+    named = {template(hub.client.app.starlette, row) for row in ROUTES}
     missing, unserved = sorted(routes - named), sorted(map(str, named - routes))
     assert named == routes, f"add a ROUTES row for {missing}; no route serves {unserved}"
     assert len(set(map(label, ROUTES))) == len(ROUTES)

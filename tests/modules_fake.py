@@ -1,8 +1,8 @@
 """Synthetic inventory mirroring the pinned daemon's Hub module routes."""
 from copy import deepcopy
 
-from fastapi import Request
-from fastapi.responses import JSONResponse
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from .apps_fake import inventory_apps
 from .marketplace_fake import with_pairing_state

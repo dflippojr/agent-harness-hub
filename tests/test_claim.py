@@ -135,7 +135,7 @@ def test_a_lost_redeem_reply_ends_lost_with_the_release_command(hub, fake_daemon
     assert hub.get("/api/overview").json()["claim"]["state"] == "lost"
     assert len(fake_daemon.minted) == 1 and fake_daemon.hub is not None
     # The outcome is shown before it is saved; wait for the save rather than race it on the file.
-    store = hub.client.app.fastapi.state.store
+    store = hub.client.app.starlette.state.store
     deadline = time.monotonic() + 5
     while store.get("outcome") is None and time.monotonic() < deadline:
         time.sleep(0.02)

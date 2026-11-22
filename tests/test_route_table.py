@@ -39,14 +39,14 @@ def served(tmp_path):
 
 
 def test_route_table_is_unchanged(tmp_path):
-    app = served(tmp_path).fastapi
+    app = served(tmp_path).starlette
     table = [("mount", route.path, route.name) if isinstance(route, Mount)
              else (route.path, sorted(route.methods or ()), route.name) for route in app.routes]
     assert table == ROUTES
 
 
 def test_middleware_is_unchanged(tmp_path):
-    app = served(tmp_path).fastapi
+    app = served(tmp_path).starlette
     assert [(entry.cls.__name__, entry.kwargs["dispatch"].__name__) for entry in app.user_middleware] == [
         ("BaseHTTPMiddleware", "require_owner")]
 
@@ -54,7 +54,7 @@ def test_middleware_is_unchanged(tmp_path):
 def test_wrapper_chain_is_unchanged(tmp_path):
     outer = served(tmp_path)
     chain, layer = [], outer
-    while layer is not outer.fastapi:
+    while layer is not outer.starlette:
         chain.append(type(layer).__name__)
         layer = layer.app
     assert chain == ["HostCheck", "TailnetIdentity", "ResponseGuard"]

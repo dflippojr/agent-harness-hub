@@ -6,14 +6,15 @@ from __future__ import annotations
 
 import time
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
 
 from ..administration import OPERATIONS, TARGET, validate_fields
 from ..daemon import ADMIN_ROUTES, DaemonUnreachable, route_targets
 from ..restart import observe_recovery, observe_restart
 from ..views import ID_SEGMENT, administration_view, control_view, health_view, memory_route_absent, registry_view
-from .common import error, forwarded, hub, read_json, refused, unclaimed, unreachable
+from .common import HubRoute, error, forwarded, hub, read_json, refused, unclaimed, unreachable
 
 
 async def administration_catalog():
@@ -176,10 +177,12 @@ async def settings_action(resource: str, request: Request):
     return JSONResponse(shown, status_code=reply.status)
 
 
-def add_routes(app: FastAPI) -> None:
-    """Add the manage and Settings routes to the app itself, in this order, as `session.add_routes` does (#190)."""
-    app.add_api_route("/api/manage/catalog", administration_catalog, methods=["GET"])
-    app.add_api_route("/api/manage/{operation}", administration_action,
-                      methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
-    app.add_api_route("/api/settings/health", settings_health, methods=["GET"])
-    app.add_api_route("/api/settings/{resource:path}", settings_action, methods=["GET", "POST", "PUT", "PATCH"])
+def routes() -> list[Route]:
+    """The manage and Settings routes, in this order, for the app's own route table, as `session.routes` gives them
+    (#190)."""
+    return [
+        HubRoute("/api/manage/catalog", administration_catalog, ["GET"]),
+        HubRoute("/api/manage/{operation}", administration_action, ["GET", "POST", "PUT", "PATCH", "DELETE"]),
+        HubRoute("/api/settings/health", settings_health, ["GET"]),
+        HubRoute("/api/settings/{resource:path}", settings_action, ["GET", "POST", "PUT", "PATCH"]),
+    ]

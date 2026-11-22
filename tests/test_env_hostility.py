@@ -16,9 +16,9 @@ import time
 
 import pytest
 import uvicorn
-from fastapi.testclient import TestClient
 from hypothesis import given
 from hypothesis import strategies as st
+from starlette.testclient import TestClient
 
 from harness_hub import tailnet
 from harness_hub.config import Settings, normalize_daemon_url

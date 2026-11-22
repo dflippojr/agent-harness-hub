@@ -59,7 +59,7 @@ def test_app_detail_reads_limits_and_key_list_together(claimed, recorded):
 
 def consent_lock(client):
     """The Marketplace consent lock, read from the arm route that holds it while it checks and arms a slot."""
-    route = next(route for route in client.client.app.fastapi.routes if route.path == "/api/marketplace/arm")
+    route = next(route for route in client.client.app.starlette.routes if route.path == "/api/marketplace/arm")
     cells = dict(zip(route.endpoint.__code__.co_freevars, route.endpoint.__closure__, strict=True))
     return cells["pairing_consent_lock"].cell_contents
 

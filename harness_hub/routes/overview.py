@@ -9,8 +9,9 @@ import json
 import time
 from typing import Any
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 from ..daemon import DaemonUnreachable, unanswered
 from ..guard import leaks
@@ -28,7 +29,18 @@ from ..views import (
     settings_error,
     spend_view,
 )
-from .common import HubContext, concurrently, error, hub, read_inventory, refused, retained, settled, unclaimed
+from .common import (
+    HubContext,
+    HubRoute,
+    concurrently,
+    error,
+    hub,
+    read_inventory,
+    refused,
+    retained,
+    settled,
+    unclaimed,
+)
 
 
 async def get_overview(request: Request):
@@ -182,10 +194,12 @@ async def get_spend(request: Request):
             **shown}
 
 
-def add_routes(app: FastAPI) -> None:
-    """Add the Overview, inventory and Spend routes to the app itself, in this order, as `session.add_routes` does
-    (#190). `/api/modules` comes before `/api/apps`, as the stacked decorators registered them."""
-    app.add_api_route("/api/overview", get_overview, methods=["GET"])
-    app.add_api_route("/api/modules", get_modules, methods=["GET"])
-    app.add_api_route("/api/apps", get_modules, methods=["GET"])
-    app.add_api_route("/api/spend", get_spend, methods=["GET"])
+def routes() -> list[Route]:
+    """The Overview, inventory and Spend routes, in this order, for the app's own route table, as `session.routes`
+    gives them (#190). `/api/modules` comes before `/api/apps`, as the stacked decorators registered them."""
+    return [
+        HubRoute("/api/overview", get_overview, ["GET"]),
+        HubRoute("/api/modules", get_modules, ["GET"]),
+        HubRoute("/api/apps", get_modules, ["GET"]),
+        HubRoute("/api/spend", get_spend, ["GET"]),
+    ]

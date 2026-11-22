@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from .endpoints import ENDPOINTS
 from .validation import check_request, check_response

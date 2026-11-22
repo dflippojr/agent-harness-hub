@@ -6,8 +6,9 @@ from __future__ import annotations
 import math
 import re
 
-from fastapi import FastAPI, Request
-from fastapi.responses import Response
+from starlette.requests import Request
+from starlette.responses import Response
+from starlette.routing import Route
 
 from ..claim import RELEASE_COMMAND
 from ..daemon import DaemonUnreachable
@@ -22,6 +23,7 @@ from ..views import (
     valid_limits,
 )
 from .common import (
+    HubRoute,
     concurrently,
     error,
     error_status,
@@ -183,8 +185,10 @@ async def pairing_action(request: Request, rid: str = "", action: str = ""):
     return pairing_request_view(reply.body, tuple(ctx.store.secrets()))
 
 
-def add_routes(app: FastAPI) -> None:
-    """Add the Apps and pairing routes to the app itself, in this order, as `session.add_routes` does (#190)."""
-    app.add_api_route("/api/apps/{resource:path}", apps_action, methods=["GET", "PUT", "DELETE", "POST"])
-    app.add_api_route("/api/pairing/{rid}/{action}", pairing_action, methods=["POST"])
-    app.add_api_route("/api/pairing", pairing_action, methods=["GET"])
+def routes() -> list[Route]:
+    """The Apps and pairing routes, in this order, for the app's own route table (#190)."""
+    return [
+        HubRoute("/api/apps/{resource:path}", apps_action, ["GET", "PUT", "DELETE", "POST"]),
+        HubRoute("/api/pairing/{rid}/{action}", pairing_action, ["POST"]),
+        HubRoute("/api/pairing", pairing_action, ["GET"]),
+    ]

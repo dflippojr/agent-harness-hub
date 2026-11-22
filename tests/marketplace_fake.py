@@ -3,8 +3,8 @@ harness/pairing_requests.py `arm_pairing_request` (#519, flow 4)."""
 import secrets
 import time
 
-from fastapi import Request
-from fastapi.responses import JSONResponse
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from harness_hub.views import SCOPE_DISCLOSURES
 

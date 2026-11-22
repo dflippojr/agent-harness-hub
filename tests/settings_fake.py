@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from fastapi import Request
-from fastapi.responses import JSONResponse
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 # The owner routes this fake answers, as the daemon serves them (each one has a case in tests/contract).
 ROUTES = (("GET", "/config/schema"), ("GET", "/config"), ("POST", "/config/validate"), ("PATCH", "/config"),

@@ -13,10 +13,9 @@ license-files = ["LICENSE"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
-    "Framework :: FastAPI",
 ]
 dependencies = [
-    "fastapi==0.162.5",
+    "starlette==1.7.0",
     "uvicorn==0.54.0",
     "httpx==0.28.1",
     "psutil==7.2.2; sys_platform == 'win32'",  # tailscaled peer check (tailnet.py), Windows only

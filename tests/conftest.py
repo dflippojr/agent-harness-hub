@@ -18,11 +18,12 @@ from pathlib import Path
 
 import httpx
 import pytest
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from fastapi.testclient import TestClient
 from hypothesis import settings as hypothesis_settings
 from hypothesis.database import DirectoryBasedExampleDatabase
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.testclient import TestClient
 
 from harness_hub.auth import create_signin_code
 from harness_hub.config import Settings
@@ -32,6 +33,7 @@ from harness_hub.tuning import DEFAULT_TUNING
 from .admin_fake import register_administration
 from .apps_fake import register_apps
 from .contract.validation import check_sent
+from .fake_routes import FakeRoutes
 from .marketplace_fake import register_marketplace
 from .modules_fake import register_inventory
 from .pairing_fake import register_pairing
@@ -95,8 +97,8 @@ class FakeDaemon:
     def latest(self) -> dict:
         return list(self.requests.values())[-1]
 
-    def _build(self) -> FastAPI:
-        app = FastAPI()
+    def _build(self) -> Starlette:
+        app = FakeRoutes()
 
         @app.get("/health")
         async def health():
@@ -117,7 +119,7 @@ class FakeDaemon:
                     "config": {"revision": self.revision, "confirmed": True, "supervised_restart": True,
                                "recovery": self.recovery}}
 
-        @app.post("/api/v1/pair/requests", status_code=201)
+        @app.post("/api/v1/pair/requests")
         async def create(request: Request):
             body = await request.json()
             assert body["kind"] == "hub" and "scopes" not in body and body["code_challenge_method"] == "S256"
@@ -197,7 +199,7 @@ class FakeDaemon:
         register_inventory(app, self, owner)
         register_administration(app, self, owner)
         register_settings(app, self, owner)
-        return app
+        return app.app()
 
     def transport(self) -> httpx.AsyncBaseTransport:
         fake = self
@@ -235,7 +237,7 @@ class HubClient:
 
     def retune(self, **changes):
         """Replace the timing constants of this running Hub, for the rest of the test (a `Tuning` field per change)."""
-        ctx = self.client.app.fastapi.state.hub
+        ctx = self.client.app.starlette.state.hub
         ctx.tuning = dataclasses.replace(ctx.tuning, **changes)
 
     def get(self, path, **kw):

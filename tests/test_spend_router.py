@@ -9,13 +9,13 @@ from harness_hub.server import create_app
 
 
 def test_spend_is_the_overview_routers_handler(tmp_path):
-    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).fastapi
+    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).starlette
     assert [route.endpoint for route in app.routes if getattr(route, "path", "") == "/api/spend"] == [
         overview_routes.get_spend]
 
 
 def test_no_api_route_is_create_apps_own(tmp_path):
-    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).fastapi
+    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).starlette
     own = sorted(route.path for route in app.routes if getattr(route, "path", "").startswith("/api/")
                  and route.endpoint.__module__ == "harness_hub.server")
     assert own == []

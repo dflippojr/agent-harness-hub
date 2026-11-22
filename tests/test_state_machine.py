@@ -41,10 +41,10 @@ from pathlib import Path
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 from hypothesis import HealthCheck, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
+from starlette.testclient import TestClient
 
 from harness_hub import server
 from harness_hub.auth import create_signin_code

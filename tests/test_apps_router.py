@@ -9,7 +9,7 @@ from harness_hub.server import create_app
 
 
 def test_the_apps_and_pairing_routes_are_the_routers_handlers(tmp_path):
-    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).fastapi
+    app = create_app(Settings(daemon_url="https://daemon.test", state_dir=tmp_path / "state")).starlette
     handlers = {route.path: route.endpoint for route in app.routes if getattr(route, "path", "") in {
         "/api/apps/{resource:path}", "/api/pairing/{rid}/{action}", "/api/pairing"}}
     assert handlers == {"/api/apps/{resource:path}": apps_routes.apps_action,

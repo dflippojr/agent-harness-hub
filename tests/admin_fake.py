@@ -8,8 +8,8 @@ import re
 import time
 from pathlib import Path
 
-from fastapi import Request
-from fastapi.responses import JSONResponse, Response
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 
 ACCOUNT = {
     "user_id": "u-synthetic",

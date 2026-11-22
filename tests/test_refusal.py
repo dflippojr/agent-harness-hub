@@ -58,7 +58,7 @@ def test_route_key_refusal(claimed, fake_daemon, monkeypatch, confirmation, case
         assert claimed.get(path).status_code == 200  # a good answer first, so a refusal has something to withhold
     calls = []
     verifier = "synthetic-verifier-sentinel"
-    claimed.client.app.fastapi.state.store.update(claim={"verifier": verifier})
+    claimed.client.app.starlette.state.store.update(claim={"verifier": verifier})
     original = getattr(DaemonClient, client_method)
 
     async def rejected(self, token, action="", *args, **kwargs):
