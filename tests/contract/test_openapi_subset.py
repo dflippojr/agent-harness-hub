@@ -18,6 +18,7 @@ import warnings
 
 import pytest
 
+from . import openapi
 from .endpoints import ENDPOINTS, Endpoint
 from .openapi import DOCUMENT, UNCOMPARED, check, load
 from .shapes import INT, STR, ListOf, MapOf, Obj
@@ -198,9 +199,9 @@ def test_a_closed_object_fails_every_name_it_does_not_list():
 
 
 # allOf is not compared, wherever the walk meets it (review round 2, #271) ------------------------------------------
-# The daemon's document has no allOf (test_the_daemon_document_has_no_allof pins that). A hand-merged allOf lost a
-# constraint three ways in review, so the walk fails closed instead: an allOf anywhere it reaches is a miss, even
-# inside one anyOf or oneOf branch while another branch would match.
+# The daemon's document has no allOf (test_the_daemon_document_uses_only_modeled_forms pins that). A hand-merged
+# allOf lost a constraint three ways in review, so the walk fails closed instead: an allOf anywhere it reaches is a
+# miss, even inside one anyOf or oneOf branch while another branch would match.
 ROW_REF = {"$ref": "#/components/schemas/Row"}
 ALL_ROW = {"allOf": [ROW_REF]}
 
@@ -243,7 +244,7 @@ GRID = {
         "another-branch-matches", "behind-ref", "request-body"])
 def test_an_allof_anywhere_fails(key, endpoint, where):
     result = check(GRID, key, endpoint)
-    assert (result.missing, result.unchecked) == ([f"{where}: {UNCOMPARED}"], [])
+    assert (result.missing, result.unchecked) == ([f"{where}: allOf {UNCOMPARED}"], [])
 
 
 def test_oneof_branches_like_anyof():
@@ -251,20 +252,83 @@ def test_oneof_branches_like_anyof():
     assert check(GRID, "GET /plain-one", Endpoint(None, {200: ROW.extend({"more": STR})})).missing == ["200 $.more"]
 
 
-def _count_allof(node) -> int:
-    if isinstance(node, dict):
-        return ("allOf" in node) + sum(_count_allof(value) for value in node.values())
-    if isinstance(node, list):
-        return sum(_count_allof(value) for value in node)
-    return 0
+# Only the schema forms the walk models are compared (owner decision on #271, option A) ----------------------------
+# The allowlist: a $ref alone, anyOf or oneOf alone, an object (type, properties, additionalProperties, required), an
+# array (type, items), a scalar, or an untyped schema, each with annotations and value-only constraints beside it.
+# Any other form the walk reaches fails, wherever it sits; test_the_daemon_document_uses_only_modeled_forms pins the
+# daemon's document at none.
+CLOSED_ROW = {"type": "object", "properties": {"id": {"type": "string"}, "title": {"type": "string"}},
+              "additionalProperties": False}
+FORMS = {
+    "paths": {
+        # review round 3's repro: a closed object whose anyOf branches carry only `required`
+        "/sibling-any": _reply({**CLOSED_ROW, "anyOf": [{"required": ["id"]}, {"required": ["title"]}]}),
+        "/sibling-one": _reply({"type": "object", "properties": {
+            "row": {"oneOf": [ROW_REF], "additionalProperties": False}}}),
+        "/both": _reply({"type": "array", "items": {"anyOf": [ROW_REF], "oneOf": [ROW_REF]}}),
+        "/not": _reply({"type": "object", "additionalProperties": {"not": {"type": "string"}}}),
+        "/type-list": _reply({"anyOf": [{"type": ["object", "null"], "properties": {"id": {"type": "string"}}},
+                                        {"type": "null"}]}),
+        "/pattern": _reply({"$ref": "#/components/schemas/Patterned"}),
+        "/object-items": {"post": {
+            "requestBody": {"content": {"application/json": {"schema": {
+                "type": "object", "properties": {"name": {"type": "string"}}, "items": {"type": "string"}}}}},
+            "responses": {"200": {"content": {"application/json": {"schema": ROW_REF}}}}}},
+        "/array-properties": _reply({"type": "array", "items": ROW_REF, "properties": {"id": {"type": "string"}}}),
+        "/ref-sibling": _reply({"$ref": "#/components/schemas/Row", "properties": {"extra": {"type": "string"}}}),
+        "/unknown": _reply({"type": "object", "properties": {"id": {"type": "string"}}, "if": {}}),
+        "/deep-not": _reply({"anyOf": [{"type": "array", "items": {"not": {}}}, {"type": "array", "items": ROW_REF}]}),
+        "/modeled": _reply({"anyOf": [{"$ref": "#/components/schemas/Row", "title": "A row"}, {"type": "null"}],
+                            "title": "Row or nothing", "discriminator": {"propertyName": "id"}}),
+    },
+    "components": {"schemas": {
+        **DOC["components"]["schemas"],
+        "Patterned": {"type": "object", "patternProperties": {"^x": ROW_REF}},
+    }},
+}
+
+
+@pytest.mark.parametrize("key,endpoint,entry", [
+    ("GET /sibling-any", Endpoint(None, {200: Obj({"id": STR, "nope": STR})}),
+     "200 $: anyOf beside additionalProperties, properties, type"),
+    ("GET /sibling-one", Endpoint(None, {200: Obj({"row": ROW})}), "200 $.row: oneOf beside additionalProperties"),
+    ("GET /both", Endpoint(None, {200: ListOf(ROW)}), "200 $[]: anyOf beside oneOf"),
+    ("GET /not", Endpoint(None, {200: MapOf(ROW)}), "200 $.*: not in an untyped schema"),
+    ("GET /type-list", Endpoint(None, {200: ROW | None}), '200 $: type ["object", "null"]'),
+    ("GET /pattern", Endpoint(None, {200: Obj({"a": ROW})}), "200 $: patternProperties in an object schema"),
+    ("POST /object-items", Endpoint(Obj({"name": STR}), {200: ROW}), "request $: items in an object schema"),
+    ("GET /array-properties", Endpoint(None, {200: ListOf(ROW)}), "200 $: properties in an array schema"),
+    ("GET /ref-sibling", Endpoint(None, {200: ROW}), "200 $: $ref beside properties"),
+    ("GET /unknown", Endpoint(None, {200: Obj({"id": STR})}), "200 $: if in an object schema"),
+    ("GET /deep-not", Endpoint(None, {200: ListOf(ROW)}), "200 $[]: not in an untyped schema"),
+], ids=["anyOf-siblings-r3", "oneOf-sibling", "anyOf-and-oneOf", "not", "type-list", "patternProperties-behind-ref",
+        "object-with-items-request", "array-with-properties", "ref-with-sibling", "unknown-keyword",
+        "another-branch-matches"])
+def test_an_unmodeled_form_anywhere_fails(key, endpoint, entry):
+    result = check(FORMS, key, endpoint)
+    assert (result.missing, result.unchecked) == ([f"{entry} {UNCOMPARED}"], [])
+
+
+def test_the_modeled_forms_with_annotations_and_value_constraints_pass():
+    assert check(FORMS, "GET /modeled", Endpoint(None, {200: ROW | None})).missing == []
+    assert check(FORMS, "GET /modeled", Endpoint(None, {200: ROW.extend({"more": STR}) | None})).missing == [
+        "200 $.more"]
+
+
+def test_unmodeled_forms_counts_every_form_at_every_depth():
+    counts = openapi.unmodeled_forms(FORMS)
+    assert counts == {
+        "anyOf beside additionalProperties, properties, type": 1, "oneOf beside additionalProperties": 1,
+        "anyOf beside oneOf": 1, "not in an untyped schema": 2, 'type ["object", "null"]': 1,
+        "patternProperties in an object schema": 1, "items in an object schema": 1,
+        "properties in an array schema": 1, "$ref beside properties": 1, "if in an object schema": 1}
+    assert openapi.unmodeled_forms(GRID) == {"allOf": 9}
+    assert openapi.unmodeled_forms(DOC) == {"allOf": 1}
 
 
 @pytest.mark.e2e
-def test_the_daemon_document_has_no_allof(document):
-    """The walk does not compare allOf; this makes the assumption visible. When the daemon starts emitting allOf,
-    this fails beside every endpoint it reaches: teach tests/contract/openapi.py to compare it, with the grid above."""
-    assert _count_allof(document) == 0
-
-
-def test_count_allof_counts_every_nesting():
-    assert _count_allof(GRID) == 9 and _count_allof(DOC) == 1
+def test_the_daemon_document_uses_only_modeled_forms(document):
+    """The walk compares only the allowlisted forms; this pins the daemon's document at none outside it (allOf, an
+    anyOf or oneOf with structural siblings, a type list, an unknown keyword, ...). When it fails, the daemon emits a
+    new form: teach tests/contract/openapi.py to compare it, with a case in the grids above."""
+    assert openapi.unmodeled_forms(document) == {}

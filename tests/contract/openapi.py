@@ -28,7 +28,7 @@ from .shapes import Enum, ListOf, MapOf, Obj, Shape, Union, _Scalar
 
 DOCUMENT = Path("tools") / "openapi" / "openapi.json"
 METHODS = ("get", "put", "post", "delete", "patch")
-UNCOMPARED = "allOf is not compared; extend tests/contract/openapi.py"
+UNCOMPARED = "is not compared; extend tests/contract/openapi.py"
 
 
 @dataclass
@@ -142,7 +142,7 @@ class _Walker:
         recorded as uncompared, which fails the endpoint, and offers no alternative to compare against."""
         schema = self.resolve(schema)
         if "allOf" in schema:
-            self.result.uncompared.append(f"{where}: {UNCOMPARED}")
+            self.result.uncompared.append(f"{where}: allOf {UNCOMPARED}")
             return []
         for word in ("anyOf", "oneOf"):
             if word in schema:
