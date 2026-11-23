@@ -80,6 +80,18 @@ def test_all_daemon_controls_and_secrecy(claimed, fake_daemon):
     assert_no_secrets(hub.bodies, fake_daemon.hub_token, "provider-secret-sentinel")
 
 
+def test_a_failed_github_preflight_shows_the_daemons_message(claimed, fake_daemon):
+    """GitHub member sign-in's preflight is a code and its message (github_auth.py), not a problem list (#269)."""
+    message = "GitHub sign-in for household members is not set up on this machine."
+    fake_daemon.github_preflight = {"ok": False, "error": "not_configured", "message": message}
+    assert claimed.get("/api/settings/github").json()["preflight"] == {
+        "ok": False, "problems": [message], "checked_at": None}
+    fake_daemon.github_preflight = {"ok": False, "error": "not_configured", "message": ""}
+    assert claimed.get("/api/settings/github").json()["preflight"]["problems"] == ["not_configured"]
+    fake_daemon.github_preflight = {"ok": True, "error": "", "message": ""}
+    assert claimed.get("/api/settings/github").json()["preflight"]["problems"] == []
+
+
 def test_settings_input_is_closed_before_any_daemon_call(claimed, fake_daemon):
     hub = claimed
     before = len(fake_daemon.settings_calls)
